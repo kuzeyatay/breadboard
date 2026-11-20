@@ -43,3 +43,12 @@ test("composer picker finds the @token under the caret", () => {
   assert.equal(mentionQueryAt("me@x.com", 8), null);
   assert.equal(mentionQueryAt("@sage ", 6), null);
 });
+
+test("splitMentions cuts out each @handle for the blue transcript styling, and leaves emails alone", async () => {
+  const { splitMentions } = await import("../src/lib/bots/mentions.ts");
+  assert.deepEqual(splitMentions("@sage and @byte-2, mail me@x.com"), [
+    { value: "@sage", mention: true }, { value: " and ", mention: false },
+    { value: "@byte-2", mention: true }, { value: ", mail me@x.com", mention: false },
+  ]);
+  assert.deepEqual(splitMentions("no mentions"), [{ value: "no mentions", mention: false }]);
+});

@@ -300,15 +300,18 @@ test("Capabilities Bots editor, saved avatars, chat navigation and lifecycle wor
       import React, {useEffect,useState} from 'react';
       import {createRoot} from 'react-dom/client';
       import {CommandHub} from './src/app/components/hermes/command-hub';
-      import {BotConversationProvider,BotConversationIdentity} from './src/app/components/bots/bot-conversation';
+      import {BotConversationProvider,BotConversationIdentity,MentionedBot} from './src/app/components/bots/bot-conversation';
+      import {UserMessageText} from './src/app/components/hermes/command-text';
       import AssistantResponseMeta from './src/app/components/assistant-response-meta';
       function App() {
         const [open,setOpen]=useState(true), [chat,setChat]=useState(localStorage.getItem('test-chat'));
         const [active,setActive]=useState(true), [label,setLabel]=useState('Thinking');
         useEffect(()=> { const fn=e=>{setChat(e.detail.chatId);localStorage.setItem('test-chat',e.detail.chatId)}; window.addEventListener('breadboard:chat-notification-open-request',fn); return ()=>window.removeEventListener('breadboard:chat-notification-open-request',fn); },[]);
         return <main><h1>Breadboard · Bot conversation</h1><BotConversationProvider conversationId={chat}>
-          <BotConversationIdentity/><AssistantResponseMeta active={active} label={label} onDisclosureToggle={()=>{}} />
+          <BotConversationIdentity/><div data-bot-chat><AssistantResponseMeta active={active} label={label} onDisclosureToggle={()=>{}} /></div>
         </BotConversationProvider><output data-chat>{chat||'Ordinary chat'}</output>
+        <section aria-label="Mention reply"><UserMessageText content="@byte explain flux, mail me@x.com"/>
+          <MentionedBot text="@byte explain flux, mail me@x.com"><AssistantResponseMeta active={false} label="Thinking"/></MentionedBot></section>
         <div><button onClick={()=>{setActive(true);setLabel('Thinking')}}>Think</button><button onClick={()=>{setActive(true);setLabel('Waiting for your answer')}}>Wait</button><button onClick={()=>setActive(false)}>Complete</button><button onClick={()=>setChat(null)}>Ordinary chat</button></div>
         <div style={{position:'fixed',bottom:24,left:24}}><CommandHub open={open} onOpenChange={setOpen} onSelect={()=>{}} surface="dashboard_terminal"/></div></main>;
       }
@@ -367,6 +370,11 @@ test("Capabilities Bots editor, saved avatars, chat navigation and lifecycle wor
     assert.equal(await page.getByRole("status", { name: "Loading bots", exact: true }).count(), 1, "data loading keeps the same skeleton rows");
     releaseRoster();
     await page.getByRole("button",{name:"Chat with Sage",exact:true}).waitFor();
+    // An @mention is chat blue, and the mentioned bot's reply wears its icon as in its own chat.
+    const mention = page.locator("section[aria-label='Mention reply'] [data-bot-mention]");
+    assert.deepEqual(await mention.allTextContents(), ["@byte"], "the bot mention is marked; the email is not");
+    assert.match(await mention.getAttribute("class"), /text-\[var\(--chat-link\)\]/);
+    await page.locator("section[aria-label='Mention reply'] .assistant-response-meta [data-bot-avatar=mech]").waitFor({ timeout: 10_000 });
     assert.equal(rosterRequests, 1, "mounting the tab reuses its pending preload");
     assert.equal(await page.locator("section[aria-label=Bots] [data-bot-avatar]").count(),botsStore().list(1).length, "every bot draws its own avatar");
     assert.equal(await page.locator("section[aria-label=Bots] [data-primary-bot=bread] [role=img][aria-label=Bread]").count(),1, "Bread, the primary bot, leads the roster with its own picture, not a bot avatar");
@@ -435,30 +443,30 @@ test("Capabilities Bots editor, saved avatars, chat navigation and lifecycle wor
     await page.locator(`[data-conversation-bot="${saved.id}"]`).waitFor();
     const chatId=await page.locator("[data-chat]").textContent();
     assert.equal(botPersonalityPrompt(botsStore().forConversation(1,chatId)).includes("Luna Revised"),true);
-    assert.equal(await page.locator(".assistant-response-meta [data-bot-state=working]").count(),1);
-    const working=await page.locator(".assistant-response-meta canvas").evaluate(canvas=>canvas.toDataURL());
-    await page.waitForFunction(before=>document.querySelector(".assistant-response-meta canvas")?.toDataURL()!==before,working);
+    assert.equal(await page.locator("[data-bot-chat] .assistant-response-meta [data-bot-state=working]").count(),1);
+    const working=await page.locator("[data-bot-chat] .assistant-response-meta canvas").evaluate(canvas=>canvas.toDataURL());
+    await page.waitForFunction(before=>document.querySelector("[data-bot-chat] .assistant-response-meta canvas")?.toDataURL()!==before,working);
     await page.emulateMedia({reducedMotion:"reduce"});
-    await page.locator('.assistant-response-meta [data-bot-paused="true"]').waitFor();
-    const still=await page.locator(".assistant-response-meta canvas").evaluate(canvas=>canvas.toDataURL());
+    await page.locator('[data-bot-chat] .assistant-response-meta [data-bot-paused="true"]').waitFor();
+    const still=await page.locator("[data-bot-chat] .assistant-response-meta canvas").evaluate(canvas=>canvas.toDataURL());
     await page.waitForTimeout(200);
-    assert.equal(await page.locator(".assistant-response-meta canvas").evaluate(canvas=>canvas.toDataURL()),still,"reduced-motion changes must stop a live avatar");
+    assert.equal(await page.locator("[data-bot-chat] .assistant-response-meta canvas").evaluate(canvas=>canvas.toDataURL()),still,"reduced-motion changes must stop a live avatar");
     await page.emulateMedia({reducedMotion:"no-preference"});
-    await page.locator('.assistant-response-meta [data-bot-paused="false"]').waitFor();
+    await page.locator('[data-bot-chat] .assistant-response-meta [data-bot-paused="false"]').waitFor();
     await page.getByRole("button",{name:"Wait",exact:true}).click();
-    assert.equal(await page.locator(".assistant-response-meta [data-bot-state=default]").count(),1);
+    assert.equal(await page.locator("[data-bot-chat] .assistant-response-meta [data-bot-state=default]").count(),1);
     await page.getByRole("button",{name:"Complete",exact:true}).click();
-    assert.equal(await page.locator(".assistant-response-meta [data-bot-state=sleeping]").count(),1);
-    assert.equal(await page.locator('.assistant-response-meta [data-bot-paused="true"]').count(),1);
+    assert.equal(await page.locator("[data-bot-chat] .assistant-response-meta [data-bot-state=sleeping]").count(),1);
+    assert.equal(await page.locator('[data-bot-chat] .assistant-response-meta [data-bot-paused="true"]').count(),1);
     // Saved identity survives a reload and changing between regular and bot chats.
     await page.reload();
     await page.getByRole("tab",{name:"Bots",exact:true}).click();
     await page.getByRole("button",{name:"Chat with Luna Revised",exact:true}).click();
     assert.equal(await page.locator("[data-chat]").textContent(),chatId);
-    await page.locator(".assistant-response-meta [data-bot-state=working]").waitFor();
+    await page.locator("[data-bot-chat] .assistant-response-meta [data-bot-state=working]").waitFor();
     await page.screenshot({path:path.join(screenshotRoot,"bots-thinking.png")});
     await page.getByRole("button",{name:"Ordinary chat",exact:true}).click();
-    assert.equal(await page.locator(".assistant-response-meta [data-bot-avatar]").count(),0);
+    assert.equal(await page.locator("[data-bot-chat] .assistant-response-meta [data-bot-avatar]").count(),0);
     await page.getByRole("button",{name:"Open capabilities",exact:true}).click();
     await page.getByRole("button",{name:"Duplicate Luna Revised",exact:true}).click();
     assert.equal(await page.getByLabel("Name",{exact:true}).inputValue(),"Luna Revised-2");

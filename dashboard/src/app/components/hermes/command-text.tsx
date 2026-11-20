@@ -6,6 +6,7 @@
 
 import { Fragment } from 'react';
 import { linkifyChatText } from '@/lib/chat-links';
+import { splitMentions } from '@/lib/bots/mentions';
 
 // Mirrors CLEAN_TOKEN/LEGACY_TOKEN in @/lib/hermes/commands.ts: one or
 // more leading "/token" selectors, each followed by whitespace or end of text.
@@ -27,7 +28,7 @@ export function startsWithCommandToken(content: string): boolean {
   return /^\/[a-z0-9]/i.test(content);
 }
 
-export function LinkifiedText({ content }: { content: string }) {
+export function LinkifiedText({ content, mentions = false }: { content: string; mentions?: boolean }) {
   return (
     <>
       {linkifyChatText(content).map((segment, index) =>
@@ -41,6 +42,11 @@ export function LinkifiedText({ content }: { content: string }) {
           >
             {segment.value}
           </a>
+        ) : mentions ? (
+          // A bot @mention is drawn in the same chat blue as a /command.
+          <Fragment key={index}>{splitMentions(segment.value).map((part, at) => part.mention
+            ? <span key={at} className={COMMAND_TEXT_CLASS} data-bot-mention>{part.value}</span>
+            : <Fragment key={at}>{part.value}</Fragment>)}</Fragment>
         ) : (
           <Fragment key={index}>{segment.value}</Fragment>
         ),
@@ -54,7 +60,7 @@ export function UserMessageText({ content }: { content: string }) {
   if (!split) {
     return (
       <p className="whitespace-pre-wrap">
-        <LinkifiedText content={content} />
+        <LinkifiedText content={content} mentions />
       </p>
     );
   }
@@ -62,7 +68,7 @@ export function UserMessageText({ content }: { content: string }) {
     <p className="whitespace-pre-wrap">
       <span className={COMMAND_TEXT_CLASS}>{split.command}</span>
       <span>
-        <LinkifiedText content={split.rest} />
+        <LinkifiedText content={split.rest} mentions />
       </span>
     </p>
   );

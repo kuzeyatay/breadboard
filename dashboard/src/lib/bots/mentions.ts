@@ -46,6 +46,19 @@ export function mentionedHandles(text: string, known: Iterable<string>): string[
   return found;
 }
 
+/** Plain text cut at each `@handle`, so a transcript can draw mentions apart. */
+export function splitMentions(text: string): { value: string; mention: boolean }[] {
+  const parts: { value: string; mention: boolean }[] = [];
+  let last = 0;
+  for (const match of text.matchAll(MENTION)) {
+    if (match.index! > last) parts.push({ value: text.slice(last, match.index), mention: false });
+    parts.push({ value: match[0], mention: true });
+    last = match.index! + match[0].length;
+  }
+  if (last < text.length) parts.push({ value: text.slice(last), mention: false });
+  return parts;
+}
+
 /** The `@handle` token the caret is in, for the composer picker; null when none. */
 export function mentionQueryAt(
   value: string,

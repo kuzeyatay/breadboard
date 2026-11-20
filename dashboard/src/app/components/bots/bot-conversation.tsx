@@ -3,6 +3,8 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import type { BotDefinition } from "@/lib/bots/types";
 import BotAvatar from "./bot-avatar";
+import { routeTurn } from "@/lib/bots/mentions";
+import { loadCachedBots, peekCachedBots } from "@/lib/bots/client-cache";
 
 const BotContext = createContext<BotDefinition | null>(null);
 export function useConversationBot() { return useContext(BotContext); }
@@ -26,6 +28,23 @@ export function BotConversationProvider({ conversationId, children }: { conversa
     return () => { request?.abort(); window.removeEventListener("breadboard:bots-changed", refresh); };
   }, [conversationId]);
   return <BotContext.Provider value={result && result.id === conversationId ? result.bot : null}>{children}</BotContext.Provider>;
+}
+
+/**
+ * The bot that answered one message: the user's @mention picks it, exactly as
+ * the server routed the turn (lib/bots/mentions.ts routeTurn), so its reply
+ * carries its icon as it would in that bot's own chat. Bread, or several bots
+ * coordinated by Bread, show no bot icon.
+ */
+export function MentionedBot({ text, children }: { text?: string; children: ReactNode }) {
+  const conversationBot = useConversationBot();
+  const mentions = typeof text === "string" && text.includes("@");
+  const [bots, setBots] = useState(() => peekCachedBots() ?? []);
+  useEffect(() => {
+    if (mentions) void loadCachedBots().then(setBots).catch(() => {});
+  }, [mentions]);
+  if (!mentions) return <>{children}</>;
+  return <BotContext.Provider value={routeTurn(text, bots, conversationBot).respondent}>{children}</BotContext.Provider>;
 }
 
 export function BotConversationIdentity() {

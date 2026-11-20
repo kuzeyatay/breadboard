@@ -69,7 +69,7 @@ import ChatMessageRail, {
   type ChatMessageRailItem,
 } from "@/app/components/chat-message-rail";
 import ActivityPanel from "./activity-panel";
-import { BotConversationProvider, BotConversationIdentity } from "../bots/bot-conversation";
+import { BotConversationProvider, BotConversationIdentity, MentionedBot } from "../bots/bot-conversation";
 import InlineBrowserRun from "./inline-browser-run";
 import InlineAgentBrowserRun from "./inline-agent-browser-run";
 import InlineArtifactCards, {
@@ -2644,6 +2644,7 @@ export default function AgentRuntimePanel({
                       : undefined
                   : undefined;
                 return (
+                <MentionedBot text={message.role === "assistant" ? messages[previousUserMessageIndex(messages, index)]?.content : undefined}>
                 <div
                   className={timeSeparators[index] ? "space-y-3" : undefined}
                 >
@@ -4141,6 +4142,7 @@ export default function AgentRuntimePanel({
                     </div>
                   </div>
                 </div>
+                </MentionedBot>
               );
               }}
               />
