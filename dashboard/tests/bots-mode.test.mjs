@@ -95,6 +95,19 @@ test("Bots HTTP handlers persist to canonical chats, enforce ownership and rejec
   assert.equal(conversations.listRecentConversationMessages(chat.id, 20).at(-1).content, "A saved bot reply.");
 });
 
+test("the default team does real work, and an existing unedited default is upgraded in place", async () => {
+  const { LEGACY_PREBUILT_PERSONALITIES } = await import("../src/lib/bots/presets.ts");
+  db.prepare("INSERT INTO users(id,username,email,password_hash) VALUES (3,'bots-legacy','legacy@example.test','x')").run();
+  const legacy = db.prepare("INSERT INTO conversation_bots(user_id,id,name,description,personality,avatar,prebuilt) VALUES (3,?,?,?,?,?,1)");
+  legacy.run("byte", "Byte", "old", LEGACY_PREBUILT_PERSONALITIES.byte, JSON.stringify({ shape: "mech", color: "#809bd4", face: "eyes" }));
+  legacy.run("boo", "Boo", "mine", "You are Boo, my own edit.", JSON.stringify({ shape: "ghost", color: "#e8e4f0", face: "mouth" }));
+  const team = Object.fromEntries(botsStore().list(3).map(bot => [bot.id, bot]));
+  assert.match(team.byte.personality, /engineer[\s\S]*run it or its tests/, "an untouched default gets its job");
+  assert.equal(team.byte.effort, "high");
+  assert.equal(team.boo.personality, "You are Boo, my own edit.", "a default the user edited is theirs");
+  for (const id of ["sage", "spark", "moss", "byte", "nova"]) assert.match(team[id].personality, /Do the work instead of describing it/);
+});
+
 test("the provider turn sends the saved personality, persists the reply and uses subsequent edits", async () => {
   const calls = [];
   const file = new URL("../src/lib/conversations/direct-turn-service.ts", import.meta.url);
