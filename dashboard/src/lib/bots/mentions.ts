@@ -11,13 +11,12 @@ import type { BotDefinition } from "./types.ts";
 /** Bread, the primary bot: Breadboard's own runtime (Hermes) with no persona. */
 export const BREAD_BOT_HANDLE = "bread";
 
-/** Bread as the roster and picker draw it, in the same avatar style as every bot. */
+/** Bread in the roster and picker. It keeps its own picture (public/avatars/bread.svg), not a bot avatar. */
 export const BREAD_BOT = {
   id: BREAD_BOT_HANDLE,
   handle: BREAD_BOT_HANDLE,
   name: "Bread",
   description: "Your primary bot: Breadboard's own assistant, with every tool, memory and skill. It answers when nobody is named and can hand work to the others.",
-  avatar: { shape: "pill", color: "#8839ef", face: "eyes" },
 } as const;
 
 /** The handle a bot is mentioned by: its name, lowercased, words joined by "-". */

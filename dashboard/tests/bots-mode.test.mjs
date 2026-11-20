@@ -344,7 +344,8 @@ test("Capabilities Bots editor, saved avatars, chat navigation and lifecycle wor
     releaseRoster();
     await page.getByRole("button",{name:"Chat with Sage",exact:true}).waitFor();
     assert.equal(rosterRequests, 1, "mounting the tab reuses its pending preload");
-    assert.equal(await page.locator("section[aria-label=Bots] [data-bot-avatar]").count(),botsStore().list(1).length + 1, "Bread, the primary bot, leads the roster");
+    assert.equal(await page.locator("section[aria-label=Bots] [data-bot-avatar]").count(),botsStore().list(1).length, "every bot draws its own avatar");
+    assert.equal(await page.locator("section[aria-label=Bots] [data-primary-bot=bread] [role=img][aria-label=Bread]").count(),1, "Bread, the primary bot, leads the roster with its own picture, not a bot avatar");
     const avatar = page.getByRole("button", { name: "Chat with Sage", exact: true }).locator("canvas");
     const firstFrame = await avatar.evaluate(canvas => canvas.toDataURL());
     await page.waitForFunction(before => document.querySelector('[aria-label="Chat with Sage"] canvas')?.toDataURL() !== before, firstFrame);

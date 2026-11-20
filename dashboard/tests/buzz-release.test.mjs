@@ -109,7 +109,7 @@ test('organization flow: invitations, permissions, delivery, agents, threads and
     assert.equal((await call(1,'members','POST',{personaSlug:'bot-sage'},params)).status,409);
     await call(1,'messages','POST',{body:'@sage explain Gauss law in one line',clientMessageId:'bot-request'},params);
     const botTurn=qa.calls.at(-1);
-    assert.match(botTurn.text,/You are Sage[\s\S]*Your brief:[\s\S]*patient teacher[\s\S]*Gauss law/,'the seated bot answers with its own personality');
+    assert.match(botTurn.text,/You are Sage[\s\S]*Your brief:[\s\S]*study coach[\s\S]*Gauss law/,'the seated bot answers with its own personality');
 
     const bread=detail.members.find(member=>member.personaSlug==='bread');
     await call(1,'member','DELETE',undefined,{...params,memberId:String(bread.id)});

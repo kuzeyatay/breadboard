@@ -6,12 +6,13 @@ import type { BotAvatarConfig } from "@/lib/bots/types";
 import { BREAD_BOT, botHandle } from "@/lib/bots/mentions";
 import { loadCachedBots, peekCachedBots } from "@/lib/bots/client-cache";
 import BotAvatar from "./bot-avatar";
+import DefaultAvatar, { BREAD_AVATAR_SRC } from "../default-avatar";
 
 export interface BotMentionMenuHandle {
   handleKeyDown: (event: KeyboardEvent<HTMLElement>) => boolean;
 }
 
-interface Choice { handle: string; name: string; description: string; avatar: BotAvatarConfig; primary?: boolean }
+interface Choice { handle: string; name: string; description: string; avatar?: BotAvatarConfig; primary?: boolean }
 
 /** The "@" picker: Bread first, then the user's bots, filtered by what follows the "@". */
 const BotMentionMenu = forwardRef<BotMentionMenuHandle, {
@@ -28,7 +29,7 @@ const BotMentionMenu = forwardRef<BotMentionMenuHandle, {
   useEffect(() => setActive(0), [query]);
   const choices = useMemo<Choice[]>(() => {
     const all: Choice[] = [
-      { ...BREAD_BOT, avatar: { ...BREAD_BOT.avatar }, primary: true },
+      { ...BREAD_BOT, primary: true },
       ...bots.map((bot) => ({ handle: botHandle(bot.name), name: bot.name, description: bot.description, avatar: bot.avatar })),
     ];
     const q = query.toLowerCase();
@@ -68,7 +69,7 @@ const BotMentionMenu = forwardRef<BotMentionMenuHandle, {
               onClick={() => onSelect(choice.handle)}
               className={`flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left ${index === selected ? "bg-[var(--paper-strong)]" : "hover:bg-[var(--paper-surface)]"}`}
             >
-              <BotAvatar avatar={choice.avatar} name={choice.name} size={32} paused />
+              {choice.avatar ? <BotAvatar avatar={choice.avatar} name={choice.name} size={32} paused /> : <DefaultAvatar src={BREAD_AVATAR_SRC} name={choice.name} size={32} />}
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-sm font-medium text-[var(--ink-heading)]">
                   {choice.name} <span className="font-normal text-[var(--ink-muted)]">@{choice.handle}</span>

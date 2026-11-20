@@ -8,6 +8,7 @@ import { duplicateBotName } from "@/vendor/hermes-bots/identity";
 import { requestChatNotificationOpen, chatNotificationHref } from "@/lib/chat-notification-inbox";
 import { notifyHermesSessionsChanged } from "@/lib/hermes/session-client";
 import BotAvatar from "./bot-avatar";
+import DefaultAvatar, { BREAD_AVATAR_SRC } from "../default-avatar";
 import BotEditor from "./bot-editor";
 import LoadingRows from "../hermes/loading-rows";
 import { BOTS_CHANGED_EVENT, BOTS_AUTH_CHANGED_EVENT, loadCachedBots, peekCachedBots } from "@/lib/bots/client-cache";
@@ -101,7 +102,7 @@ export default function BotsPanel({ onNavigate }: { onNavigate: () => void }) {
     {error ? <div role="alert" className="text-sm text-[var(--danger)]">{error} <button type="button" onClick={() => void load()} className="underline">Retry</button></div> : null}
     {!query.trim() || `${BREAD_BOT.name} ${BREAD_BOT.description}`.toLowerCase().includes(query.trim().toLowerCase()) ? <div className="flex items-center gap-2 rounded-2xl border border-[var(--line)] bg-[var(--paper-surface)] p-2" data-primary-bot="bread">
       <button type="button" disabled={busy} onClick={() => void chat(BREAD_BOT)} className="flex min-w-0 flex-1 items-center gap-2 rounded-xl p-1 text-left focus-visible:outline-2 focus-visible:outline-[var(--botanical)]" aria-label={`Chat with ${BREAD_BOT.name}`}>
-        <BotAvatar avatar={BREAD_BOT.avatar} name={BREAD_BOT.name} size={52} />
+        <DefaultAvatar src={BREAD_AVATAR_SRC} name={BREAD_BOT.name} size={52} />
         <span className="min-w-0"><span className="flex items-center gap-2 text-sm font-medium text-[var(--ink-heading)]">{BREAD_BOT.name}<span className="rounded-full bg-[var(--paper-strong)] px-2 py-0.5 text-[10px] font-normal text-[var(--ink-muted)]">Primary · @{BREAD_BOT.handle}</span></span><span className="mt-0.5 block text-xs leading-5 text-[var(--ink-muted)]">{BREAD_BOT.description}</span></span>
       </button>
     </div> : null}

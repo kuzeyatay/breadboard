@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { BOT_EFFORTS, BOT_SHAPES, type BotDefinition, type BotEffort, type BotInput } from "./types.ts";
-import { PREBUILT_BOTS } from "./presets.ts";
+import { LEGACY_PREBUILT_PERSONALITIES, PREBUILT_BOTS } from "./presets.ts";
 
 export interface BotMemory { id: number; text: string }
 
@@ -93,8 +93,17 @@ export class BotsStore {
   }
   seed(userId: number): void {
     const insert = this.db.prepare(`INSERT OR IGNORE INTO conversation_bots
-      (user_id,id,name,description,personality,avatar,prebuilt) VALUES (?,?,?,?,?,?,1)`);
-    this.db.transaction(() => { for (const bot of PREBUILT_BOTS) insert.run(userId, bot.id, bot.name, bot.description, bot.personality, JSON.stringify(bot.avatar)); })();
+      (user_id,id,name,description,personality,avatar,effort,prebuilt) VALUES (?,?,?,?,?,?,?,1)`);
+    // A default the user never edited still has its first companion personality:
+    // give it the working job. An edited one is the user's and stays as it is.
+    const upgrade = this.db.prepare(`UPDATE conversation_bots SET description=?, personality=?, effort=?, updated_at=datetime('now')
+      WHERE user_id=? AND id=? AND prebuilt=1 AND personality=?`);
+    this.db.transaction(() => {
+      for (const bot of PREBUILT_BOTS) {
+        insert.run(userId, bot.id, bot.name, bot.description, bot.personality, JSON.stringify(bot.avatar), bot.effort ?? null);
+        upgrade.run(bot.description, bot.personality, bot.effort ?? null, userId, bot.id, LEGACY_PREBUILT_PERSONALITIES[bot.id]);
+      }
+    })();
   }
   list(userId: number): BotDefinition[] {
     this.seed(userId);
