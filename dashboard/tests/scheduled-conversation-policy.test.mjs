@@ -66,3 +66,12 @@ test("the private decision is required and stripped before publication", () => {
     visibleContent: "No marker",
   });
 });
+
+test("check-ins (orgo-teammates) speak only when something is worth saying", () => {
+  assert.equal(inferScheduledChatConversationPolicy("[check-in] my exams and the inbox"), "open_when_objective_met");
+  assert.equal(inferScheduledChatConversationPolicy("check in on the build logs"), "always_open", "only the [check-in] form is a proactive check-in");
+  const prompt = scheduledObjectiveEvaluationPrompt("[check-in] my exams and the inbox");
+  assert.match(prompt, /proactive check-in[\s\S]*calendar[\s\S]*focus on: my exams and the inbox[\s\S]*ONE short message/);
+  assert.ok(prompt.includes(SCHEDULE_OBJECTIVE_PENDING_MARKER), "quiet check-ins stay pending, so no chat is left behind");
+  assert.ok(!prompt.includes("[check-in]"), "the marker itself never reaches the model");
+});

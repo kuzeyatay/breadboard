@@ -46,6 +46,7 @@ function rosterSection(bots: readonly BotDefinition[], respondent: BotDefinition
       // orgo-teammates / rakazo: every bot has the computer, apps and routines; here they are Bread's own.
       "Every bot works with Bread's full toolset: the computer and browser, the user's connected apps, files and the web. A personality changes the voice, never the tools.",
       `A routine belongs to a bot when its prompt starts with that bot's handle: schedule_create with a prompt like "@${botHandle(respondent?.name ?? bots[0]?.name ?? "sage")} …" runs as that bot every time, and a prompt with no handle runs as Bread.`,
+      'When the user wants proactive check-ins, schedule_create one routine at their chosen times whose prompt starts "[check-in]" (optionally followed by what to focus on). Bread then looks at what is going on and messages them only when something is worth it, and never while they are chatting.',
     );
   }
   return lines.join("\n");

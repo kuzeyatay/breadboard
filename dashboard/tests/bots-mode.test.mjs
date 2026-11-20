@@ -265,6 +265,7 @@ test("a routine whose prompt names a bot runs as that bot (orgo/rakazo routines)
     "../hermes/session-service.ts": { authorizeGardenAccess: () => null, resolveConversationRuntime: async () => ({}) },
     "./types.ts": await import("../src/lib/schedules/types.ts"),
     "./conversation-policy.ts": await import("../src/lib/schedules/conversation-policy.ts"),
+    "../db.ts": { __esModule: true, default: db },
   });
   const { botTurnPersona } = await import("../src/lib/bots/team.ts");
   const job = { id: 41, user_id: 1, surface: "dashboard_terminal", garden_slug: null, prompt: "@nova summarize this week's AI research news",
@@ -279,6 +280,16 @@ test("a routine whose prompt names a bot runs as that bot (orgo/rakazo routines)
   assert.match(persona, /computer and browser, the user's connected apps/, "bots know they share Bread's toolset");
   const plain = botTurnPersona({ userId: 1, conversationPublicId: turn.conversation.public_id, text: "summarize the news" });
   assert.doesNotMatch(plain, /your name is "Nova"/, "a routine with no handle runs as Bread");
+
+  // orgo-teammates check-ins never interrupt: a message in the last 20 minutes skips the run.
+  const checkin = { ...job, id: 42, prompt: "[check-in] my exams", conversation_policy: "open_when_objective_met" };
+  conversations.reserveConversationTurn({ conversation: turn.conversation, clientMessageId: "active-now", surface: "dashboard_terminal", content: "hi" });
+  assert.deepEqual(await runner.runScheduledChatJob(checkin), { status: "ok", conversationId: null, objectiveDecision: "pending" });
+  assert.equal(sent.length, 1, "no check-in turn while the user is chatting");
+  db.prepare("UPDATE conversation_messages SET created_at = datetime('now', '-1 hour') WHERE role = 'user'").run();
+  await runner.runScheduledChatJob(checkin);
+  assert.equal(sent.length, 2, "a quiet user gets the check-in");
+  assert.match(sent[1].text, /proactive check-in[\s\S]*my exams/);
 });
 
 test("Capabilities Bots editor, saved avatars, chat navigation and lifecycle work in Chromium", { timeout: 120_000 }, async () => {

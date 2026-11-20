@@ -36,6 +36,7 @@ export function inferScheduledChatConversationPolicy(
 ): ScheduledChatConversationPolicy {
   const clean = prompt.replace(/\s+/g, " ").trim();
   if (
+    isCheckinPrompt(clean) ||
     NOTIFY_ON_CONDITION.test(clean) ||
     LET_ME_KNOW_ON_CONDITION.test(clean) ||
     CONDITION_THEN_NOTIFY.test(clean) ||
@@ -59,7 +60,24 @@ export const SCHEDULE_OBJECTIVE_PENDING_MARKER =
   "<!-- breadboard-schedule-objective:pending -->";
 
 /** Add the private decision contract after the user's prompt. */
+/**
+ * Proactive check-ins, ported from orgo-teammates (server/src/proactive.ts): at
+ * the times the user picked, Bread looks at what is going on and sends ONE short
+ * message only when something is genuinely worth it; otherwise nothing appears.
+ * They ride the open-when-met path, so a quiet check-in leaves no chat behind.
+ */
+export const CHECKIN_PREFIX = "[check-in]";
+export function isCheckinPrompt(prompt: string): boolean {
+  return prompt.trimStart().toLowerCase().startsWith(CHECKIN_PREFIX);
+}
+function checkinInstruction(prompt: string): string {
+  const focus = prompt.trimStart().slice(CHECKIN_PREFIX.length).trim();
+  return `Scheduled proactive check-in. Look at what is going on: today's calendar, the inbox and messages, permission requests waiting on the user, scheduled routines that ran or failed since the last check-in, your memories, and the other bots' recent work.${focus ? ` The user asked these check-ins to focus on: ${focus}` : ""}
+If there is something genuinely useful to tell the user (a decision they owe, something that changed, today's schedule, a finished result), write ONE short message and mark it met. If not, mark it pending and nothing is shown.`;
+}
+
 export function scheduledObjectiveEvaluationPrompt(prompt: string): string {
+  if (isCheckinPrompt(prompt)) prompt = checkinInstruction(prompt);
   return `${prompt.trim()}
 
 [Background schedule decision]

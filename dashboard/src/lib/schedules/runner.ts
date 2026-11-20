@@ -36,7 +36,9 @@ import {
 } from "../hermes/session-service.ts";
 import type { ScheduledChatJobRow } from "./store.ts";
 import { scheduledReminderText } from "./types.ts";
+import db from "../db.ts";
 import {
+  isCheckinPrompt,
   readScheduledObjectiveDecision,
   scheduledChatOpensOnlyWhenMet,
   scheduledObjectiveEvaluationPrompt,
@@ -233,6 +235,11 @@ export async function runScheduledChatJob(
     // Fail before creating anything when the runtime is off, so a stopped
     // runtime leaves a recorded failure instead of an empty chat.
     requireEnabled();
+    // orgo-teammates: a check-in never interrupts a conversation in progress.
+    if (isCheckinPrompt(job.prompt) && userActiveWithin(job.user_id, 20)) {
+      trackScheduledChatFinished({ userId: job.user_id, runId, outcome: "completed", summary: "Skipped: you were chatting." });
+      return { status: "ok", conversationId: null, objectiveDecision: "pending" };
+    }
 
     // Re-authorize on every run: a garden can be deleted or unshared between the
     // moment a schedule is created and the moment it fires.
@@ -370,4 +377,9 @@ export async function runScheduledChatJob(
     });
     return { status: "failed", conversationId, objectiveDecision: null, error };
   }
+}
+
+function userActiveWithin(userId: number, minutes: number): boolean {
+  return Boolean(db.prepare(`SELECT 1 FROM conversation_messages m JOIN conversations c ON c.id = m.conversation_id
+    WHERE c.user_id = ? AND m.role = 'user' AND m.created_at > datetime('now', ?) LIMIT 1`).get(userId, `-${minutes} minutes`));
 }
