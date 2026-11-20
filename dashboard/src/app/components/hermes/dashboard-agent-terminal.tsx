@@ -340,6 +340,8 @@ import { useOpenCodeAgent } from "./use-opencode-agent";
 import { taskFromOpenCodeCommand } from "@/lib/opencode/identity.ts";
 import { useCodexAgent } from "./use-codex-agent";
 import { useClaudeCodeAgent } from "./use-claude-code-agent";
+import { usePaperOrchestraAgent } from "./use-paper-orchestra-agent";
+import { taskFromPaperOrchestraCommand } from "@/lib/paper-orchestra/identity.ts";
 import { taskFromClaudeCodeCommand } from "@/lib/claude-code-agent/identity.ts";
 import { taskFromCodexCommand } from "@/lib/codex/identity.ts";
 import { useRufloAgent } from "./use-ruflo-agent";
@@ -395,6 +397,8 @@ interface Props {
   webSelection?: { requestId: string; reference: ChatTextSelectionReference; conversationId?: string } | null;
   /** The website currently displayed beside the browser Terminal. */
   viewingWebsite?: string | null;
+  /** New chats start in this Garden workspace, overriding the saved choice (Bread in VS Code). */
+  initialWorkspace?: TerminalWorkspace | null;
   privateBrowser?: boolean;
 }
 
@@ -411,6 +415,8 @@ interface RuntimeHistorySession {
   scheduled: boolean;
   /** Opened unattended by a hook. */
   hooked: boolean;
+  /** A plain terminal chat that can still be moved into a garden workspace. */
+  movable: boolean;
 }
 
 /**
@@ -436,7 +442,8 @@ function sameHistoryList(
       x.pinned !== y.pinned ||
       x.highlight !== y.highlight ||
       x.scheduled !== y.scheduled ||
-      x.hooked !== y.hooked
+      x.hooked !== y.hooked ||
+      x.movable !== y.movable
     ) {
       return false;
     }
@@ -722,6 +729,7 @@ export default function DashboardAgentTerminal({
   webSelection = null,
   privateBrowser = false,
   viewingWebsite = null,
+  initialWorkspace = null,
 }: Props) {
   const [health, setHealth] = useState<HealthState>({
     status: "checking",
@@ -822,6 +830,7 @@ export default function DashboardAgentTerminal({
         webSelection={webSelection}
         privateBrowser={privateBrowser}
         viewingWebsite={viewingWebsite}
+        initialWorkspace={initialWorkspace}
         runtimeUnavailable={health.status === "unavailable"}
         onRefreshRuntime={refreshRuntimeHealth}
         onConversationEngaged={markRuntimeSurfaceEngaged}
@@ -852,6 +861,7 @@ export default function DashboardAgentTerminal({
         webSelection={webSelection}
         privateBrowser={privateBrowser}
         viewingWebsite={viewingWebsite}
+        initialWorkspace={initialWorkspace}
         runtimeUnavailable={health.status === "unavailable" || health.status === "disabled"}
         onRefreshRuntime={refreshRuntimeHealth}
         onConversationEngaged={markRuntimeSurfaceEngaged}
@@ -874,6 +884,7 @@ export default function DashboardAgentTerminal({
         webSelection={webSelection}
         privateBrowser={privateBrowser}
         viewingWebsite={viewingWebsite}
+        initialWorkspace={initialWorkspace}
         runtimeUnavailable
         onRefreshRuntime={refreshRuntimeHealth}
         onConversationEngaged={markRuntimeSurfaceEngaged}
@@ -912,6 +923,7 @@ function RuntimeTerminal({
   webSelection = null,
   privateBrowser = false,
   viewingWebsite = null,
+  initialWorkspace = null,
   runtimeUnavailable = false,
   onRefreshRuntime,
   onConversationEngaged,
@@ -1430,15 +1442,16 @@ function RuntimeTerminal({
   // turning it on or off always means starting a different chat rather than
   // changing the one on screen — the same bargain ChatGPT's toggle makes.
   const [temporaryChat, setTemporaryChat] = useState(false);
-  const [newChatWorkspace, setNewChatWorkspace] = useState<TerminalWorkspace | null>(null);
+  const [newChatWorkspace, setNewChatWorkspace] = useState<TerminalWorkspace | null>(initialWorkspace);
   useEffect(() => {
+    if (initialWorkspace) return;
     try {
       const stored = JSON.parse(window.localStorage.getItem("breadboard:terminal-new-chat-workspace") ?? "null");
       if (stored && typeof stored.slug === "string" && typeof stored.name === "string") {
         setNewChatWorkspace(stored);
       }
     } catch { /* A missing preference leaves new chats unscoped. */ }
-  }, []);
+  }, [initialWorkspace]);
   // What a blank chat says, and the four openers under it. Both are drawn from
   // pools that step forward on the hour and narrow to what the reader has been
   // doing, so this is the only thing the empty state needs from up here.
@@ -1697,6 +1710,7 @@ function RuntimeTerminal({
   } = codex;
   const ruflo = useRufloAgent(session, null, setAttachmentStatus);
   const claudeCode = useClaudeCodeAgent(session, model, null, setAttachmentStatus);
+  const paperOrchestra = usePaperOrchestraAgent(session, model, null, setAttachmentStatus);
   const {
     clear: clearRuflo,
     launch: launchRufloRun,
@@ -1750,6 +1764,7 @@ function RuntimeTerminal({
     deepResearch.launching ||
     codex.launching ||
     claudeCode.launching ||
+    paperOrchestra.launching ||
     openCode.launching ||
     ruflo.launching;
   const currentChatActive =
@@ -1983,6 +1998,7 @@ function RuntimeTerminal({
                 hooked:
                   typeof item.hookId === "string" &&
                   item.hookId.trim().length > 0,
+                movable: item.surface === "dashboard_terminal",
                 // The server already rejected anything outside the palette.
                 highlight:
                   typeof item.highlight === "string" ? item.highlight : null,
@@ -6801,6 +6817,20 @@ const launchCareerOpsRun = useCallback(
       // A workflow has its own planner; a previously selected specialist must
       // not consume its request or files before it reaches that planner.
       if (!workflowPlanning) {
+      const paperTask = taskFromPaperOrchestraCommand(text);
+      if (paperTask !== null) {
+        if (paperOrchestra.launching) return;
+        if (!paperTask) {
+          setAttachmentStatus("Describe the idea and results the paper should be written from.");
+          return;
+        }
+        const pendingAttachments = chatAttachments;
+        setInput("");
+        setChatAttachments([]);
+        setAttachmentStatus("");
+        void paperOrchestra.launch(paperTask, pendingAttachments);
+        return;
+      }
       const claudeCodeTask = taskFromClaudeCodeCommand(text);
       if (claudeCodeTask !== null) {
         if (claudeCode.launching) return;
@@ -7429,6 +7459,7 @@ if (careerOpsAgent) {
       launchOpenExecutiveRun,
       launchCodexRun,
       claudeCode,
+      paperOrchestra,
       launchOpenCodeRun,
       launchRufloRun,
       launchingBrowserRun,
@@ -7621,6 +7652,9 @@ if (careerOpsAgent) {
         case "claude-code":
           // Like Deep Research: the launcher needs no composer chip.
           await claudeCode.launch(request.brief);
+          return;
+        case "paper-orchestra":
+          await paperOrchestra.launch(request.brief);
           return;
         case "codex": {
           const selected = codex.agent ?? (await selectCodex());
@@ -8688,6 +8722,34 @@ if (careerOpsAgent) {
   }
 
   // Archive optimistically while keeping the selected transcript and its work.
+  async function moveHistorySession(item: TerminalSidebarChat, garden: { slug: string; name: string }) {
+    const failure = "This chat could not be moved to the workspace.";
+    setHistoryError(null);
+    historyEpoch.current += 1;
+    try {
+      const response = await fetch(`/api/hermes/sessions/${encodeURIComponent(item.id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ moveToGarden: garden.slug }),
+      });
+      if (!response.ok) throw new Error(failure);
+      // Same label the server now derives, so the row reads right before the next poll.
+      setHistory((current) =>
+        current.map((entry) =>
+          entry.id === item.id
+            ? { ...entry, titlePrefix: `${garden.name}: Workspace`, movable: false }
+            : entry,
+        ),
+      );
+    } catch {
+      setHistoryError(failure);
+    } finally {
+      historyEpoch.current += 1;
+      invalidateHermesSessionSummaries("dashboard_terminal");
+      notifyHermesSessionsChanged("garden_chat");
+    }
+  }
+
   async function archiveHistorySession(item: TerminalSidebarChat) {
     if (archivingChatIds.current.has(item.id)) return;
     archivingChatIds.current.add(item.id);
@@ -8821,6 +8883,7 @@ if (careerOpsAgent) {
         pinned: item.pinned,
         scheduled: item.scheduled,
         hooked: item.hooked,
+        movable: item.movable,
         highlight: item.highlight,
         unread: unreadChats.has(item.id),
       })),
@@ -9581,6 +9644,7 @@ if (careerOpsAgent) {
               }
               onDeleteChat={(chat) => void deleteHistorySession(chat)}
               onArchiveChat={(chat) => void archiveHistorySession(chat)}
+              onMoveChat={(chat, garden) => void moveHistorySession(chat, garden)}
               onDeleteChats={(selected) => void deleteHistorySessions(selected)}
               onHighlightChat={(chat, highlight) =>
                 void patchHistorySession(

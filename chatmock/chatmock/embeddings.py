@@ -173,7 +173,10 @@ def embed_local(model: str, texts: List[str]) -> Tuple[List[List[float]], str, i
     name = resolve_local_name(model) or DEFAULT_LOCAL_MODEL
     engine = _load_local(name)
     try:
-        vectors = [[float(value) for value in vector] for vector in engine.embed(texts)]
+        # batch_size=8: ONNX Runtime keeps its memory arena at the largest batch
+        # it has seen. A 32-text request held ~630 MB in one batch versus ~330 MB
+        # in eights, at the same ~30 chunks/s on the CPU (measured 2026-11-20).
+        vectors = [[float(value) for value in vector] for vector in engine.embed(texts, batch_size=8)]
     except Exception as exc:
         raise EmbeddingError(500, f"Local embedding failed: {exc}") from exc
     if len(vectors) != len(texts):

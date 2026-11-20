@@ -3,10 +3,8 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   inspectRuntimeJob,
-  readSupervisedServiceSnapshots,
   type RuntimeJobAuthority,
   type RuntimeJobSnapshot,
-  type SupervisedServiceId,
 } from "../supervisor-control.ts";
 import {
   ManagedSetupExecutionError,
@@ -21,35 +19,43 @@ import { runtimeV2PayloadRoot } from "../runtime-paths.ts";
  * downloads it here on request through the Runtime's managed-setup job, pinned
  * to the same versions development staging uses
  * (dashboard/scripts/runtime-v2-managed-setup-executor.mjs).
+ *
+ * "Installed" is the file managed setup writes last (a venv's ready marker, a
+ * download's final file). The Runtime's service state cannot answer it: no
+ * service is ever reported installation-unavailable, so every row read as
+ * installed.
  */
 export const OPTIONAL_COMPONENTS = Object.freeze([
   {
     id: "vlm-ocr",
     name: "Local OCR model",
     detail: "HunyuanOCR weights behind “Parse using VLM”. 1.3 GB download.",
+    probe: "runtime-v2/toolchains/vlm-ocr-models/mmproj-HunyuanOCR-Q8_0.gguf",
   },
   {
     id: "colpali",
     name: "Visual document search",
     detail: "ColPali Python environment with PyTorch. About 1.4 GB.",
+    probe: "runtime-v2/services/colpali/.venv/.breadboard-colpali-ready",
   },
   {
     id: "humanizer",
     name: "Natural rewriting",
     detail: "Humanizer Python environment with PyTorch. About 1.3 GB.",
+    probe: "runtime-v2/services/humanizer/.venv/.breadboard-humanizer-ready",
   },
   {
     id: "cad",
     name: "Parametric CAD",
     detail: "CadQuery Python environment. About 700 MB.",
+    probe: "runtime-v2/services/cad/.venv/.breadboard-cad-ready",
   },
   {
     id: "voicebox",
     name: "Voicebox speech server",
     detail: "Local text-to-speech server. 675 MB download.",
+    probe: "runtime-v2/toolchains/voicebox/voicebox-server.exe",
   },
-  // The rest are not supervised services: their state is whether the file
-  // managed setup leaves behind exists under the payload root.
   {
     id: "codex",
     name: "Codex coding agent",
@@ -83,8 +89,12 @@ export interface OptionalComponentState {
   id: OptionalComponentId;
   name: string;
   detail: string;
-  /** null when the Runtime is not reachable, so nothing can be claimed. */
-  installed: boolean | null;
+  installed: boolean;
+}
+
+/** Whether managed setup has finished installing this component. */
+export function optionalComponentInstalled(id: OptionalComponentId): boolean {
+  return probeInstalled(OPTIONAL_COMPONENTS.find((component) => component.id === id)!.probe);
 }
 
 function probeInstalled(probe: string): boolean {
@@ -98,20 +108,12 @@ function probeInstalled(probe: string): boolean {
 }
 
 export async function readOptionalComponentStates(): Promise<OptionalComponentState[]> {
-  const supervised = OPTIONAL_COMPONENTS.filter((component) => !("probe" in component));
-  const ids = supervised.map((component) => component.id as SupervisedServiceId);
-  const snapshots = await readSupervisedServiceSnapshots(ids).catch(() => null);
-  const states = new Map(snapshots?.map((snapshot) => [snapshot.id, snapshot.state]) ?? []);
-  return OPTIONAL_COMPONENTS.map((component) => {
-    let installed: boolean | null;
-    if ("probe" in component) {
-      installed = probeInstalled(component.probe);
-    } else {
-      const state = states.get(component.id as SupervisedServiceId);
-      installed = state === undefined ? null : state !== "installation-unavailable";
-    }
-    return { id: component.id, name: component.name, detail: component.detail, installed };
-  });
+  return OPTIONAL_COMPONENTS.map((component) => ({
+    id: component.id,
+    name: component.name,
+    detail: component.detail,
+    installed: probeInstalled(component.probe),
+  }));
 }
 
 function authority(userId: number): RuntimeJobAuthority {

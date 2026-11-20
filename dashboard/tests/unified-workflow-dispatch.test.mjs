@@ -59,7 +59,7 @@ function terminalDispatch(workflowSelection, workflowCompletedWork) {
 }
 
 test("Terminal grants workflow delegation and persists exactly its scope for recovery", () => {
-  const selection = parseUnifiedWorkflowCommand("/workflows:research Find evidence").selection;
+  const selection = parseUnifiedWorkflowCommand("/master-agent:research Find evidence").selection;
   const selected = terminalDispatch(selection);
   assert.equal(selected.run.dispatch.tools.agent_launch, true);
   assert.ok(selected.decision.allowedTools.includes("agent_launch"));
@@ -75,7 +75,7 @@ test("Terminal grants workflow delegation and persists exactly its scope for rec
 class FixtureApiError extends Error {
   constructor(status, code, message) { super(message); this.status = status; this.code = code; }
 }
-async function launch({ workflow = "/workflows:research", agent = "get-doc", allowed = true, userId = 7, surface = "dashboard_terminal", forgedIds = [], completedWork = [] } = {}) {
+async function launch({ workflow = "/master-agent:research", agent = "get-doc", allowed = true, userId = 7, surface = "dashboard_terminal", forgedIds = [], completedWork = [] } = {}) {
   const selection = workflow ? parseUnifiedWorkflowCommand(workflow).selection : undefined;
   selection?.allowedAgentIds.push(...forgedIds);
   const state = { queued: [], reservations: 0 };
@@ -109,7 +109,7 @@ test("the real launch endpoint rejects out-of-workflow agents before queueing", 
   assert.equal(outside.body.code, "agent_launch_workflow_scope");
   assert.equal(outside.reservations, 0);
   assert.equal(outside.queued.length, 0);
-  const differentMode = await launch({ workflow: "/workflows:research:papers", agent: "deep-research" });
+  const differentMode = await launch({ workflow: "/master-agent:research:papers", agent: "deep-research" });
   assert.equal(differentMode.body.code, "agent_launch_workflow_scope");
 });
 
@@ -118,14 +118,14 @@ test("workflow launch keeps per-agent approval, surface and typed-input gates", 
   assert.equal(research.status, 200);
   assert.equal(research.body.data.confirmationRequired, false);
   assert.equal(research.queued[0].originClientMessageId, "origin");
-  const action = await launch({ workflow: "/workflows:work", agent: "career-ops" });
+  const action = await launch({ workflow: "/master-agent:work", agent: "career-ops" });
   assert.equal(action.status, 200);
   assert.equal(action.body.data.confirmationRequired, true);
   assert.equal(action.queued[0].requiresApproval, true);
-  const picker = await launch({ workflow: "/workflows:create", agent: "shorts" });
+  const picker = await launch({ workflow: "/master-agent:create", agent: "shorts" });
   assert.equal(picker.body.code, "agent_launch_not_launchable");
   assert.equal(picker.reservations, 0);
-  const wrongSurface = await launch({ workflow: "/workflows:browse", agent: "agent-tars", surface: "garden_chat" });
+  const wrongSurface = await launch({ workflow: "/master-agent:browse", agent: "agent-tars", surface: "garden_chat" });
   assert.equal(wrongSurface.body.code, "agent_launch_surface_unavailable");
 });
 

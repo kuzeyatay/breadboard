@@ -29,6 +29,8 @@ from .catalog import (
     CHATGPT_PROVIDER_ID,
     KIND_CHATGPT_OAUTH,
     KIND_CHATGPT_WEB,
+    KIND_GEMINI_WEB,
+    WEB_KINDS,
     ProviderSpec,
     iter_provider_specs,
     provider_spec,
@@ -148,7 +150,7 @@ def drives_a_browser(model: str) -> bool:
     of was refused three times while it did.
     """
     try:
-        return resolve_model(model).provider.kind == KIND_CHATGPT_WEB
+        return resolve_model(model).provider.kind in WEB_KINDS
     except Exception:  # noqa: BLE001 - an unresolvable id is not a browser one
         return False
 
@@ -272,7 +274,7 @@ def external_model_ids() -> List[str]:
     person pinned, and whatever the provider itself reports it serves right now
     (see ``discovery``), so a model released after this build still appears.
     """
-    from . import chatgpt_web, discovery
+    from . import chatgpt_web, discovery, gemini_web
 
     ids: List[str] = []
     for spec in iter_provider_specs():
@@ -285,6 +287,8 @@ def external_model_ids() -> List[str]:
         if spec.kind == KIND_CHATGPT_WEB:
             # The signed-in page reported these; there is no endpoint to ask.
             listed = chatgpt_web.cached_model_ids() + configured
+        elif spec.kind == KIND_GEMINI_WEB:
+            listed = gemini_web.cached_model_ids() + configured
         else:
             listed = configured + discovery.discovered_models_for(spec, configured)
         for model in listed:

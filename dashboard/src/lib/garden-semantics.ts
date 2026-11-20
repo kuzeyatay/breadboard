@@ -40,6 +40,16 @@ import { semanticTagsFromText } from './tags.ts';
 
 export const CONCEPT_REGISTRY_REL_PATH = '.breadboard/concept-registry.json';
 export const CLAIM_STORE_REL_PATH = '.breadboard/claims.json';
+
+/**
+ * Page types Garden retrieval reads, for both the reader and the indexer.
+ * `knowledge-topic` (older lessons), `note` and `sprint-page` were missing
+ * until 2026-11-20, which hid every lesson of Signals and Systems, Physics for
+ * EE, Communication 1 and Computer Architecture 2, plus the EM1 sprint pages.
+ */
+export const RETRIEVAL_PAGE_TYPES: ReadonlySet<string> = new Set([
+  'source-document', 'learning-page', 'user-note', 'generated-note', 'knowledge-topic', 'note', 'sprint-page',
+]);
 export const SEMANTIC_MIGRATION_REL_PATH = '.breadboard/semantic-migration.json';
 export const LEARNING_UNIT_CONTRACT_REL_PATH = '.breadboard/learning-unit-contract.json';
 

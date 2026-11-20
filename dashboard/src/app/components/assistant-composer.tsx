@@ -1500,7 +1500,7 @@ export default function AssistantComposer({
     setMenuSearch(null);
     setShowSlashCommands(false);
     if (item.kind === 'skill') setSkillHints(current => [...current.filter(skill => skill.id !== item.id), item]);
-    if (item.token.startsWith('workflows:')) {
+    if (item.token.startsWith('master-agent:')) {
       // Choosing a workflow leaves the specialist chip behind. Otherwise its
       // sticky selection would claim the next request before the planner.
       const selected: Array<[unknown, (() => void) | undefined]> = [

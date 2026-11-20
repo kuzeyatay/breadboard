@@ -9,7 +9,7 @@ import {
   type ClaimRecord,
   type ConceptRegistry,
 } from './semantic-core.ts';
-import { readGardenSemanticArtifacts } from './garden-semantics.ts';
+import { RETRIEVAL_PAGE_TYPES, readGardenSemanticArtifacts } from './garden-semantics.ts';
 
 const DEFAULT_MAX_CHUNKS = 8;
 const DEFAULT_CONTEXT_BUDGET = 18_000;
@@ -600,11 +600,7 @@ export async function indexRetrievalGarden(input: {
     (node) =>
       node.internal !== 'true' &&
       node.draft !== 'true' &&
-      (node.type === 'learning-page' ||
-        node.breadboardType === 'learning_page' ||
-        node.type === 'source-document' ||
-        node.type === 'user-note' ||
-        node.type === 'generated-note'),
+      (RETRIEVAL_PAGE_TYPES.has(node.type) || node.breadboardType === 'learning_page'),
   );
   const chunks = eligibleNodes.flatMap((node) =>
     retrievalChunksForNode({ garden: input.garden, node, registry, claims: claims.claims }),

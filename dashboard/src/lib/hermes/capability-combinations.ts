@@ -32,6 +32,7 @@ import {
 import { TRADINGAGENTS_COMMAND } from "../tradingagents/identity.ts";
 import { CODEX_COMMAND } from "../codex/identity.ts";
 import { CLAUDE_CODE_COMMAND } from "../claude-code-agent/identity.ts";
+import { PAPER_ORCHESTRA_COMMAND } from "../paper-orchestra/identity.ts";
 import { DEEP_RESEARCH_SLASH_COMMAND } from "../deep-research/identity.ts";
 import { DEER_FLOW_COMMAND } from "../deer-flow/identity.ts";
 import { DEEP_TUTOR_COMMAND } from "../deep-tutor/identity.ts";
@@ -291,6 +292,10 @@ export const RUNTIME_AGENT_PROFILES: readonly RuntimeAgentProfile[] = [
   // Claude Code reaches Breadboard's tools through its own MCP server, so
   // nothing is stacked onto the message; images ride along as attachments.
   profile("claude-code", CLAUDE_CODE_COMMAND, "Claude Code", {
+    acceptsAttachments: true,
+  }),
+  // Attached images become the paper's figures.
+  profile("paper-orchestra", PAPER_ORCHESTRA_COMMAND, "PaperOrchestra", {
     acceptsAttachments: true,
   }),
   profile("video-use", VIDEO_USE_COMMAND, "Video Use", {

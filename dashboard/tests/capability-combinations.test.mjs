@@ -31,6 +31,7 @@ const RUN_ROUTES = {
   "music-producer": ["music-producer", "runs"],
   codex: ["codex", "runs"],
   "claude-code": ["claude-code", "runs"],
+  "paper-orchestra": ["paper-orchestra", "runs"],
   opencode: ["opencode", "runs"],
   ruflo: ["ruflo", "runs"],
   "deep-research": ["deep-research", "runs"],
@@ -168,10 +169,11 @@ test("acceptsAttachments matches which run routes actually take files", () => {
   // Meeting Notes is the fifth, and the only one that does not require the
   // attachment: a recording is the usual input, but a run with none falls back
   // to the newest recording on the conversation, which is what lets a model
-  // launch it with nothing but a sentence.
+  // launch it with nothing but a sentence. PaperOrchestra files attached
+  // images as the paper's figures.
   assert.deepEqual(
     attachmentRuntimeAgents().map((agent) => agent.id),
-    ["codex", "opencode", "ruflo", "meeting-notes", "claude-code", "video-use", "legal", "wardrobe", "classroom"],
+    ["codex", "opencode", "ruflo", "meeting-notes", "claude-code", "paper-orchestra", "video-use", "legal", "wardrobe", "classroom"],
   );
 });
 
@@ -265,7 +267,7 @@ test("attachments are allowed only for the agents whose route forwards them", ()
     assert.match(conflict.message, /Remove the 2 attached files/);
     assert.match(
       conflict.message,
-      /Codex, OpenCode, Ruflo, Meeting Notes, Claude Code, Video Use, Legal Agent, Wardrobe, and Classroom/,
+      /Codex, OpenCode, Ruflo, Meeting Notes, Claude Code, PaperOrchestra, Video Use, Legal Agent, Wardrobe, and Classroom/,
     );
   }
 });

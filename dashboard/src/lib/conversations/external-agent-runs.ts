@@ -41,6 +41,7 @@ export const EXTERNAL_AGENT_RUN_KINDS = [
   "classroom",
   "gods_eye",
   "claude_code",
+  "paper_orchestra",
 ] as const;
 
 export type ExternalAgentRunKind = (typeof EXTERNAL_AGENT_RUN_KINDS)[number];
@@ -70,6 +71,7 @@ const EXTERNAL_AGENT_DISPLAY_NAME_BY_KIND = {
   inbox_zero: "Inbox Zero",
   codex: "Codex",
   claude_code: "Claude Code",
+  paper_orchestra: "PaperOrchestra",
   opencode: "OpenCode",
   ruflo: "Ruflo",
   socials_manager: "Socials Manager",
@@ -125,6 +127,7 @@ const EXTERNAL_AGENT_API_SLUG_BY_KIND = {
   inbox_zero: "inbox-zero",
   codex: "codex",
   claude_code: "claude-code",
+  paper_orchestra: "paper-orchestra",
   opencode: "opencode",
   ruflo: "ruflo",
   socials_manager: "socials-manager",
@@ -599,6 +602,11 @@ export type ExternalAgentRun =
       task: string;
     }
   | {
+      kind: "paper_orchestra";
+      runId: string;
+      task: string;
+    }
+  | {
       kind: "codex";
       runId: string;
       task: string;
@@ -904,6 +912,11 @@ export function parseExternalAgentRun(value: unknown): ExternalAgentRun | null {
     return task ? { kind: "claude_code", runId, task } : null;
   }
 
+  if (candidate.kind === "paper_orchestra") {
+    const task = boundedString(candidate.task, MAX_TASK_LENGTH);
+    return task ? { kind: "paper_orchestra", runId, task } : null;
+  }
+
   if (
     candidate.kind === "codex" ||
     candidate.kind === "opencode" ||
@@ -968,6 +981,7 @@ interface ExternalAgentRunFields {
   openCodeRun?: { runId: string } | null;
   codexRun?: { runId: string } | null;
   claudeCodeRun?: { runId: string } | null;
+  paperOrchestraRun?: { runId: string } | null;
   rufloRun?: { runId: string } | null;
 }
 
@@ -1007,6 +1021,7 @@ export const EXTERNAL_AGENT_RUN_FIELD_BY_KIND = {
   inbox_zero: "inboxZeroRun",
   codex: "codexRun",
   claude_code: "claudeCodeRun",
+  paper_orchestra: "paperOrchestraRun",
   opencode: "openCodeRun",
   ruflo: "rufloRun",
   socials_manager: "socialsManagerRun",
@@ -1164,6 +1179,7 @@ export function externalAgentMessageFields(
     repository: string;
   };
   claudeCodeRun?: { runId: string; task: string };
+  paperOrchestraRun?: { runId: string; task: string };
   rufloRun?: {
     runId: string;
     task: string;
@@ -1478,6 +1494,9 @@ export function externalAgentMessageFields(
   }
   if (run.kind === "claude_code") {
     return { claudeCodeRun: { runId: run.runId, task: run.task }, ...outcomeField };
+  }
+  if (run.kind === "paper_orchestra") {
+    return { paperOrchestraRun: { runId: run.runId, task: run.task }, ...outcomeField };
   }
   const repositoryRun = {
     runId: run.runId,

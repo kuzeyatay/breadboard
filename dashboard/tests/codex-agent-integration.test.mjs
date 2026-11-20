@@ -58,7 +58,7 @@ test("Codex runs per task in the connected repository with ChatMock pinned", () 
   assert.match(manager, /model_provider="chatmock"/);
   assert.match(manager, /model_providers\.chatmock\.wire_api="responses"/);
   assert.match(manager, /"--ignore-user-config"/);
-  assert.match(route, /resolveConnectedRepository\(userId, gardenSlug\)/);
+  assert.match(route, /resolveConnectedRepository\(userId, gardenSlug \?\? \(gardenHasRepository\(userId, chatGardenSlug\)/);
   assert.match(route, /executionTarget: "codex"/);
   assert.match(route, /resolveChatmockBaseUrl\(request\)/);
 });

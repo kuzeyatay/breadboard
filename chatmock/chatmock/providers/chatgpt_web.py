@@ -423,6 +423,7 @@ def _bridge_open_tab(
     reset: bool = False,
     lane: str = INTERACTIVE_LANE,
     microphone: bool | None = None,
+    label: str = "ChatGPT",
 ) -> tuple[int, str]:
     """Ask the shell for its ChatGPT tab: ``(cdp port, CDP target id)``.
 
@@ -460,7 +461,7 @@ def _bridge_open_tab(
             if remaining <= 0:
                 _tab_requests.pop(nonce, None)
                 raise ProviderError(
-                    "Breadboard's browser did not answer the request for a ChatGPT tab. "
+                    f"Breadboard's browser did not answer the request for a {label} tab. "
                     "Keep a Breadboard window open and try again.",
                     status_code=503,
                     phase="prepare",
@@ -470,13 +471,14 @@ def _bridge_open_tab(
         answer = _tab_answers.pop(nonce)
     if "error" in answer:
         raise ProviderError(
-            f"Breadboard's browser could not open a ChatGPT tab: {answer['error']}",
+            f"Breadboard's browser could not open a {label} tab: {answer['error']}",
             status_code=503,
             phase="prepare",
             replay_safe=True,
         )
-    with _lifecycle_lock:
-        _lanes_supported = answer.get("lane") == lane
+    if label == "ChatGPT":  # Gemini's lanes say nothing about ChatGPT's
+        with _lifecycle_lock:
+            _lanes_supported = answer.get("lane") == lane
     return int(answer["cdpPort"]), str(answer["targetId"])
 
 

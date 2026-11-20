@@ -84,6 +84,7 @@ const PROVIDER_VENDOR: Readonly<Record<string, string>> = {
   chatgpt: 'openai',
   openai: 'openai',
   openaiweb: 'openai',
+  googleweb: 'google',
   anthropic: 'anthropic',
   google: 'google',
   xai: 'xai',
@@ -178,6 +179,9 @@ const GATEWAY_GROUPS: Readonly<Record<string, string>> = {
  */
 export const CHATGPT_WEB_PROVIDER_ID = 'openaiweb';
 export const CHATGPT_WEB_GROUP_LABEL = 'OpenAI (web)';
+/** gemini.google.com driven the same way; its slugs are the site's modes (`auto`, `pro`). */
+export const GEMINI_WEB_PROVIDER_ID = 'googleweb';
+export const GEMINI_WEB_GROUP_LABEL = 'Google (web)';
 
 /** Whether a model id is served by the chatgpt.com tab. */
 export function isChatgptWebModel(modelId: string): boolean {
@@ -192,6 +196,9 @@ export function assistantModelGroup(
   const provider = slash < 0 ? '' : modelId.slice(0, slash).toLowerCase();
   if (provider === CHATGPT_WEB_PROVIDER_ID) {
     return { id: CHATGPT_WEB_PROVIDER_ID, label: CHATGPT_WEB_GROUP_LABEL };
+  }
+  if (provider === GEMINI_WEB_PROVIDER_ID) {
+    return { id: GEMINI_WEB_PROVIDER_ID, label: GEMINI_WEB_GROUP_LABEL };
   }
   const gateway = provider ? GATEWAY_GROUPS[provider] : undefined;
   if (gateway) return { id: provider, label: gateway };
@@ -297,6 +304,10 @@ export function formatAssistantModelName(modelId: string): string {
   if (isChatgptWebModel(modelId)) {
     const slug = modelId.slice(modelId.indexOf('/') + 1);
     return `${formatChatgptWebModelName(slug)} (web)`;
+  }
+  if (modelId.toLowerCase().startsWith(`${GEMINI_WEB_PROVIDER_ID}/`)) {
+    const mode = modelId.slice(modelId.indexOf('/') + 1).split('-').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+    return `Gemini ${mode} (web)`;
   }
   // Routes may be nested (`openrouter/google/gemini-…`). Every path segment
   // before the last one is routing/vendor metadata already expressed by the

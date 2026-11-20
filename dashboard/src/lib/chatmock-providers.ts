@@ -271,11 +271,14 @@ export interface ChatgptWebSession {
 export type ChatgptWebAction = "login" | "cancel-login" | "logout" | "sync";
 
 const CHATGPT_WEB_ACTION_PATHS: Record<ChatgptWebAction, string> = {
-  login: "/providers/openaiweb/login",
-  "cancel-login": "/providers/openaiweb/login/cancel",
-  logout: "/providers/openaiweb/logout",
-  sync: "/providers/openaiweb/sync",
+  login: "/login",
+  "cancel-login": "/login/cancel",
+  logout: "/logout",
+  sync: "/sync",
 };
+
+/** The browser-driven providers: chatgpt.com ("OpenAI (web)") and gemini.google.com ("Google (web)"). */
+export type WebProviderId = "openaiweb" | "googleweb";
 
 export function isChatgptWebAction(value: unknown): value is ChatgptWebAction {
   return typeof value === "string" && value in CHATGPT_WEB_ACTION_PATHS;
@@ -284,12 +287,13 @@ export function isChatgptWebAction(value: unknown): value is ChatgptWebAction {
 export async function readChatgptWebSession(
   incoming: Request,
   options: { refresh?: boolean } = {},
+  provider: WebProviderId = "openaiweb",
 ): Promise<ChatgptWebSession> {
   const query = options.refresh ? "?refresh=1" : "";
   // A refresh opens the page and asks it who is signed in; give it room.
   return (await request(
     incoming,
-    `/providers/openaiweb/session${query}`,
+    `/providers/${provider}/session${query}`,
     undefined,
     options.refresh ? 90_000 : undefined,
   )) as ChatgptWebSession;
@@ -298,10 +302,11 @@ export async function readChatgptWebSession(
 export async function runChatgptWebAction(
   incoming: Request,
   action: ChatgptWebAction,
+  provider: WebProviderId = "openaiweb",
 ): Promise<ChatgptWebSession> {
   return (await request(
     incoming,
-    CHATGPT_WEB_ACTION_PATHS[action],
+    `/providers/${provider}${CHATGPT_WEB_ACTION_PATHS[action]}`,
     { method: "POST" },
     90_000,
   )) as ChatgptWebSession;

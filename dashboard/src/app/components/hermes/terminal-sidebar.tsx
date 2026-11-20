@@ -19,8 +19,8 @@ import { conversationDisplayTitle } from "@/lib/conversations/origin-label";
 import { useOverflowMarquee } from "../overflow-marquee";
 import { textEraseMs as titleEraseMs, textTypeMs as titleTypeMs } from '@/lib/text-replacement-motion';
 import LinkContextMenu from "../link-context-menu";
-import { Archive, Star } from "lucide-react";
-import TerminalWorkspaceMenu, { type TerminalWorkspacePicker } from "./terminal-workspace-menu";
+import { Archive, FolderInput, Star } from "lucide-react";
+import TerminalWorkspaceMenu, { type TerminalWorkspace, type TerminalWorkspacePicker } from "./terminal-workspace-menu";
 
 export type TerminalPanel = "artifacts" | "documents" | "uploads" | "scheduled" | "hooks" | "starred" | "archived" | "processes";
 
@@ -78,6 +78,8 @@ export interface TerminalSidebarChat {
   highlight: string | null;
   /** Finished while the user was in another chat, and still unread. */
   unread: boolean;
+  /** A terminal chat that can be moved into a garden workspace. */
+  movable?: boolean;
 }
 
 /** What the rail is doing to Recents: nothing, picking chats, or marking them. */
@@ -115,6 +117,8 @@ interface Props {
   onDeleteChats: (chats: TerminalSidebarChat[]) => void;
   /** Mark one chat with a palette color, or clear it with null. */
   onHighlightChat: (chat: TerminalSidebarChat, highlight: string | null) => void;
+  /** Move a terminal chat into a garden workspace; omitted where that makes no sense. */
+  onMoveChat?: (chat: TerminalSidebarChat, garden: TerminalWorkspace) => void;
   /**
    * A control belonging to this surface's Recents, rendered in the section
    * header beside its menu. Garden Chat puts its "View public chats" switch
@@ -459,6 +463,7 @@ interface ChatRowProps {
   onDelete: (chat: TerminalSidebarChat) => void;
   /** One chat's mark, chosen from the row menu's Highlight dialog. */
   onHighlight: (chat: TerminalSidebarChat, highlight: string | null) => void;
+  onMove?: (chat: TerminalSidebarChat, garden: TerminalWorkspace) => void;
 }
 
 /**
@@ -487,7 +492,8 @@ function chatRowPropsEqual(prev: ChatRowProps, next: ChatRowProps): boolean {
     prev.onTogglePin === next.onTogglePin &&
     prev.onArchive === next.onArchive &&
     prev.onDelete === next.onDelete &&
-    prev.onHighlight === next.onHighlight
+    prev.onHighlight === next.onHighlight &&
+    prev.onMove === next.onMove
   );
 }
 
@@ -504,7 +510,8 @@ function sameSidebarChat(a: TerminalSidebarChat, b: TerminalSidebarChat): boolea
     a.hooked === b.hooked &&
     a.pending === b.pending &&
     a.highlight === b.highlight &&
-    a.unread === b.unread
+    a.unread === b.unread &&
+    a.movable === b.movable
   );
 }
 
@@ -526,8 +533,11 @@ const ChatRow = memo(function ChatRow({
   onArchive,
   onDelete,
   onHighlight,
+  onMove,
 }: ChatRowProps) {
   const [renaming, setRenaming] = useState(false);
+  const [moving, setMoving] = useState(false);
+  const closeMoveDialog = useCallback(() => setMoving(false), []);
   // The Highlight dialog takes the menu's place: the menu closes as it opens,
   // and it sits where the menu sat so the eye does not have to travel.
   const [highlighting, setHighlighting] = useState(false);
@@ -811,6 +821,14 @@ const ChatRow = memo(function ChatRow({
             onCloseMenu();
             setHighlighting(true);
           }}
+          onMove={
+            onMove && chat.movable
+              ? () => {
+                  onCloseMenu();
+                  setMoving(true);
+                }
+              : undefined
+          }
           onArchive={() => {
             onCloseMenu();
             onArchive(chat);
@@ -832,6 +850,17 @@ const ChatRow = memo(function ChatRow({
           }}
         />
       ) : null}
+      {moving && onMove ? (
+        <MoveToWorkspaceDialog
+          chat={chat}
+          position={menuPosition}
+          onClose={closeMoveDialog}
+          onPick={(garden) => {
+            setMoving(false);
+            onMove(chat, garden);
+          }}
+        />
+      ) : null}
     </li>
   );
 }, chatRowPropsEqual);
@@ -842,7 +871,7 @@ interface MenuPosition {
 }
 
 const MENU_WIDTH = 176;
-const MENU_HEIGHT = 204;
+const MENU_HEIGHT = 240;
 // Five swatches, a heading and the eraser row, so it clamps against its own
 // height rather than the shorter menu's.
 const HIGHLIGHT_DIALOG_HEIGHT = 244;
@@ -890,6 +919,7 @@ function RowMenu({
   onRename,
   onTogglePin,
   onHighlight,
+  onMove,
   onArchive,
   onDelete,
 }: {
@@ -899,6 +929,7 @@ function RowMenu({
   onRename: () => void;
   onTogglePin: () => void;
   onHighlight: () => void;
+  onMove?: () => void;
   onArchive: () => void;
   onDelete: () => void;
 }) {
@@ -942,6 +973,17 @@ function RowMenu({
         <HighlighterIcon className="h-4 w-4 text-[var(--ink-muted)]" />
         Highlight chat
       </button>
+      {onMove ? (
+        <button
+          type="button"
+          role="menuitem"
+          onClick={onMove}
+          className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-[13px] text-[var(--ink)] transition hover:bg-[var(--paper-surface)]"
+        >
+          <FolderInput className="h-4 w-4 text-[var(--ink-muted)]" strokeWidth={1.7} aria-hidden />
+          Move to workspace
+        </button>
+      ) : null}
       <button
         type="button"
         role="menuitem"
@@ -962,6 +1004,82 @@ function RowMenu({
         </svg>
         Delete
       </button>
+    </div>
+  );
+}
+
+/** Pick the garden a terminal chat moves into. Sits where the row menu sat. */
+function MoveToWorkspaceDialog({
+  chat,
+  position,
+  onClose,
+  onPick,
+}: {
+  chat: TerminalSidebarChat;
+  position: MenuPosition;
+  onClose: () => void;
+  onPick: (garden: TerminalWorkspace) => void;
+}) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDismissOnOutside(dialogRef, onClose);
+  const [gardens, setGardens] = useState<TerminalWorkspace[] | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch("/api/clusters", { signal: controller.signal, cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) throw new Error();
+        const body = await response.json();
+        const list = (Array.isArray(body.clusters) ? body.clusters : []) as TerminalWorkspace[];
+        setGardens(
+          list
+            .filter((item) => item && typeof item.slug === "string" && typeof item.name === "string")
+            .sort((a, b) => a.name.localeCompare(b.name)),
+        );
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setFailed(true);
+      });
+    return () => controller.abort();
+  }, []);
+  const height = 280;
+  const top =
+    typeof window === "undefined"
+      ? position.top
+      : Math.max(8, Math.min(position.top, window.innerHeight - height - 8));
+
+  return (
+    <div
+      ref={dialogRef}
+      role="dialog"
+      aria-label={`Move ${chat.title} to a workspace`}
+      style={{ top, left: position.left, maxHeight: height }}
+      className="fixed z-[70] flex w-52 flex-col overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--paper-raised)] py-1 shadow-[0_10px_26px_rgba(0,0,0,0.18)]"
+    >
+      <div className="flex items-center gap-2 px-3 pb-1 pt-1.5 text-[12px] font-medium text-[var(--ink-muted)]">
+        <FolderInput className="h-3.5 w-3.5" strokeWidth={1.7} aria-hidden />
+        Move to workspace
+      </div>
+      <div className="min-h-0 overflow-y-auto">
+        {failed ? (
+          <p className="px-3 py-2 text-[13px] text-[#9a4438]">Workspaces could not be loaded.</p>
+        ) : gardens === null ? (
+          <p className="px-3 py-2 text-[13px] text-[var(--ink-muted)]">Loading…</p>
+        ) : gardens.length === 0 ? (
+          <p className="px-3 py-2 text-[13px] text-[var(--ink-muted)]">No gardens yet.</p>
+        ) : (
+          gardens.map((garden) => (
+            <button
+              key={garden.slug}
+              type="button"
+              onClick={() => onPick(garden)}
+              className="flex w-full items-center px-3 py-1.5 text-left text-[13px] text-[var(--ink)] transition hover:bg-[var(--paper-surface)]"
+            >
+              <span className="truncate">{garden.name}</span>
+            </button>
+          ))
+        )}
+      </div>
     </div>
   );
 }
@@ -1263,6 +1381,7 @@ export default function TerminalSidebar({
   onDeleteChat,
   onDeleteChats,
   onHighlightChat,
+  onMoveChat,
   recentsAction,
   surface = "paper",
   collapsed,
@@ -1399,6 +1518,9 @@ export default function TerminalSidebar({
   const highlightChat = useEvent(
     (chat: TerminalSidebarChat, highlight: string | null) => onHighlightChat(chat, highlight),
   );
+  const moveChat = useEvent((chat: TerminalSidebarChat, garden: TerminalWorkspace) =>
+    onMoveChat?.(chat, garden),
+  );
   const openMenu = useCallback(
     (chat: TerminalSidebarChat) => setMenuChatId(chat.id),
     [],
@@ -1431,6 +1553,7 @@ export default function TerminalSidebar({
       onArchive={archiveChat}
       onDelete={deleteChat}
       onHighlight={highlightChat}
+      onMove={onMoveChat ? moveChat : undefined}
     />
   );
 

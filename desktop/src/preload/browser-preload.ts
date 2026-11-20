@@ -85,7 +85,7 @@ function installScriptPopupPolicy() {
  * sends all three to Windows Hello, so Google pages pop a passkey modal (for
  * whichever passkey Windows holds) on load. Answer them the way Chrome does
  * with nothing to offer. Google also opens a plain modal request on page load;
- * those need a click first. Explicit passkey buttons keep working.
+ * those need a click first (Google hosts only). Explicit passkey buttons keep working.
  * ponytail: main frame only; subframes would need nodeIntegrationInSubFrames. */
 function installPasskeyAutofillGuard() {
   const credential = window.PublicKeyCredential;
@@ -99,8 +99,11 @@ function installPasskeyAutofillGuard() {
   CredentialsContainer.prototype.get = function get(options?: CredentialRequestOptions) {
     const mediation = options?.mediation as string | undefined;
     if (mediation === "immediate") return declined();
-    // Like Safari: a modal passkey prompt needs a click, not a page load.
-    if (mediation !== "conditional") return options?.publicKey && !navigator.userActivation.isActive ? declined() : nativeGet.call(this, options);
+    // Like Safari: a modal passkey prompt needs a click, not a page load. Google
+    // only: Microsoft's "Face, fingerprint, PIN" option navigates first and asks
+    // on the next page's load, so a global click rule broke it.
+    const google = /(^|\.)google\.com$/.test(location.hostname);
+    if (mediation !== "conditional") return google && options?.publicKey && !navigator.userActivation.isActive ? declined() : nativeGet.call(this, options);
     // Never shown, so it settles only when the page gives up on it.
     return new Promise<Credential | null>((_resolve, reject) => {
       const signal = options?.signal;

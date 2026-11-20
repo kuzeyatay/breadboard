@@ -880,8 +880,7 @@ export class TabManager {
       const bounds = tab.view?.getBounds() ?? { x: 0, y: 0, width, height };
       const top = Math.min(bounds.y + bounds.height - 1, Math.max(BREADBOARD_TITLE_BAR.height,
         bounds.y + Math.ceil(this.codeDock.contentTop(tab.contents.id) * tab.contents.getZoomFactor())));
-      const right = Math.ceil(this.codeDock.contentRight(tab.contents.id) * tab.contents.getZoomFactor());
-      this.codeDock.sync(tab.contents.id, host.window, { ...bounds, y: top, width: Math.max(1, bounds.width - right), height: Math.max(1, bounds.height - (top - bounds.y)) },
+      this.codeDock.sync(tab.contents.id, host.window, { ...bounds, y: top, height: Math.max(1, bounds.height - (top - bounds.y)) },
         (visible === tab || members.includes(tab)) && !host.tabDragPreview && !host.window.isMinimized() && host.window.isVisible(), host.activeId === tab.id);
     }
   }
@@ -4886,7 +4885,9 @@ export class TabManager {
     });
     // Adopted popup contents already exist; a session change alone cannot update them.
     view.webContents.setUserAgent(userAgent);
-    attachGoogleSignInHandoff(view.webContents, browserSession, message => this.log(message));
+    // No Google sign-in hand-off here: an ordinary tab that lands on a Google sign-in page
+    // stays in the tab (2026-11-20: opening gemini.google.com popped up Edge). Only the
+    // provider pages below, where signing in is the point, hand off to Edge/Chrome.
     view.setBackgroundColor(browserPageBackgroundColor(this.options.theme()));
     // Background automation still needs a real viewport for layout and input.
     // Size the unattached view without putting it in front of the user's page.
@@ -5117,7 +5118,7 @@ export class TabManager {
     view.setBackgroundColor(browserPageBackgroundColor(this.options.theme()));
     const window = new BrowserWindow({
       ...CHATGPT_WEB_PAGE_SIZE,
-      title: "Sign in to ChatGPT",
+      title: lane.startsWith("gemini") ? "Sign in to Google" : "Sign in to ChatGPT",
       show: false,
       skipTaskbar: true,
       autoHideMenuBar: true,

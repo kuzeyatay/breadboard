@@ -10,6 +10,7 @@ import {
 import {
   deleteConversation,
   getConversationForUser,
+  moveConversationToGarden,
   presentConversation,
   renameConversation,
   setConversationHighlight,
@@ -19,6 +20,7 @@ import {
 import { HERMES_SURFACES, type HermesSurface } from "@/lib/hermes/config.ts";
 import { presentHermesSessionDetail } from "@/lib/hermes/session-presentation.ts";
 import { isChatHighlight } from "@/lib/conversations/highlights.ts";
+import { authorizeGardenAccess } from "@/lib/hermes/session-service.ts";
 import {
   deleteRuntimeSession,
   listRuntimeSessionsForConversation,
@@ -113,6 +115,14 @@ export async function PATCH(
         );
       }
       conversation = setConversationHighlight(conversation, body.highlight);
+    }
+
+    if (body.moveToGarden !== undefined) {
+      if (typeof body.moveToGarden !== "string" || !body.moveToGarden.trim()) {
+        throw new ApiError(400, "invalid_garden", "Pick a garden to move the chat to.");
+      }
+      const garden = authorizeGardenAccess(userId, body.moveToGarden.trim());
+      conversation = moveConversationToGarden(conversation, garden.clusterId);
     }
 
     return NextResponse.json({ session: presentConversation(conversation) });

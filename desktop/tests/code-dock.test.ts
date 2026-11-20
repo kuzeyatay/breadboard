@@ -19,8 +19,6 @@ test("only the dashboard's exact Code route can invoke docking", () => {
   assert.equal(isCodeDockAction({ type: "layout", top: 69.5 }), true);
   for (const top of [-1, 513, NaN, Infinity, "69"]) assert.equal(isCodeDockAction({ type: "layout", top }), false);
   assert.equal(isCodeDockAction({ type: "layout", top: 69, executable: "other.exe" }), false);
-  assert.equal(isCodeDockAction({ type: "layout", top: 69, right: 420 }), true);
-  for (const right of [-1, 4097, NaN, "420"]) assert.equal(isCodeDockAction({ type: "layout", top: 69, right }), false);
 });
 
 test("configured bulk storage holds managed payloads while metadata stays with active state", async t => {

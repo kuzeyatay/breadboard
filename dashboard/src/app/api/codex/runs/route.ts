@@ -3,6 +3,7 @@ import { requireUserId, RouteError } from "@/lib/server-auth.ts";
 import { currentSwarmInvocation } from "@/lib/swarm/invocation.ts";
 import { resolveChatmockBaseUrl } from "@/lib/chatmock-server.ts";
 import { resolveConnectedRepository } from "@/lib/opencode/repository.ts";
+import { gardenHasRepository } from "@/lib/code-index/create-repository.ts";
 import {
   graftEnabledForGarden,
   prepareGraftIndex,
@@ -87,13 +88,20 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: false, error: "invalid_client_message_id" }, { status: 400 });
     }
 
-    const repository = resolveConnectedRepository(userId, gardenSlug);
     let conversation: ConversationRow | null = null;
     if (conversationId) {
       conversation = getConversationForUser(conversationId, userId);
     } else if (hasChatSessionId) {
       conversation = ensureConversationForLegacyChatSession(chatSessionId, userId);
     }
+    // Terminal launches name no Garden. A chat tied to a Garden (a workspace
+    // chat) runs Codex in that Garden's repository, the one Bread checked
+    // before handing the work over, not whichever repository is newest.
+    const chatGardenSlug = gardenSlug || conversation?.default_garden_id == null
+      ? null
+      : (db.prepare("SELECT slug FROM clusters WHERE id = ? AND user_id = ?")
+          .get(conversation.default_garden_id, userId) as { slug: string } | undefined)?.slug ?? null;
+    const repository = resolveConnectedRepository(userId, gardenSlug ?? (gardenHasRepository(userId, chatGardenSlug) ? chatGardenSlug : null));
     if (conversation?.surface === "quartz_ai") {
       throw new ApiError(
         400,

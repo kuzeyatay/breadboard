@@ -29,6 +29,7 @@
 const INTERNAL_ROUTE_IDS: ReadonlyArray<[string, string]> = [
   ["cliproxy", "your subscription"],
   ["openaiweb", "chatgpt.com"],
+  ["googleweb", "gemini.google.com"],
   ["chatmock", "the model gateway"],
   ["breadboard", "the model gateway"],
 ];

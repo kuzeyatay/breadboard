@@ -174,14 +174,14 @@ async function dispatch(payload, { title = 'New chat', orderIndex = 0, commandRe
 }
 
 test("a selected workflow survives Garden dispatch and recovery without broader agent privileges", async () => {
-  const command = "/workflows:research Find reliable evidence";
+  const command = "/master-agent:research Find reliable evidence";
   const selected = parseUnifiedWorkflowCommand(command);
   const payload = request(false);
   payload.messages = [{ role: "user", content: command }];
   const commandResolution = {
     userText: selected.textWithoutWorkflow,
     text: `${renderUnifiedWorkflowGuidance(selected.selection, "garden_chat")}\n\n${selected.textWithoutWorkflow}`,
-    invocations: [{ kind: "agent", slug: "workflows:research", id: "unified-workflow:research" }],
+    invocations: [{ kind: "agent", slug: "master-agent:research", id: "unified-workflow:research" }],
     workflowSelection: selected.selection,
   };
   const result = await dispatch(payload, { commandResolution });
@@ -197,7 +197,7 @@ test("a selected workflow survives Garden dispatch and recovery without broader 
 });
 
 test("a verified workflow hand-back reaches Garden synthesis and retains completed jobs", async () => {
-  const selection = parseUnifiedWorkflowCommand("/workflows:research").selection;
+  const selection = parseUnifiedWorkflowCommand("/master-agent:research").selection;
   const workflowContinuation = { selection, originClientMessageId: "origin", completedWork: [{ agentId: "get-doc", brief: "Find one paper" }] };
   const payload = request(false, true);
   payload.messages = [{ role: "user", content: "<!-- agent-launch-result:worker --> Paper [S1]" }];

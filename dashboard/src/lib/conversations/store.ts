@@ -172,6 +172,45 @@ export function createConversation(
   return getConversationById(id, database)!;
 }
 
+/**
+ * Move a terminal chat into a garden workspace. It becomes exactly what a chat
+ * started there is: a garden_chat conversation with the workspace history row
+ * (chat_sessions + chat_messages mirror) the Garden UI reads, so it lists in the
+ * workspace and shows as "<Garden>: Workspace: <title>" in the terminal.
+ */
+export function moveConversationToGarden(
+  conversation: ConversationRow,
+  gardenId: number,
+  database: Database.Database = db,
+): ConversationRow {
+  if (conversation.surface !== "dashboard_terminal" || conversation.legacy_chat_session_id !== null) {
+    throw new ConversationStoreError(409, "not_movable", "Only terminal chats can be moved to a workspace.");
+  }
+  return database.transaction(() => {
+    const session = database.prepare(`
+      INSERT INTO chat_sessions(cluster_id, user_id, title, history_surface, conversation_id, created_at, updated_at)
+      VALUES (?, ?, ?, 'garden_chat', ?, ?, datetime('now'))
+    `).run(gardenId, conversation.user_id, conversation.title, conversation.id, conversation.created_at);
+    const sessionId = Number(session.lastInsertRowid);
+    database.prepare(`
+      INSERT INTO chat_messages
+        (session_id, role, content, sources, token_usage, order_index,
+         canonical_message_id, runtime_status, tool_calls, created_at)
+      SELECT ?, role, content, sources, token_usage, order_index, id, status, metadata, created_at
+      FROM conversation_message_reads
+      WHERE conversation_id = ?
+      ORDER BY order_index
+    `).run(sessionId, conversation.id);
+    database.prepare(`
+      UPDATE conversations
+      SET surface = 'garden_chat', scope_kind = 'garden', default_garden_id = ?,
+          legacy_chat_session_id = ?, origin_label = NULL, updated_at = datetime('now')
+      WHERE id = ?
+    `).run(gardenId, sessionId, conversation.id);
+    return getConversationById(conversation.id, database)!;
+  }).immediate();
+}
+
 export function getConversationById(
   id: number,
   database: Database.Database = db,

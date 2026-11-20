@@ -116,6 +116,7 @@ function providerLabel(modelId: string): string {
   // The chatgpt.com tab draws on the website's own limits, which the plan
   // usage shown here (the Codex endpoint's windows) does not describe.
   if (provider === "openaiweb") return "chatgpt.com";
+  if (provider === "googleweb") return "gemini.google.com";
   return provider;
 }
 

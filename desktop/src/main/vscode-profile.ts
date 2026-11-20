@@ -7,6 +7,7 @@ import { assertVSCodeStorage, type VSCodeInstallation, type VSCodeStorage } from
 export interface VSCodeProfile {
   portable: string;
   settings: string;
+  extensions: string;
   args: string[];
   themes: { light: string; dark: string };
 }
@@ -31,7 +32,12 @@ export function withVSCodeTheme(source: string, theme: "light" | "dark", themes 
   // Restricted Mode and drops extensions without untrusted support (the Python
   // extension: "command 'python.execInTerminal-icon' not found"). Seeded only
   // when absent so a user who turns trust back on in the Code tab keeps it.
-  const seeded = settings?.["security.workspace.trust.enabled"] === undefined ? { "security.workspace.trust.enabled": false } : {};
+  const seeded = {
+    ...(settings?.["security.workspace.trust.enabled"] === undefined ? { "security.workspace.trust.enabled": false } : {}),
+    // Bread is the Code tab's agent: Copilot's Chat would otherwise take the
+    // secondary sidebar Bread's view lives in. Seeded once; the user may turn it back on.
+    ...(settings?.["chat.disableAIFeatures"] === undefined ? { "chat.disableAIFeatures": true } : {}),
+  };
   for (const [key, next] of Object.entries({ "workbench.colorTheme": colorTheme, "window.autoDetectColorScheme": false, "window.titleBarStyle": "native", "window.menuStyle": "custom", ...seeded })) {
     if (settings?.[key] === next) continue;
     result = applyEdits(result, modify(result, [key], next, { formattingOptions: { insertSpaces: true, tabSize: 2, eol: source.includes("\r\n") ? "\r\n" : "\n" } }));
@@ -94,5 +100,5 @@ export function prepareVSCodeProfile(storage: VSCodeStorage, installation: VSCod
   synchronizeVSCodeTheme(settings, theme, themes);
   // ZIP/portable builds honor VSCODE_PORTABLE before --user-data-dir. Installed
   // User/System builds ignore that variable and use the explicit CLI directory.
-  return { portable, settings, themes, args: ["--user-data-dir", userData, "--extensions-dir", extensions] };
+  return { portable, settings, extensions, themes, args: ["--user-data-dir", userData, "--extensions-dir", extensions] };
 }

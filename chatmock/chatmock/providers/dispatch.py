@@ -23,12 +23,14 @@ from ..http import build_cors_headers
 from ..model_identity import with_resolved_model_identity
 from ..model_telemetry import record_model_attempt
 from .. import usage_ledger
-from . import anthropic, chatgpt_web, claude_code, openai_compatible, transport
+from . import anthropic, chatgpt_web, claude_code, gemini_web, openai_compatible, transport
 from .catalog import (
     KIND_ANTHROPIC,
     KIND_CHATGPT_OAUTH,
     KIND_CHATGPT_WEB,
+    KIND_GEMINI_WEB,
     KIND_OPENAI_COMPATIBLE,
+    WEB_KINDS,
     ProviderSpec,
     provider_spec,
 )
@@ -108,6 +110,8 @@ def _client_for(spec: ProviderSpec):
         return openai_compatible
     if spec.kind == KIND_CHATGPT_WEB:
         return chatgpt_web
+    if spec.kind == KIND_GEMINI_WEB:
+        return gemini_web
     raise ProviderError(f"{spec.id} cannot serve requests through this path")
 
 
@@ -423,8 +427,8 @@ def _attempt(
     except ProviderError as exc:
         # A signed-out web page needs the person to sign in. Answering with the
         # fallback model instead hides that and shows that model's errors.
-        web = spec.kind == KIND_CHATGPT_WEB
-        if web:
+        web = spec.kind in WEB_KINDS
+        if spec.kind == KIND_CHATGPT_WEB:
             exc = ProviderError(
                 "You are signed out of ChatGPT on the web, so OpenAI (web) cannot answer. "
                 "Sign in again in Settings, Providers, OpenAI (web), then send your message again.",
@@ -581,7 +585,7 @@ def _attempt(
                     include_usage=include_usage,
                 ),
             )
-        elif spec.kind == KIND_CHATGPT_WEB:
+        elif spec.kind in WEB_KINDS:
             iterator = transport.guard_stream(
                 spec.id,
                 lambda: chatgpt_web.relay_stream(response),

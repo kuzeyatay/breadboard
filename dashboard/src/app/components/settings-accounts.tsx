@@ -898,6 +898,7 @@ export default function SettingsAccounts() {
             Its own row because it is a separate sign-in with separate models
             and limits, not a second credential for the OAuth account above. */}
         <SettingsOpenaiWeb />
+        <SettingsOpenaiWeb site="google" />
 
         {/* Everything signed in through the subscription proxy. The provider
             header adds a sibling; Switch sits on each waiting account and

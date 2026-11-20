@@ -8,6 +8,7 @@ import { getVlmOcrConfig } from "@/lib/vlm-ocr/config";
 import { vlmOcrStatus } from "@/lib/vlm-ocr/server";
 import { requireUserId, routeErrorResponse } from "@/lib/server-auth";
 import { readSupervisedServiceSnapshot } from "@/lib/supervisor-control";
+import { optionalComponentInstalled } from "@/lib/runtime-v2/optional-components";
 
 export const dynamic = "force-dynamic";
 
@@ -19,9 +20,19 @@ export async function GET() {
     const service = status.managed
       ? await readSupervisedServiceSnapshot("vlm-ocr")
       : null;
+    // The Runtime never reports installation-unavailable for missing weights
+    // (the start just fails), so check the managed install itself. A dev setup
+    // that points at its own model or Hugging Face repo needs no install.
+    const weightsMissing =
+      status.managed &&
+      !status.ok &&
+      !process.env.VLM_OCR_MODEL_PATH &&
+      !process.env.VLM_OCR_HF_REPO &&
+      !optionalComponentInstalled("vlm-ocr");
     const runtimeCanColdStart =
       status.managed &&
       service !== null &&
+      !weightsMissing &&
       service.state !== "installation-unavailable";
 
     return NextResponse.json({
@@ -32,7 +43,7 @@ export async function GET() {
       running: status.ok,
       managed: status.managed,
       autoStart: status.autoStart && runtimeCanColdStart,
-      serviceState: service?.state ?? (status.ok ? "ready" : null),
+      serviceState: weightsMissing ? "installation-unavailable" : service?.state ?? (status.ok ? "ready" : null),
       baseUrl: status.baseUrl,
       source: status.source,
       models: status.models,

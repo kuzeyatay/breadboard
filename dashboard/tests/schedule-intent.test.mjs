@@ -16,7 +16,7 @@ const now=new Date('2026-11-07T08:27:19.000Z');
 
 for(const prompt of [
   '/agents:vibe-trading Use the strategy specialist to calculate the compounded total return of this fictional price series100,110,99. Explain why adding the daily percentages gives a different result. Use only these inline numbers; no real market lookup, recommendation, trade, accounts, files, installation or settings change.',
-  '/workflows:markets:strategy Analyze the daily percentages in this price series: 100, 110, 99.',
+  '/master-agent:markets:strategy Analyze the daily percentages in this price series: 100, 110, 99.',
   'Analyze daily returns using only the supplied numbers.',
   'Summarize the monthly costs in this table.',
   'Write a weekly report from these supplied notes.',

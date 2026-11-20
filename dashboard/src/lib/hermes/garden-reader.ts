@@ -5,7 +5,7 @@ import { gardenDirectory } from "../garden-directory.ts";
 import { withoutDetachedVisualPayloads } from "../garden-detached-visual.ts";
 import type { KnowledgeNode } from "../knowledge.ts";
 import { gardenDocumentHref } from "../chat-markdown-links.ts";
-import { CLAIM_STORE_REL_PATH, CONCEPT_REGISTRY_REL_PATH, parseSemanticMarkdown, semanticFrontmatterArray } from "../garden-semantics.ts";
+import { CLAIM_STORE_REL_PATH, CONCEPT_REGISTRY_REL_PATH, RETRIEVAL_PAGE_TYPES, parseSemanticMarkdown, semanticFrontmatterArray } from "../garden-semantics.ts";
 import { createHash } from "node:crypto";
 
 export interface GardenReadEntry { slug: string; folder: string; relPath: string }
@@ -194,11 +194,15 @@ export function boundedGardenFileList(entries: GardenReadEntry[], args: Record<s
  * stores the chunks are built from. Stat calls only, so it costs a fraction
  * of reading the pages, and it changes whenever a re-index could.
  */
+/** Part of every fingerprint: bump it when the reader admits different pages, so indexed Gardens are re-read. */
+const RETRIEVAL_READER_VERSION = "2";
+
 export async function gardenRetrievalFingerprint(contentPath: string, gardenSlug: string): Promise<string> {
   const entries = await gardenReadEntries(contentPath, gardenSlug);
   const root = gardenDirectory(gardenSlug, contentPath);
   const files = [...entries.map((entry) => entry.relPath), CONCEPT_REGISTRY_REL_PATH, CLAIM_STORE_REL_PATH];
   const hash = createHash("sha256");
+  hash.update(`reader:${RETRIEVAL_READER_VERSION}\n`);
   for (let start = 0; start < files.length; start += 64) {
     const stats = await Promise.all(files.slice(start, start + 64).map((file) =>
       fs.promises.stat(path.join(root, file)).then((stat) => `${stat.size}:${stat.mtimeMs}`, () => "-")));
@@ -228,7 +232,7 @@ export async function readGardenRetrievalNodes(contentPath: string, gardenSlug: 
       catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
     }));
     nodes.push(...batch.filter((node): node is KnowledgeNode => node !== null && node.internal !== "true" && node.draft !== "true" &&
-      (["source-document", "learning-page", "user-note", "generated-note"].includes(node.type) || node.breadboardType === "learning_page")));
+      (RETRIEVAL_PAGE_TYPES.has(node.type) || node.breadboardType === "learning_page")));
   }
   // Match the canonical scanner: the newest ingest of a source wins.
   const latest = new Map<string, KnowledgeNode>();

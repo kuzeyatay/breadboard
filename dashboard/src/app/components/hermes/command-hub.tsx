@@ -91,6 +91,7 @@ import { AgentManagerPanel } from "./agent-manager-panel";
 import { TRADINGAGENTS_COMMAND } from "@/lib/tradingagents/identity.ts";
 import { VIDEO_USE_COMMAND } from "@/lib/video-use/identity.ts";
 import { CLAUDE_CODE_COMMAND } from "@/lib/claude-code-agent/identity.ts";
+import { PAPER_ORCHESTRA_COMMAND } from "@/lib/paper-orchestra/identity.ts";
 import ReferenceChatsPanel from "./reference-chats-panel";
 import BotsPanel from "../bots/bots-panel";
 import LoadingRows from "./loading-rows";
@@ -100,6 +101,8 @@ import FavoriteBox, {
   DEFAULT_CAPABILITY_HIGHLIGHT_COLOR,
   capabilityHighlightStyle,
 } from "./favorite-box";
+
+const PAPER_ORCHESTRA_SEARCH = "paper research manuscript latex write academic arxiv conference iclr cvpr";
 
 function preloadBots() {
   // Like Skills, the panel is ready with the picker; only its data needs warming.
@@ -765,7 +768,7 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
     const agencyDirectoryItems = useMemo(
       () => tab === "agent"
         ? tabItems.filter(
-            (item) => item.slug !== ARIS_AGENT_SLUG && item.slug !== SPOTIFY_AGENT_SLUG && !item.token.startsWith("workflows:"),
+            (item) => item.slug !== ARIS_AGENT_SLUG && item.slug !== SPOTIFY_AGENT_SLUG && !item.token.startsWith("master-agent:"),
           )
         : tabItems,
       [tab, tabItems],
@@ -1119,6 +1122,7 @@ const showCareerOps =
       );
     const hasVisibleAgents =
       (surface === "dashboard_terminal" && matchesAgentSearch("Claude Code", CLAUDE_CODE_COMMAND, "claude anthropic code coding terminal")) ||
+      matchesAgentSearch("PaperOrchestra", PAPER_ORCHESTRA_COMMAND, PAPER_ORCHESTRA_SEARCH) ||
       (surface === "dashboard_terminal" && matchesAgentSearch("Video Use", VIDEO_USE_COMMAND, "edit video clips subtitles")) ||
       showPraxist ||
       showTradingAgents ||
@@ -1689,6 +1693,14 @@ const showCareerOps =
                         <button id="claude-code-entry" type="button" onClick={() => choose({ id: "runtime-agent:claude-code", kind: "agent", slug: "agents:claude-code", token: "agents:claude-code", name: "Claude Code", description: "Claude Code with Breadboard's tools.", installed: true, enabled: true, healthy: true })} className="min-w-0 flex-1 px-3 py-2.5 text-left focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-[var(--botanical)]">
                           <span className="block font-mono text-sm font-medium text-[var(--ink-heading)]">{CLAUDE_CODE_COMMAND}</span>
                           <span className="mt-0.5 block text-xs text-[var(--ink)]">Hand a task to Claude Code. It uses Breadboard's tools and follows your permission settings.</span>
+                        </button>
+                      </li>
+                    ) }] : []),
+                    ...(matchesAgentSearch("PaperOrchestra", PAPER_ORCHESTRA_COMMAND, PAPER_ORCHESTRA_SEARCH) ? [{ name: "PaperOrchestra", node: (
+                      <li key="agent-paper-orchestra" className="group flex items-center gap-2 hover:bg-[var(--paper-surface)]">
+                        <button id="paper-orchestra-entry" type="button" onClick={() => choose({ id: "runtime-agent:paper-orchestra", kind: "agent", slug: "agents:paper-orchestra", token: "agents:paper-orchestra", name: "PaperOrchestra", description: "Write a research paper from your idea and results.", installed: true, enabled: true, healthy: true })} className="min-w-0 flex-1 px-3 py-2.5 text-left focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-[var(--botanical)]">
+                          <span className="block font-mono text-sm font-medium text-[var(--ink-heading)]">{PAPER_ORCHESTRA_COMMAND}</span>
+                          <span className="mt-0.5 block text-xs text-[var(--ink)]">Turn your idea and results into a full LaTeX paper with checked citations, as a PDF. Add --cvpr for CVPR format.</span>
                         </button>
                       </li>
                     ) }] : []),

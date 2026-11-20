@@ -8,6 +8,7 @@ import type { CodeDockAction, CodeDockState } from "../shared/code-dock";
 import { findVSCode, findManagedVSCode, installVSCode, saveVSCodeSelection, type VSCodeInstallation, type VSCodeStorage } from "./vscode-installation";
 import { prepareVSCodeProfile, synchronizeVSCodeTheme, type VSCodeProfile } from "./vscode-profile";
 import { resolveCodeRepository } from "./code-repository";
+import { installBreadExtension, writeBreadConfig } from "./vscode-bread";
 
 export function nativeWindowId(window: BrowserWindow): string {
   const buffer = window.getNativeWindowHandle();
@@ -81,7 +82,6 @@ interface DockSession {
   layout?: { parent: string; x: number; y: number; width: number; height: number; visible: boolean; active: boolean; focus?: boolean };
   lastLayout?: string;
   contentTop?: number;
-  contentRight?: number;
 }
 export class CodeDockManager {
   private sessions = new Map<number, DockSession>();
@@ -92,7 +92,6 @@ export class CodeDockManager {
   constructor(private readonly storage: VSCodeStorage, private readonly candidates?: string[]) {}
   has(id: number): boolean { return this.sessions.has(id); }
   contentTop(id: number): number { return this.sessions.get(id)?.contentTop ?? 0; }
-  contentRight(id: number): number { return this.sessions.get(id)?.contentRight ?? 0; }
   setTheme(theme: "light" | "dark"): void {
     if (this.theme === theme) return;
     this.theme = theme;
@@ -137,7 +136,7 @@ export class CodeDockManager {
     }
     const current = session;
     current.window = window;
-    if (typeof action === "object") { current.contentTop = action.top; current.contentRight = action.right ?? 0; return { ...current.state }; }
+    if (typeof action === "object") { current.contentTop = action.top; return { ...current.state }; }
     if (action === "status" || current.busy || current.releasing) return { ...current.state };
     if (action === "detach") {
       this.run(current, async () => { await current.helper?.close(); current.helper = undefined; current.state = { ...current.state, phase: "detached" }; });
@@ -218,6 +217,17 @@ export class CodeDockManager {
     await fs.promises.writeFile(workspace, JSON.stringify({ folders: repository ? [{ path: repository.path, name: repository.name }] : [] }));
     session.profile = prepareVSCodeProfile(this.storage, installation, this.theme);
     if (session.canceled) return;
+    // Bread in VS Code's sidebar: the extension plus this user's dashboard session.
+    let breadConfig: string | undefined;
+    try {
+      const dashboard = new URL(session.contents.getURL()).origin;
+      const cookies = await session.contents.session.cookies.get({ url: dashboard });
+      installBreadExtension(session.profile.extensions);
+      breadConfig = writeBreadConfig(this.storage.stateRoot, dashboard, cookies.map(cookie => `${cookie.name}=${cookie.value}`).join("; "), repository?.gardenSlug);
+    } catch (error) {
+      console.warn("[code-dock] Bread could not be added to VS Code", error);
+    }
+    if (session.canceled) return;
     const helper = new CodeDockHelper(message => {
       if (session.canceled || session.helper !== helper) return;
       if (message.type === "closed") session.state = { ...session.state, phase: "ready" };
@@ -232,6 +242,7 @@ export class CodeDockManager {
     const env = { ...process.env };
     for (const key of Object.keys(env)) if (/^(?:ELECTRON_|VSCODE_|NODE_OPTIONS$)/.test(key)) delete env[key];
     env.VSCODE_PORTABLE = session.profile.portable;
+    if (breadConfig) env.BREADBOARD_BREAD_CONFIG = breadConfig;
     const editor = spawn(installation.executable, ["--new-window", workspace, ...session.profile.args], {
       cwd: path.dirname(installation.executable), env, stdio: ["ignore", "ignore", "pipe"], windowsHide: false, detached: true,
     });

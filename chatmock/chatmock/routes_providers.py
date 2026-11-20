@@ -15,7 +15,7 @@ from flask import Blueprint, Response, current_app, jsonify, make_response, requ
 
 from .http import build_cors_headers
 from .model_registry import list_public_models
-from .providers import chatgpt_web, dispatch
+from .providers import chatgpt_web, dispatch, gemini_web
 from .providers.catalog import KIND_CHATGPT_OAUTH, provider_spec
 from .providers.types import ProviderError
 from .accounts import account_state
@@ -141,30 +141,35 @@ def verify_provider(provider_id: str) -> Response:
 # desktop shell's browser to ChatMock (see "The shell bridge" in chatgpt_web).
 
 
-@providers_bp.get("/v1/providers/openaiweb/session")
-def chatgpt_web_session() -> Response:
+# Google (web) shares these routes; its page rides the same tab relay.
+_WEB_SITES = {"openaiweb": chatgpt_web, "googleweb": gemini_web}
+_WEB_SITE = "<any(openaiweb, googleweb):site>"
+
+
+@providers_bp.get(f"/v1/providers/{_WEB_SITE}/session")
+def chatgpt_web_session(site: str) -> Response:
     refresh = request.args.get("refresh") in ("1", "true", "yes")
-    return _json(chatgpt_web.session_state(refresh=refresh))
+    return _json(_WEB_SITES[site].session_state(refresh=refresh))
 
 
-@providers_bp.post("/v1/providers/openaiweb/login")
-def chatgpt_web_login() -> Response:
-    return _json(chatgpt_web.start_login())
+@providers_bp.post(f"/v1/providers/{_WEB_SITE}/login")
+def chatgpt_web_login(site: str) -> Response:
+    return _json(_WEB_SITES[site].start_login())
 
 
-@providers_bp.post("/v1/providers/openaiweb/login/cancel")
-def chatgpt_web_cancel_login() -> Response:
-    return _json(chatgpt_web.cancel_login())
+@providers_bp.post(f"/v1/providers/{_WEB_SITE}/login/cancel")
+def chatgpt_web_cancel_login(site: str) -> Response:
+    return _json(_WEB_SITES[site].cancel_login())
 
 
-@providers_bp.post("/v1/providers/openaiweb/logout")
-def chatgpt_web_logout() -> Response:
-    return _json(chatgpt_web.logout())
+@providers_bp.post(f"/v1/providers/{_WEB_SITE}/logout")
+def chatgpt_web_logout(site: str) -> Response:
+    return _json(_WEB_SITES[site].logout())
 
 
-@providers_bp.post("/v1/providers/openaiweb/sync")
-def chatgpt_web_sync() -> Response:
-    state = chatgpt_web.sync_models()
+@providers_bp.post(f"/v1/providers/{_WEB_SITE}/sync")
+def chatgpt_web_sync(site: str) -> Response:
+    state = _WEB_SITES[site].sync_models()
     return _json(state, 200 if not state.get("error") else 502)
 
 

@@ -134,3 +134,11 @@ description = "Crumbs: fixed test NEXTAUTH secrets and the device-key SQL column
 targetRules = ["generic-api-key"]
 regexTarget = "line"
 regexes = ['''NEXTAUTH_SECRET = 'crumbs-(ui-)?test-secret-0123456789'''', '''INSERT INTO crumbs_devices\(user_id,device_id,keys,published_for\)''']
+
+[[allowlists]]
+description = "PaperOrchestra result dictionary key name"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^paper-orchestra/utils/paper_banana_utils\.py$''']
+regexTarget = "line"
+regexes = ['''^\s*output_key = "top10_diagrams"\s*$''']

@@ -226,6 +226,7 @@ import InlineMaxResearchRun from "@/app/components/hermes/inline-max-research-ru
 import { useMaxResearchProgress } from "@/app/components/hermes/use-max-research-progress";
 import InlineOpenCodeRun from "@/app/components/hermes/inline-opencode-run";
 import { claudeCodeUserMessage, taskFromClaudeCodeCommand } from "@/lib/claude-code-agent/identity.ts";
+import { paperOrchestraUserMessage, taskFromPaperOrchestraCommand } from "@/lib/paper-orchestra/identity.ts";
 import InlineRufloRun from "@/app/components/hermes/inline-ruflo-run";
 import InlineAgentReachRun from "@/app/components/hermes/inline-agent-reach-run";
 import InlineGetDocRun from "@/app/components/hermes/inline-get-doc-run";
@@ -661,6 +662,7 @@ interface Message {
     repository: string;
   };
   claudeCodeRun?: { runId: string; task: string };
+  paperOrchestraRun?: { runId: string; task: string };
   openPlanterRun?: { runId: string; task: string };
   agentReachRun?: { runId: string; task: string };
   getDocRun?: { runId: string; query: string };
@@ -1908,6 +1910,7 @@ function hasRunningExternalAgent(message: Message): boolean {
       message.maxResearchRun ||
       message.codexRun ||
       message.claudeCodeRun ||
+      message.paperOrchestraRun ||
       message.openCodeRun ||
       message.openPlanterRun ||
       message.agentReachRun ||
@@ -2341,6 +2344,7 @@ const ChatTranscript = memo(function ChatTranscript({
                 msg.maxResearchRun ??
                 msg.codexRun ??
                 msg.claudeCodeRun ??
+                msg.paperOrchestraRun ??
                 msg.openCodeRun ??
                 msg.openPlanterRun ??
                 msg.agentReachRun ??
@@ -2981,6 +2985,29 @@ const ChatTranscript = memo(function ChatTranscript({
                                   onTerminal={(result) =>
                                     onExternalAgentTerminal(
                                       msg.claudeCodeRun!.runId,
+                                      result,
+                                    )
+                                  }
+                                />
+                              ) : msg.paperOrchestraRun ? (
+                                <InlineOpenCodeRun
+                                  runId={msg.paperOrchestraRun.runId}
+                                  task={msg.paperOrchestraRun.task}
+                                  agentName="PaperOrchestra"
+                                  apiSlug="paper-orchestra"
+                                  persistedContent={msg.content}
+                                  persistedOutcome={msg.externalAgentOutcome}
+                                  persistedActivity={msg.externalAgentActivity}
+                                  persistedEdits={msg.externalAgentEdits}
+                                  persistedUsage={msg.usage}
+                                  onRetry={
+                                    i === lastAssistantIndex && !isStreaming
+                                      ? () => onRetryAssistant(i)
+                                      : undefined
+                                  }
+                                  onTerminal={(result) =>
+                                    onExternalAgentTerminal(
+                                      msg.paperOrchestraRun!.runId,
                                       result,
                                     )
                                   }
@@ -4161,6 +4188,7 @@ export default function WorkspaceClient({
     | "max-research"
     | "codex"
     | "claude-code"
+    | "paper-orchestra"
     | "opencode"
     | "openplanter"
     | "agent-reach"
@@ -4204,6 +4232,7 @@ export default function WorkspaceClient({
     | "max-research"
     | "codex"
     | "claude-code"
+    | "paper-orchestra"
     | "opencode"
     | "openplanter"
     | "agent-reach"
@@ -6374,6 +6403,9 @@ export default function WorkspaceClient({
       switch (request.agentId) {
         case "claude-code":
           await launchClaudeCode(request.brief);
+          return;
+        case "paper-orchestra":
+          await launchPaperOrchestra(request.brief);
           return;
         case "codex":
           await selectCodex();
@@ -13195,6 +13227,85 @@ async function launchCareerOps(task: string) {
     }
   }
 
+  async function launchPaperOrchestra(
+    task: string,
+    attachments: readonly ChatAttachment[] = [],
+  ) {
+    if (!task || externalAgentLaunchRef.current) {
+      if (!task) setExternalAgentStatus("Describe the idea and results the paper should be written from.");
+      return;
+    }
+    externalAgentLaunchRef.current = "paper-orchestra";
+    setLaunchingExternalAgent("paper-orchestra");
+    setExternalAgentStatus("");
+    const userContent = paperOrchestraUserMessage(task);
+    const delegatedRequest = delegatedAgentLaunchRef.current;
+    const clientMessageId = delegatedRequest
+      ? agentLaunchWorkerClientMessageId(delegatedRequest)
+      : crypto.randomUUID();
+    const persistedAttachments = chatMessageAttachments(attachments);
+    const userMessageFields = persistedAttachments.length
+      ? { attachmentNames: persistedAttachments.map((attachment) => attachment.name), attachments: persistedAttachments }
+      : {};
+    const prepared = await prepareExternalAgentSession(userContent, userMessageFields, { serverNamesTheChat: true });
+    if (!prepared) {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      return;
+    }
+    try {
+      const response = await fetch("/api/paper-orchestra/runs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          task,
+          model,
+          gardenSlug: clusterSlug,
+          chatSessionId: prepared.session.id,
+          clientMessageId,
+          attachToExistingTurn: Boolean(delegatedRequest && !delegatedRequest.workerClientMessageId),
+          delegatedAgentRun: Boolean(delegatedRequest?.workerClientMessageId),
+          attachments: attachments.filter((attachment) => attachment.type === "image"),
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.run?.runId) {
+        throw new Error(data?.message ?? data?.error ?? "The paper could not start.");
+      }
+      const assistantMessage: Message = {
+        role: "assistant",
+        content: "",
+        paperOrchestraRun: { runId: String(data.run.runId), task },
+        externalAgentOutcome: "running",
+      };
+      setChatStreaming(prepared.session.id, true);
+      if (delegatedRequest) {
+        await commitExternalAgentTurn(prepared.session, userContent, assistantMessage, prepared.title, userMessageFields);
+      } else {
+        const createdAt = new Date().toISOString();
+        settleExternalTurnActivity();
+        updateChatMessages(prepared.session.id, [
+          ...transcriptForRetriedTurn(prepared.session),
+          { role: "user", content: userContent, createdAt, ...userMessageFields },
+          { ...assistantMessage, createdAt },
+        ]);
+      }
+      void fetchChatSessions();
+    } catch (error) {
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        { role: "assistant", content: `The paper could not start: ${error instanceof Error ? error.message : "unknown error"}` },
+        prepared.title,
+        userMessageFields,
+      );
+    } finally {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      textareaRef.current?.focus();
+    }
+  }
+
   async function launchOpenCode(
     task: string,
     attachments: readonly ChatAttachment[] = [],
@@ -13607,6 +13718,15 @@ async function launchCareerOps(task: string) {
       setInput("");
       setChatAttachments([]);
       await launchMaxResearch(maxResearch.question, text);
+      return;
+    }
+
+    const paperTask = taskFromPaperOrchestraCommand(text);
+    if (paperTask !== null) {
+      const paperAttachments = pendingAttachments;
+      setInput("");
+      setChatAttachments([]);
+      void launchPaperOrchestra(paperTask, paperAttachments);
       return;
     }
 

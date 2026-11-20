@@ -53,7 +53,7 @@ test("mode membership and current surface filter preserve specialist contracts",
 });
 
 test("workflow parsing retains other selectors and all task content", () => {
-  const parsed = parseUnifiedWorkflowCommand(" /reference:abc /workflows:RESEARCH:papers /prompt:source-note Find a paper.\nKeep its figures.");
+  const parsed = parseUnifiedWorkflowCommand(" /reference:abc /master-agent:RESEARCH:papers /prompt:source-note Find a paper.\nKeep its figures.");
   assert.equal(parsed.workflowId, "research");
   assert.equal(parsed.modeId, "papers");
   assert.equal(parsed.textWithoutWorkflow, "/reference:abc /prompt:source-note Find a paper.\nKeep its figures.");
@@ -62,35 +62,35 @@ test("workflow parsing retains other selectors and all task content", () => {
 });
 
 test("quoted or embedded workflow examples do not change routing", () => {
-  assert.equal(parseUnifiedWorkflowCommand("Explain /workflows:code and its options."), null);
-  assert.equal(parseUnifiedWorkflowCommand('"/workflows:code" is the example.'), null);
-  assert.equal(parseUnifiedWorkflowCommand("```\n/workflows:code\n```"), null);
+  assert.equal(parseUnifiedWorkflowCommand("Explain /master-agent:code and its options."), null);
+  assert.equal(parseUnifiedWorkflowCommand('"/master-agent:code" is the example.'), null);
+  assert.equal(parseUnifiedWorkflowCommand("```\n/master-agent:code\n```"), null);
 });
 
 test("unknown and conflicting workflow selectors fail visibly", () => {
   for (const [text, code] of [
-    ["/workflows:unknown task", "unknown_workflow"],
-    ["/workflows:code:missing task", "unknown_workflow_mode"],
-    ["/workflows:research /workflows:code task", "conflicting_workflows"],
-    ["/workflows:research:web /workflows:research:papers task", "conflicting_workflows"],
+    ["/master-agent:unknown task", "unknown_workflow"],
+    ["/master-agent:code:missing task", "unknown_workflow_mode"],
+    ["/master-agent:research /master-agent:code task", "conflicting_workflows"],
+    ["/master-agent:research:web /master-agent:research:papers task", "conflicting_workflows"],
   ]) assert.throws(() => parseUnifiedWorkflowCommand(text), (error) => error.code === code);
-  assert.equal(parseUnifiedWorkflowCommand("/workflows:code /workflows:code task").workflowId, "code");
+  assert.equal(parseUnifiedWorkflowCommand("/master-agent:code /master-agent:code task").workflowId, "code");
 });
 
 test("an explicit specialist wins across workflows without consuming other capabilities", () => {
-  const text = "/workflows:research /agents:codex /prompt:review Fix the parser";
+  const text = "/master-agent:research /agents:codex /prompt:review Fix the parser";
   assert.equal(normalizeUnifiedWorkflowDispatch(text), "/agents:codex /prompt:review Fix the parser");
-  assert.equal(normalizeUnifiedWorkflowDispatch("/workflows:code Build the app"), "/workflows:code Build the app");
+  assert.equal(normalizeUnifiedWorkflowDispatch("/master-agent:code Build the app"), "/master-agent:code Build the app");
   const conflict = findCapabilityConflict({
-    text: normalizeUnifiedWorkflowDispatch("/workflows:work /agents:socials-manager /prompt:write Draft a post"),
+    text: normalizeUnifiedWorkflowDispatch("/master-agent:work /agents:socials-manager /prompt:write Draft a post"),
     surface: "dashboard_terminal",
   });
   assert.equal(conflict.code, "runtime_agent_capability_conflict");
-  assert.doesNotMatch(conflict.message, /workflows:/);
+  assert.doesNotMatch(conflict.message, /master-agent:/);
 });
 
 test("workflow membership cannot be widened by a serialized allowlist", () => {
-  const selection = parseUnifiedWorkflowCommand("/workflows:research:papers Find one paper").selection;
+  const selection = parseUnifiedWorkflowCommand("/master-agent:research:papers Find one paper").selection;
   selection.allowedAgentIds.push("socials-manager");
   assert.equal(unifiedWorkflowSelectionAllows(selection, "get-doc"), true);
   assert.equal(unifiedWorkflowSelectionAllows(selection, "socials-manager"), false);
@@ -101,29 +101,29 @@ test("workflow membership cannot be widened by a serialized allowlist", () => {
 });
 
 test("single-specialist modes use native dispatch including typed input pickers", () => {
-  assert.equal(unifiedWorkflowModeAgent("/workflows:create:highlights Make clips")?.id, "shorts");
-  assert.equal(normalizeUnifiedWorkflowDispatch("/workflows:create:highlights Make clips"), "/agents:shorts Make clips");
-  assert.equal(isFormsmithCommand(normalizeUnifiedWorkflowDispatch("/workflows:design:image-to-3d")), true);
-  assert.throws(() => normalizeUnifiedWorkflowDispatch("/workflows:design:image-to-3d Model this"), (error) => error.code === "workflow_native_input_required");
-  assert.equal(normalizeUnifiedWorkflowDispatch("/workflows:research:project C:/research/task"), "/agents:praxist C:/research/task");
-  assert.equal(normalizeUnifiedWorkflowDispatch("/workflows:work:legal /prompt:brief Review these documents"), "/agents:legal /prompt:brief Review these documents");
-  assert.equal(normalizeUnifiedWorkflowDispatch("/workflows:code:build Fix this"), "/workflows:code:build Fix this");
-  assert.equal(normalizeUnifiedWorkflowDispatch("/workflows:design:cad /agents:shorts Make clips"), "/agents:shorts Make clips");
-  assert.equal(unifiedWorkflowModeAgent("/workflows:design:cad /agents:codex /agents:opencode Build"), null);
+  assert.equal(unifiedWorkflowModeAgent("/master-agent:create:highlights Make clips")?.id, "shorts");
+  assert.equal(normalizeUnifiedWorkflowDispatch("/master-agent:create:highlights Make clips"), "/agents:shorts Make clips");
+  assert.equal(isFormsmithCommand(normalizeUnifiedWorkflowDispatch("/master-agent:design:image-to-3d")), true);
+  assert.throws(() => normalizeUnifiedWorkflowDispatch("/master-agent:design:image-to-3d Model this"), (error) => error.code === "workflow_native_input_required");
+  assert.equal(normalizeUnifiedWorkflowDispatch("/master-agent:research:project C:/research/task"), "/agents:praxist C:/research/task");
+  assert.equal(normalizeUnifiedWorkflowDispatch("/master-agent:work:legal /prompt:brief Review these documents"), "/agents:legal /prompt:brief Review these documents");
+  assert.equal(normalizeUnifiedWorkflowDispatch("/master-agent:code:build Fix this"), "/master-agent:code:build Fix this");
+  assert.equal(normalizeUnifiedWorkflowDispatch("/master-agent:design:cad /agents:shorts Make clips"), "/agents:shorts Make clips");
+  assert.equal(unifiedWorkflowModeAgent("/master-agent:design:cad /agents:codex /agents:opencode Build"), null);
 });
 
 test("guidance keeps manual media, document and task-project requirements", () => {
   for (const agent of ["shorts", "formsmith", "legal", "wardrobe", "video-use", "praxist"]) {
     assert.ok(UNIFIED_AGENT_INPUT_REQUIREMENTS[agent]);
   }
-  const media = renderUnifiedWorkflowGuidance(parseUnifiedWorkflowCommand("/workflows:create:highlights Make shorts").selection, "dashboard_terminal");
+  const media = renderUnifiedWorkflowGuidance(parseUnifiedWorkflowCommand("/master-agent:create:highlights Make shorts").selection, "dashboard_terminal");
   assert.match(media, /Manual specialist selection is required/);
   assert.ok(media.includes(UNIFIED_AGENT_INPUT_REQUIREMENTS.shorts));
   assert.match(media, /never forward only the prose and discard the files/);
-  const project = renderUnifiedWorkflowGuidance(parseUnifiedWorkflowCommand("/workflows:research:project Run it").selection, "dashboard_terminal");
+  const project = renderUnifiedWorkflowGuidance(parseUnifiedWorkflowCommand("/master-agent:research:project Run it").selection, "dashboard_terminal");
   assert.match(project, /existing configured task-project directory/);
   assert.match(project, /normal launch approval/);
-  const production = renderUnifiedWorkflowGuidance(parseUnifiedWorkflowCommand("/workflows:create").selection, "dashboard_terminal");
+  const production = renderUnifiedWorkflowGuidance(parseUnifiedWorkflowCommand("/master-agent:create").selection, "dashboard_terminal");
   for (const id of ["openmontage", "vimax", "money-printer", "hyperframes"]) {
     assert.ok(production.includes(runtimeAgentBrief(id).does));
     assert.ok(production.includes(runtimeAgentBrief(id).choose));
@@ -138,12 +138,12 @@ test("server registry labels Master Agents while preserving their workflow selec
   assert.deepEqual(workflows.map((item) => item.token), UNIFIED_WORKFLOWS.map((item) => item.command.slice(1)));
   assert.ok(workflows.every((item) => item.kind === "agent" && item.id.startsWith("unified-workflow:")));
   assert.equal(registryItemsForUser(null, { mode: "knowledge", surface: "quartz_ai" }).some((item) => item.source === "Master Agents"), false);
-  assert.equal(assignCommandTokens([{ kind: "agent", slug: "code", source: "Master Agents" }])[0].token, "workflows:code");
-  assert.equal(assignCommandTokens([{ kind: "agent", slug: "code", source: "Unified workflows" }])[0].token, "workflows:code");
+  assert.equal(assignCommandTokens([{ kind: "agent", slug: "code", source: "Master Agents" }])[0].token, "master-agent:code");
+  assert.equal(assignCommandTokens([{ kind: "agent", slug: "code", source: "Unified workflows" }])[0].token, "master-agent:code");
 });
 
 test("server resolves a workflow into scoped guidance and leaves user text intact", async () => {
-  const result = await resolveCommandMessage(1, "/workflows:research:papers Find one paper on transformers");
+  const result = await resolveCommandMessage(1, "/master-agent:research:papers Find one paper on transformers");
   assert.equal(result.userText, "Find one paper on transformers");
   assert.match(result.text, /Breadboard workflow: Research \/ Find papers/);
   assert.match(result.text, /Get Doc \(\/agents:get-doc\)/);
@@ -155,7 +155,7 @@ test("server resolves a workflow into scoped guidance and leaves user text intac
 
 test("a workflow composes with an ordinary selected prompt", async () => {
   const prompt = createPrompt(1, { title: "Workflow writing style", content: "Use concise sentences and state your sources." });
-  const result = await resolveCommandMessage(1, `/workflows:research /prompt:${prompt.slug} Explain the evidence`);
+  const result = await resolveCommandMessage(1, `/master-agent:research /prompt:${prompt.slug} Explain the evidence`);
   assert.match(result.text, /Breadboard workflow: Research/);
   assert.match(result.text, /Use concise sentences and state your sources/);
   assert.equal(result.userText, "Explain the evidence");
@@ -163,7 +163,7 @@ test("a workflow composes with an ordinary selected prompt", async () => {
 });
 
 test("the workflow does not override an explicitly selected execution target", async () => {
-  const result = await resolveCommandMessage(1, "/workflows:research Reply with the check result", undefined, {
+  const result = await resolveCommandMessage(1, "/master-agent:research Reply with the check result", undefined, {
     mode: "scoped_implementation", surface: "dashboard_terminal", executionTarget: "codex",
   });
   assert.equal(result.workflowSelection, undefined);
@@ -172,9 +172,9 @@ test("the workflow does not override an explicitly selected execution target", a
 });
 
 test("invalid commands, Quartz launches and conflicting specialists retain clear errors", async () => {
-  await assert.rejects(resolveCommandMessage(1, "/workflows:missing Do a task"), (e) => e.code === "unknown_workflow");
-  await assert.rejects(resolveCommandMessage(1, "/workflows:code Build", undefined, { mode: "knowledge", surface: "quartz_ai" }), (e) => e.code === "workflow_surface_unavailable");
-  await assert.rejects(resolveCommandMessage(1, "/workflows:code /agents:codex /agents:opencode Build"), (e) => e.code === "conflicting_runtime_agents");
+  await assert.rejects(resolveCommandMessage(1, "/master-agent:missing Do a task"), (e) => e.code === "unknown_workflow");
+  await assert.rejects(resolveCommandMessage(1, "/master-agent:code Build", undefined, { mode: "knowledge", surface: "quartz_ai" }), (e) => e.code === "workflow_surface_unavailable");
+  await assert.rejects(resolveCommandMessage(1, "/master-agent:code /agents:codex /agents:opencode Build"), (e) => e.code === "conflicting_runtime_agents");
 });
 
 let continuationSequence = 0;
@@ -185,8 +185,8 @@ function continuationFixture() {
   let order = 0;
   const put = (clientId, role, content, metadata = {}, status = "complete") => db.prepare("INSERT INTO conversation_messages(conversation_id,client_message_id,role,surface,content,status,order_index,metadata) VALUES (?,?,?,'dashboard_terminal',?,?,?,?)")
     .run(conversationId, clientId, role, content, status, order++, JSON.stringify(metadata));
-  put("origin", "user", "/workflows:research Find papers and summarize the evidence");
-  const selection = parseUnifiedWorkflowCommand("/workflows:research").selection;
+  put("origin", "user", "/master-agent:research Find papers and summarize the evidence");
+  const selection = parseUnifiedWorkflowCommand("/master-agent:research").selection;
   db.prepare("INSERT INTO hermes_runs(id,runtime_session_id,instruction,status,dispatch_json,started_at) VALUES (?,?,'Find evidence','completed',?,datetime('now'))")
     .run(`run-workflow-${id}`, runtimeId, JSON.stringify({ clientMessageId: "origin", workflowSelection: selection }));
   const receipt = { externalAgent: true, delegatedAgentRun: true, internalAgentContinuation: true,
@@ -214,7 +214,7 @@ test("durable workflow receipts restore scoped continuation guidance across runt
   assert.match(resolved.text, /continue only distinct unfinished steps/);
   assert.match(resolved.text, /Do not repeat a completed specialist job/);
   assert.equal(resolved.userText, input.continuationText);
-  const newChoice = await resolveCommandMessage(1, "/workflows:design Make a part", undefined, {
+  const newChoice = await resolveCommandMessage(1, "/master-agent:design Make a part", undefined, {
     mode: "knowledge", surface: "dashboard_terminal", workflowContinuation: inherited,
   });
   assert.equal(newChoice.workflowSelection.workflowId, "design");
@@ -258,6 +258,10 @@ test("continuation scope is rebuilt from the original choice instead of a serial
   db.prepare("UPDATE hermes_runs SET status='cancelled' WHERE runtime_session_id=?").run(runtimeId);
   assert.equal(resolveUnifiedWorkflowContinuation(input), null, "a cancelled workflow must not resume from a late worker receipt");
   db.prepare("UPDATE hermes_runs SET status='completed' WHERE runtime_session_id=?").run(runtimeId);
-  db.prepare("UPDATE conversation_messages SET content='/workflows:research /agents:codex Fix it' WHERE conversation_id=? AND client_message_id='origin'").run(input.conversationId);
+  db.prepare("UPDATE conversation_messages SET content='/master-agent:research /agents:codex Fix it' WHERE conversation_id=? AND client_message_id='origin'").run(input.conversationId);
   assert.equal(resolveUnifiedWorkflowContinuation(input), null);
+});
+
+test("the old /workflows: spelling still resolves for messages sent before the rename", () => {
+  assert.equal(parseUnifiedWorkflowCommand("/workflows:research:papers Find one paper").modeId, "papers");
 });

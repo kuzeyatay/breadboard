@@ -27,6 +27,7 @@ const stubs={
  '@/lib/server-auth.ts':'export const requireUserId=async()=>1; export class RouteError extends Error {}',
  '@/lib/chatmock-server.ts':'export const resolveChatmockBaseUrl=()=>({baseURL:"http://127.0.0.1:9/v1"});',
  '@/lib/opencode/repository.ts':'export const resolveConnectedRepository=()=>({name:"fixture",gardenSlug:"fixture",path:"fixture"});',
+ '@/lib/code-index/create-repository.ts':'export const gardenHasRepository=()=>false;',
  '@/lib/code-index/garden.ts':'export const graftEnabledForGarden=()=>false; export const prepareGraftIndex=async()=>{};',
  '@/lib/hermes/commands.ts':'export const resolveCommandMessage=async(_user,text)=>({text,invocations:[]});',
  '@/lib/conversations/title-service.ts':'export const generateAndApplyConversationTitle=async()=>{};',

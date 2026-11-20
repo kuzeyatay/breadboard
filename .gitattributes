@@ -101,3 +101,4 @@ dashboard/src/lib/speech/clap/upstream/** linguist-vendored
 
 # Byte-exact filter lists: build-adblocker.mjs hashes them against upstream.json
 desktop/assets/adblocker/** -text
+paper-orchestra/** linguist-vendored=true -whitespace

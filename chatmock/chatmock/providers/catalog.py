@@ -19,6 +19,10 @@ KIND_OPENAI_COMPATIBLE = "openai_compatible"
 KIND_ANTHROPIC = "anthropic"
 # chatgpt.com itself, driven in a signed-in browser (see chatgpt_web.py).
 KIND_CHATGPT_WEB = "chatgpt_web"
+# gemini.google.com, driven the same way (see gemini_web.py).
+KIND_GEMINI_WEB = "gemini_web"
+# Providers whose "API" is a website typed into in the person's browser.
+WEB_KINDS = (KIND_CHATGPT_WEB, KIND_GEMINI_WEB)
 
 CHATGPT_PROVIDER_ID = "chatgpt"
 CHATGPT_WEB_PROVIDER_ID = "openaiweb"
@@ -83,6 +87,16 @@ _SPECS: Tuple[ProviderSpec, ...] = (
         # tool calling.
         description="Your ChatGPT plan through chatgpt.com in a signed-in browser tab - the website's own models and limits.",
         reasoning_efforts=("low", "medium", "high"),
+    ),
+    ProviderSpec(
+        id="googleweb",
+        label="Google (web)",
+        kind=KIND_GEMINI_WEB,
+        default_base_url="https://gemini.google.com",
+        requires_api_key=False,
+        suggested_models=(),
+        docs_url="https://gemini.google.com",
+        description="Gemini through gemini.google.com in Breadboard's browser - the website's own modes and limits.",
     ),
     ProviderSpec(
         id="anthropic",

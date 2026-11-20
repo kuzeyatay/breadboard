@@ -120,6 +120,11 @@ export const RUNTIME_AGENT_BRIEFS: Record<string, RuntimeAgentBrief> = {
     choose:
       "Choose it when the evidence the user wants is a publication rather than a web page. It finds and fetches; surveying what a field concluded is Deep Research's work.",
   },
+  "paper-orchestra": {
+    group: "research",
+    does: "Writes the user's own research paper in LaTeX from their idea and results, with checked citations, and attaches the PDF. About an hour.",
+    choose: "Choose it to draft a whole paper. Finding papers is Get Doc's job.",
+  },
   "deer-flow": {
     group: "research",
     does: "Hands the request to the cloned DeerFlow harness's own lead agent, which plans a multi-step investigation across its own workers and writes a structured, sectioned report.",

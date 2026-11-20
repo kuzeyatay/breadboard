@@ -50,17 +50,20 @@ export class UnifiedWorkflowCommandError extends Error {
   }
 }
 
+// `workflows:` is the old spelling, still accepted for messages sent before the rename.
+const MASTER_AGENT_TOKEN = /^(?:master-agent|workflows):/u;
+
 /** Recognize only leading command tokens. A quoted example or a token in the
  * body of a request is ordinary content and must not switch its workflow. */
 export function parseUnifiedWorkflowCommand(text: string): ParsedUnifiedWorkflowCommand | null {
   const { tokens, rest } = leadingCapabilityTokens(text);
-  const selectors = tokens.filter((token) => token.token.startsWith("workflows:"));
+  const selectors = tokens.filter((token) => MASTER_AGENT_TOKEN.test(token.token));
   if (!selectors.length) return null;
   const distinct = [...new Set(selectors.map((token) => token.token))];
   if (distinct.length > 1) {
     throw new UnifiedWorkflowCommandError("conflicting_workflows", "Choose one workflow and mode for this request.");
   }
-  const match = /^workflows:([a-z][a-z0-9-]*)(?::([a-z][a-z0-9-]*))?$/u.exec(distinct[0]);
+  const match = /^(?:master-agent|workflows):([a-z][a-z0-9-]*)(?::([a-z][a-z0-9-]*))?$/u.exec(distinct[0]);
   const workflow = match ? unifiedWorkflowById(match[1]) : null;
   if (!workflow) {
     throw new UnifiedWorkflowCommandError("unknown_workflow", "That workflow is unavailable. Choose Code, Research, Browse, Work, Markets, Learn, Create or Design.");
@@ -70,7 +73,7 @@ export function parseUnifiedWorkflowCommand(text: string): ParsedUnifiedWorkflow
   if (modeId && !mode) {
     throw new UnifiedWorkflowCommandError("unknown_workflow_mode", `That ${workflow.name} mode is unavailable. Choose one of its listed modes.`);
   }
-  const remaining = tokens.filter((token) => !token.token.startsWith("workflows:"));
+  const remaining = tokens.filter((token) => !MASTER_AGENT_TOKEN.test(token.token));
   const agents = [...new Set(remaining.flatMap((token) => token.agent ? [token.agent.id] : []))];
   return {
     workflowId: workflow.id,
@@ -110,7 +113,7 @@ export function normalizeUnifiedWorkflowDispatch(text: string): string {
   if (agent?.id === "formsmith" && parsed.textWithoutWorkflow) {
     throw new UnifiedWorkflowCommandError(
       "workflow_native_input_required",
-      "Image to 3D uses a picture as its complete input. Send /workflows:design:image-to-3d on its own to open the image picker; keep your written instructions for a different design mode.",
+      "Image to 3D uses a picture as its complete input. Send /master-agent:design:image-to-3d on its own to open the image picker; keep your written instructions for a different design mode.",
     );
   }
   return agent ? [agent.command, parsed.textWithoutWorkflow].filter(Boolean).join(" ") : text;

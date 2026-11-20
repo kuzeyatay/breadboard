@@ -119,6 +119,7 @@ compression) after those exclusions.
 | `openmaic` | https://github.com/THU-MAIC/OpenMAIC | `main` | `dfebbcf33f3a56064129903faeab70a9e4243146` |
 | `openscience` | https://github.com/synthetic-sciences/openscience | `main` | `74ee13cdd1e086effd7a616a7c0bbad678bc5e51` |
 | `openwork` | https://github.com/different-ai/openwork | `dev` | `776a0646be968842f73d523f3c56372a9ee4ed82` |
+| `paper-orchestra` | https://github.com/google-research/paper-orchestra | `main` | `d9bae997e793a015ed38bb1605be9eb58c00284f` |
 | `patent-disclosure-skill` | https://github.com/handsomestWei/patent-disclosure-skill | `main` | `ecd62fdb45b9792bb5fb2ebe8dc61157e04faab0` |
 | `penecho` | https://github.com/penecho/penecho | `main` | `5d14d54b5a8d06dab4cb6a865f2547556e5ff842` |
 | `postiz-app` | https://github.com/gitroomhq/postiz-app | `main` | `cf4c432c00c9db775ea1b1f12480a8e2b89aec32` |

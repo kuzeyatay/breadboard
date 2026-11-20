@@ -37,7 +37,7 @@ function workflow(
   description: string,
   modes: UnifiedWorkflowMode[],
 ): UnifiedWorkflow {
-  return { id, name, command: `/workflows:${id}`, description, modes,
+  return { id, name, command: `/master-agent:${id}`, description, modes,
     agentIds: [...new Set(modes.flatMap((item) => item.agentIds))] };
 }
 

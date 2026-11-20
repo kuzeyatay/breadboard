@@ -64,7 +64,7 @@ const KIND_LABELS: Record<CommandHubItem["kind"], string> = {
  * disk and would otherwise read as one.
  */
 function commandKindLabel(item: CommandHubItem): string {
-  return isWorkflowCommand(item) || item.token.startsWith("workflows:") ? "Workflow" : KIND_LABELS[item.kind];
+  return isWorkflowCommand(item) || item.token.startsWith("master-agent:") ? "Workflow" : KIND_LABELS[item.kind];
 }
 
 const SlashCommandMenu = forwardRef<SlashCommandMenuHandle, Props>(

@@ -17,7 +17,22 @@ import { fetchCachedSettings, invalidateSettingsCache } from "@/lib/settings-cli
  * ends it. No credential ever passes through here.
  */
 
-const SESSION_URL = "/api/chatmock/openaiweb";
+const SITES = {
+  openai: {
+    sessionUrl: "/api/chatmock/openaiweb",
+    label: "OpenAI (web)",
+    host: "chatgpt.com",
+    page: "A ChatGPT tab",
+    blurb: "Your ChatGPT plan through chatgpt.com itself, in a signed-in browser tab - the website's own models and limits.",
+  },
+  google: {
+    sessionUrl: "/api/chatmock/googleweb",
+    label: "Google (web)",
+    host: "gemini.google.com",
+    page: "A Gemini page (Google's sign-in opens in Edge or Chrome)",
+    blurb: "Gemini through gemini.google.com itself, in Breadboard's browser - the website's own modes and limits. Works signed out on Auto.",
+  },
+} as const;
 const LOGIN_POLL_MS = 3_000;
 
 const DOT: Record<"active" | "off", { label: string; className: string }> = {
@@ -46,7 +61,9 @@ function planLabel(plan: string | null): string | null {
   return known[plan.toLowerCase()] ?? plan;
 }
 
-export default function SettingsOpenaiWeb() {
+export default function SettingsOpenaiWeb({ site: siteId = "openai" }: { site?: keyof typeof SITES } = {}) {
+  const site = SITES[siteId];
+  const SESSION_URL = site.sessionUrl;
   const [session, setSession] = useState<ChatgptWebSession | null>(null);
   const [busy, setBusy] = useState<ChatgptWebAction | null>(null);
   const [confirmingSignOut, setConfirmingSignOut] = useState(false);
@@ -71,7 +88,7 @@ export default function SettingsOpenaiWeb() {
         const url = options.refresh ? `${SESSION_URL}?refresh=1` : SESSION_URL;
         const response = await fetchCachedSettings(url, { force: options.force || options.refresh });
         const payload = (await response.json().catch(() => ({}))) as ChatgptWebSession & { error?: string };
-        if (!response.ok) throw new Error(payload.error ?? "The chatgpt.com sign-in could not be read.");
+        if (!response.ok) throw new Error(payload.error ?? `The ${site.host} sign-in could not be read.`);
         apply(payload);
         return payload;
       } catch {
@@ -80,7 +97,7 @@ export default function SettingsOpenaiWeb() {
         return null;
       }
     },
-    [apply],
+    [apply, SESSION_URL],
   );
 
   useEffect(() => {
@@ -108,14 +125,14 @@ export default function SettingsOpenaiWeb() {
         if (!fresh || fresh.login?.status === "awaiting") return;
         stopPolling();
         if (fresh.login?.status === "done" && fresh.signedIn) {
-          setNotice(`Signed in to chatgpt.com${fresh.email ? ` as ${fresh.email}` : ""}.`);
+          setNotice(`Signed in to ${site.host}${fresh.email ? ` as ${fresh.email}` : ""}.`);
           setError(null);
         } else if (fresh.login?.status === "failed") {
-          setError(fresh.login.error ?? "Signing in to chatgpt.com did not finish.");
+          setError(fresh.login.error ?? `Signing in to ${site.host} did not finish.`);
         }
       });
     }, LOGIN_POLL_MS);
-  }, [session?.login?.status, refresh, stopPolling]);
+  }, [session?.login?.status, refresh, stopPolling, site.host]);
 
   async function run(action: ChatgptWebAction, successNotice: string | null) {
     setBusy(action);
@@ -150,20 +167,20 @@ export default function SettingsOpenaiWeb() {
       <li className="neu-surface-subtle overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--paper-surface)]">
         <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
           <div className="min-w-0">
-            <p className="text-sm font-medium text-[var(--ink-heading)]">OpenAI (web)</p>
+            <p className="text-sm font-medium text-[var(--ink-heading)]">{site.label}</p>
             <p className="mt-0.5 text-xs leading-5 text-[var(--ink-muted)]">
               {signedIn
-                ? `chatgpt.com in ${session?.surface === "browser" ? "its own browser window" : "Breadboard's browser"}${
+                ? `${site.host} in ${session?.surface === "browser" ? "its own browser window" : "Breadboard's browser"}${
                     session?.models.length ? ` · ${session.models.length} models` : ""
                   }`
-                : "Your ChatGPT plan through chatgpt.com itself, in a signed-in browser tab - the website's own models and limits."}
+                : site.blurb}
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-2">
             {signedIn ? (
               <button
                 type="button"
-                onClick={() => void run("sync", "Models refreshed from chatgpt.com.")}
+                onClick={() => void run("sync", `Models refreshed from ${site.host}.`)}
                 disabled={busy !== null || awaiting}
                 className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3 py-1.5 text-xs text-[var(--ink-muted)] transition hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-55"
               >
@@ -177,11 +194,11 @@ export default function SettingsOpenaiWeb() {
             <div className="min-w-0">
               <p className="truncate text-xs text-[var(--ink-muted)]">
                 {signedIn
-                  ? [session?.email ?? "Signed in to chatgpt.com", planLabel(session?.plan ?? null)]
+                  ? [session?.email ?? `Signed in to ${site.host}`, planLabel(session?.plan ?? null)]
                       .filter(Boolean)
                       .join(" · ")
                   : awaiting
-                    ? "Waiting for you to sign in on chatgpt.com…"
+                    ? `Waiting for you to sign in on ${site.host}…`
                     : noBrowser
                       ? "Signs in through the browser inside the Breadboard app - open Breadboard to connect it."
                       : "Not signed in."}
@@ -197,7 +214,7 @@ export default function SettingsOpenaiWeb() {
                       type="button"
                       onClick={() => {
                         setConfirmingSignOut(false);
-                        void run("logout", "Signed out of chatgpt.com.");
+                        void run("logout", `Signed out of ${site.host}.`);
                       }}
                       disabled={busy !== null}
                       className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3 py-1.5 text-xs text-[var(--danger)] transition hover:bg-[var(--paper-strong)] disabled:opacity-50"
@@ -249,11 +266,11 @@ export default function SettingsOpenaiWeb() {
 
       {awaiting ? (
         <li className="neu-inset rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] p-3">
-          <p className="text-xs font-medium text-[var(--ink-heading)]">Sign in on chatgpt.com</p>
+          <p className="text-xs font-medium text-[var(--ink-heading)]">Sign in on {site.host}</p>
           <p className="mt-1 text-[11px] leading-5 text-[var(--ink-muted)]">
             {inDesktop
-              ? "A ChatGPT tab just opened in Breadboard's browser. Sign in there as you normally would; this updates as soon as the page is signed in. Leave the tab open afterwards - it is the page your OpenAI (web) requests go through."
-              : "A browser window just opened on chatgpt.com. Sign in there as you normally would; this updates as soon as the page is signed in. The window stays open in the background afterwards - it is the page your OpenAI (web) requests go through."}
+              ? `${site.page} just opened in Breadboard's browser. Sign in there as you normally would; this updates as soon as the page is signed in. Leave the tab open afterwards - it is the page your ${site.label} requests go through.`
+              : `A browser window just opened on ${site.host}. Sign in there as you normally would; this updates as soon as the page is signed in. The window stays open in the background afterwards - it is the page your ${site.label} requests go through.`}
           </p>
         </li>
       ) : null}

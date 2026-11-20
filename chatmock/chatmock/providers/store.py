@@ -24,6 +24,7 @@ from ..utils import eprint, get_home_dir
 from .catalog import (
     CHATGPT_PROVIDER_ID,
     KIND_CHATGPT_WEB,
+    KIND_GEMINI_WEB,
     ProviderSpec,
     iter_provider_specs,
     provider_spec,
@@ -258,6 +259,8 @@ def resolve_credentials(spec: ProviderSpec) -> ResolvedCredentials:
 
         reason = chatgpt_web.unavailable_reason()
         return ResolvedCredentials(spec.id, None, base_url, reason is None, reason)
+    if spec.kind == KIND_GEMINI_WEB:
+        return ResolvedCredentials(spec.id, None, base_url, True, None)
     if spec.requires_api_key and not api_key:
         return ResolvedCredentials(spec.id, api_key, base_url, False, "no API key is configured")
     if not base_url:

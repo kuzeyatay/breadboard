@@ -86,6 +86,8 @@ const EXTERNAL_AGENT_ABORT_BY_KIND = {
     (await import("../inbox-zero/runtime-run-manager.ts")).abortRun(userId, runId),
   claude_code: async (userId, runId) =>
     (await import("../claude-code-agent/run-manager.ts")).abortRun(userId, runId),
+  paper_orchestra: async (userId, runId) =>
+    (await import("../paper-orchestra/run-manager.ts")).abortRun(userId, runId),
   codex: async (userId, runId) =>
     (await import("../codex/run-manager.ts")).abortRun(userId, runId),
   opencode: async (userId, runId) =>

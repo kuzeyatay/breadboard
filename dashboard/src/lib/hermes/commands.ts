@@ -176,7 +176,7 @@ export function assignCommandTokens<T extends {
     ...item,
     token:
       item.source === "Master Agents" || item.source === "Unified workflows"
-        ? `workflows:${item.slug}`
+        ? `master-agent:${item.slug}`
         : item.kind === "agent"
         ? item.source === "Agency Agents"
           ? agencyAgentToken(item.slug)
@@ -593,7 +593,7 @@ export async function resolveCommandMessage(
     : "";
   const workflowInvocation: ResolvedCommandMessage["invocations"] = workflowSelection ? [{
     kind: "agent",
-    slug: `workflows:${workflowSelection.workflowId}${workflowSelection.modeId ? `:${workflowSelection.modeId}` : ""}`,
+    slug: `master-agent:${workflowSelection.workflowId}${workflowSelection.modeId ? `:${workflowSelection.modeId}` : ""}`,
     id: `unified-workflow:${workflowSelection.workflowId}`,
   }] : [];
   const effectiveContext = {

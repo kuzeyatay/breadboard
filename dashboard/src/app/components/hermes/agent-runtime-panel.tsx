@@ -3827,6 +3827,32 @@ export default function AgentRuntimePanel({
                           }}
                         />
                       </div>
+                    ) : message.paperOrchestraRun ? (
+                      <div className="text-sm leading-7 text-gray-200">
+                        <InlineOpenCodeRun
+                          runId={message.paperOrchestraRun.runId}
+                          task={message.paperOrchestraRun.task}
+                          agentName="PaperOrchestra"
+                          apiSlug="paper-orchestra"
+                          persistedContent={message.content}
+                          persistedOutcome={message.externalAgentOutcome}
+                          persistedActivity={message.externalAgentActivity}
+                          persistedEdits={message.externalAgentEdits}
+                          persistedUsage={message.usage}
+                          onRetry={
+                            onRetryMessage &&
+                            !activeRun &&
+                            (message.interrupted || index === lastAssistantIndex)
+                              ? () => retryAssistantAsBranch(index)
+                              : undefined
+                          }
+                          onTerminal={(result) => {
+                            if (message.clientMessageId) {
+                              onExternalAgentTerminal?.(message.clientMessageId, result);
+                            }
+                          }}
+                        />
+                      </div>
                     ) : message.openCodeRun ? (
                       <div className="text-sm leading-7 text-gray-200">
                         <InlineOpenCodeRun
