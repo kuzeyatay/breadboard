@@ -11,7 +11,7 @@ import type { BotDefinition } from "./types.ts";
 /** Bread, the primary bot: Breadboard's own runtime (Hermes) with no persona. */
 export const BREAD_BOT_HANDLE = "bread";
 
-/** Bread in the roster and picker. It keeps its own picture (public/avatars/bread.svg), not a bot avatar. */
+/** Bread in the roster and picker: the app's own assistant, shown by name with no avatar. */
 export const BREAD_BOT = {
   id: BREAD_BOT_HANDLE,
   handle: BREAD_BOT_HANDLE,

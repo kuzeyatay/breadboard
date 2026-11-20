@@ -6,7 +6,6 @@ import type { BotAvatarConfig } from "@/lib/bots/types";
 import { BREAD_BOT, botHandle } from "@/lib/bots/mentions";
 import { loadCachedBots, peekCachedBots } from "@/lib/bots/client-cache";
 import BotAvatar from "./bot-avatar";
-import DefaultAvatar, { BREAD_AVATAR_SRC } from "../default-avatar";
 
 export interface BotMentionMenuHandle {
   handleKeyDown: (event: KeyboardEvent<HTMLElement>) => boolean;
@@ -69,7 +68,7 @@ const BotMentionMenu = forwardRef<BotMentionMenuHandle, {
               onClick={() => onSelect(choice.handle)}
               className={`flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left ${index === selected ? "bg-[var(--paper-strong)]" : "hover:bg-[var(--paper-surface)]"}`}
             >
-              {choice.avatar ? <BotAvatar avatar={choice.avatar} name={choice.name} size={32} paused /> : <DefaultAvatar src={BREAD_AVATAR_SRC} name={choice.name} size={32} />}
+              {choice.avatar ? <BotAvatar avatar={choice.avatar} name={choice.name} size={32} paused /> : null}
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-sm font-medium text-[var(--ink-heading)]">
                   {choice.name} <span className="font-normal text-[var(--ink-muted)]">@{choice.handle}</span>
