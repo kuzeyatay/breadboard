@@ -249,6 +249,21 @@ export const create_folder = tool({
   },
 })
 
+export const save_file = tool({
+  description:
+    "Save a file artifact from this chat (Word, Excel, PowerPoint, PDF, Markdown, HTML or any file) into the user's own Garden files, where the Office page lists it. Pass fileId to overwrite an existing Garden file as a new version; otherwise a new file goes into folder (default 'Office').",
+  args: {
+    gardenId: tool.schema.string().describe("Target Garden slug; omit to use the active Garden").optional(),
+    artifactId: tool.schema.string().describe("The chat artifact to save"),
+    fileId: tool.schema.string().describe("Existing Garden file to replace with a new version").optional(),
+    folder: tool.schema.string().describe("Folder for a new file; defaults to 'Office'").optional(),
+    filename: tool.schema.string().describe("Name for a new file; defaults to the artifact's filename").optional(),
+  },
+  async execute(args, ctx) {
+    return callBreadboard(ctx.sessionID, "garden_save_file", args)
+  },
+})
+
 export const move_page = tool({
   description:
     "Move one existing note into another folder of the user's own Garden immediately. The note keeps its slug and title, so existing links still resolve; only its location changes. Use an empty destination to move it to the Garden root.",

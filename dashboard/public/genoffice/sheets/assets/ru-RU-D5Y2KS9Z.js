@@ -1,0 +1,1 @@
+import{m as e}from"./index-vIV-5X14.js";const o={"sheets-note-ui":{note:{placeholder:"Введите текст здесь"},rightClick:{addNote:"Добавить примечание",deleteNote:"Удалить примечание",toggleNote:"Показать/Скрыть примечание"}}},l=e(o);export{l as default};

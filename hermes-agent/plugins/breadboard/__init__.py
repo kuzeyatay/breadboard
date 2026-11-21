@@ -920,6 +920,31 @@ _TOOLS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
         ),
     ),
     (
+        "garden_save_file",
+        "/api/hermes/tools/garden",
+        "garden",
+        _schema(
+            "garden_save_file",
+            (
+                "Save a file artifact from this chat (Word, Excel, PowerPoint, "
+                "PDF, Markdown, HTML or any other file) into the user's own "
+                "Garden files, where the Office page lists it. Pass fileId to "
+                "overwrite an existing Garden file as a new version, e.g. one "
+                "Office asked you to write; otherwise a new file is added to "
+                "the folder (default 'Office'). Make the file with the "
+                "artifact tools first."
+            ),
+            {
+                **_OPTIONAL_GARDEN,
+                "artifactId": {"type": "string", "description": "The chat artifact to save."},
+                "fileId": {"type": "string", "description": "Existing Garden file to replace with a new version."},
+                "folder": {"type": "string", "description": "Folder for a new file. Defaults to 'Office'."},
+                "filename": {"type": "string", "description": "Name for a new file. Defaults to the artifact's filename."},
+            },
+            ["artifactId"],
+        ),
+    ),
+    (
         "garden_move_page",
         "/api/hermes/tools/garden",
         "garden",

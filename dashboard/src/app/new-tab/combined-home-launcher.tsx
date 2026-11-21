@@ -9,7 +9,7 @@ import SavedBrowserBookmarksBar from "@/app/browser/browser-bookmarks-bar";
 import { BrowserQuickLinks } from "@/app/browser/browser-home-widgets";
 import NavigationLink from "@/app/components/navigation-link";
 import VoiceShortcut from "@/app/components/voice-shortcut";
-import GestureShortcut from "@/app/components/gesture-shortcut";
+import OfficeShortcut from "@/app/components/office-shortcut";
 import ScreenTimeShortcut from "@/app/components/screen-time-shortcut";
 import { useDesktopTabs } from "@/app/components/use-desktop-tabs";
 import { useStartupLoading } from "@/app/components/startup-readiness";
@@ -128,7 +128,7 @@ export default function CombinedHomeLauncher({ data, navigation }: { data: Combi
                 </NavigationLink>
               ))}
               <VoiceShortcut className={controls.destinationButton} errorClassName={controls.browserError} />
-              <GestureShortcut className={controls.destinationButton} />
+              <OfficeShortcut className={controls.destinationButton} />
               <ScreenTimeShortcut className={controls.destinationButton} />
               <NavigationLink href="/crumbs" label="Crumbs" prefetch={false} className={controls.destinationButton}>
                 <CrumbsIcon size={15} aria-hidden="true" />Crumbs

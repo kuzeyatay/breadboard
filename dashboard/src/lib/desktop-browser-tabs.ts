@@ -712,6 +712,7 @@ export type DesktopTabKind =
   | "profile"
   | "code"
   | "gestures"
+  | "office"
   | "screen-time"
   | "crumbs"
   | "design"
@@ -736,6 +737,7 @@ const ROUTE_LABELS: Record<string, { label: string; kind: DesktopTabKind }> = {
   profile: { label: "Settings", kind: "profile" },
   code: { label: "Code", kind: "code" },
   gestures: { label: "Gestures", kind: "gestures" },
+  office: { label: "Office", kind: "office" },
   "screen-time": { label: "Screen Time", kind: "screen-time" },
   crumbs: { label: "Crumbs", kind: "crumbs" },
   design: { label: "Design", kind: "design" },

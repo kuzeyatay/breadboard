@@ -1327,6 +1327,12 @@ copyTree(
   path.join(repoRoot, "dashboard", "public"),
   path.join(packagedDashboardTarget, "public"),
 );
+// GenOffice Sheets/Slides/PDF/Markdown hosts: prebuilt Node bundles forked
+// per open document (src/lib/office/editor-sessions.ts finds them beside server.js).
+copyTree(
+  path.join(repoRoot, "dashboard", "genoffice-host"),
+  path.join(packagedDashboardTarget, "genoffice-host"),
+);
 
 // Learn and document ingestion run in bounded one-job workers rather than in
 // the long-lived Next server. Stage application source (never

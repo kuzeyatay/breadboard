@@ -1,0 +1,1 @@
+import{m as e}from"./index-vIV-5X14.js";const t={"sheets-note-ui":{note:{placeholder:"Escribe aquí"},rightClick:{addNote:"Agregar nota",deleteNote:"Eliminar nota",toggleNote:"Mostrar/Ocultar nota"}}},a=e(t);export{a as default};

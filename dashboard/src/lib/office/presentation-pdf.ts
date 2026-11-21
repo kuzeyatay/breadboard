@@ -7,7 +7,7 @@ import { resolveBrowserExecutable } from "../agent-browser/browser-profile.ts";
 import { runOfficeCli } from "./officecli.ts";
 import { createDisposableScratch, releaseDisposableScratch } from "../storage/scratch.ts";
 
-function previewBrowserExecutable(): string | null {
+export function previewBrowserExecutable(): string | null {
   const explicit = process.env.BREADBOARD_VISUAL_BROWSER_PATH?.trim() ||
     process.env.AGENT_BROWSER_EXECUTABLE_PATH?.trim();
   if (explicit) return explicit;

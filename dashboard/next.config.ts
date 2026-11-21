@@ -117,6 +117,11 @@ const dataTraceExcludes = [
   "neumorphic-after/**",
   "scripts/**",
 
+  // Office sessions fork these hosts from the checkout or the explicitly
+  // staged desktop resources. Route traces must not copy a partial host.
+  "genoffice-host/**",
+  "genoffice-host-src/**",
+
   // Printer provenance belongs with the supervised LAN adapter. Packaging
   // copies this directory explicitly in prepare-app-resources.mjs; dynamic
   // filesystem traces must not pull it into unrelated dashboard routes.

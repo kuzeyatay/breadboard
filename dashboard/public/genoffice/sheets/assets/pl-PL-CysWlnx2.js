@@ -1,0 +1,1 @@
+import{m as t}from"./index-vIV-5X14.js";const e={"sheets-note-ui":{note:{placeholder:"Wpisz tutaj"},rightClick:{addNote:"Dodaj notatkę",deleteNote:"Usuń notatkę",toggleNote:"Pokaż/Ukryj notatkę"}}},a=t(e);export{a as default};

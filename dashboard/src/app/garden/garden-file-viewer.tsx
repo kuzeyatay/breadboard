@@ -9,6 +9,7 @@ import type { ModelAttachmentFormat } from "@/lib/model-attachments";
 import styles from "./garden-files.module.css";
 import { fileRequest } from "@/lib/garden-files/client";
 import { usePageLoading } from "@/app/components/use-page-loading";
+import { officeEditorApp } from "@/lib/office/types";
 import { fileExplorerControl, openInFileExplorer } from "@/lib/desktop-file-explorer";
 
 const ModelViewer = dynamic(() => import("@/app/components/cad/model-viewer"), { ssr: false });
@@ -42,6 +43,54 @@ function NativeWord({ file, editing, onSaved, onDirty, onError, copyRequest }: {
   return <iframe ref={frame} src={src} title={`${editing ? "Edit" : "Preview"} ${file.name}`} className={styles.frame} allow={editing ? "clipboard-read; clipboard-write" : ""} />;
 }
 
+/** GenOffice Sheets, Slides, PDF and Markdown, run by a server-side editor session on a copy of this file. */
+function OfficeEditor({ file, onSaved, onError, flush }: { file: GardenFileEntry; onSaved: (file: GardenFileEntry) => void; onError: (error: string, conflict: boolean) => void; flush: { current: (() => Promise<void>) | null } }) {
+  const frame = useRef<HTMLIFrameElement>(null);
+  const [src, setSrc] = useState(""), [notice, setNotice] = useState("");
+  const latest = useRef({ file, onSaved, onError });
+  latest.current = { file, onSaved, onError };
+  // One session per opened file: new versions from saving must not restart the editor.
+  useEffect(() => {
+    let session = "", cancelled = false;
+    const theme = (() => { try { return localStorage.getItem("breadboard:theme") === "dark" ? "dark" : "light"; } catch { return "light"; } })();
+    void fileRequest<{ session: string; url: string }>("/api/office/sessions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ gardenId: file.gardenId, fileId: file.id, theme }) })
+      .then(body => {
+        session = body.session;
+        flush.current = async () => {
+          const result = await fileRequest<{ value?: GardenFileEntry }>(`/api/office/sessions/${encodeURIComponent(session)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "flush" }) }).catch(() => null);
+          if (result?.value?.id === latest.current.file.id && result.value.revision !== latest.current.file.revision) latest.current.onSaved(result.value);
+        };
+        if (cancelled) void fetch(`/api/office/sessions/${encodeURIComponent(session)}`, { method: "DELETE", keepalive: true }); else setSrc(body.url); })
+      .catch(cause => { if (!cancelled) latest.current.onError(cause instanceof Error ? cause.message : "The editor could not start.", false); });
+    return () => { cancelled = true; flush.current = null; if (session) void fetch(`/api/office/sessions/${encodeURIComponent(session)}`, { method: "DELETE", keepalive: true }); };
+  }, [file.gardenId, file.id, flush]);
+  useEffect(() => {
+    const receive = (event: MessageEvent) => {
+      if (event.source !== frame.current?.contentWindow || event.origin !== window.location.origin) return;
+      const data = event.data ?? {};
+      if (data.type === "breadboard:office-saved" && data.file?.id === latest.current.file.id) latest.current.onSaved(data.file);
+      if (data.type === "breadboard:office-exported" && data.file) {
+        setNotice(`Saved ${data.file.name} to ${data.file.folder || "the Garden"}.`);
+        window.dispatchEvent(new CustomEvent("sb:garden-file-updated", { detail: data.file }));
+      }
+      if (data.type === "breadboard:office-error") latest.current.onError(String(data.error), data.conflict === true);
+      if (data.type === "breadboard:office-notice") setNotice([data.message, data.detail].filter(Boolean).join(" "));
+      if (data.type === "breadboard:office-ended") latest.current.onError(String(data.error || "The editor session ended. Reopen the file to keep editing."), false);
+    };
+    window.addEventListener("message", receive);
+    return () => window.removeEventListener("message", receive);
+  }, []);
+  useEffect(() => {
+    const theme = (event: StorageEvent) => { if (event.key === "breadboard:theme") frame.current?.contentWindow?.postMessage({ type: "breadboard:theme", theme: event.newValue }, location.origin); };
+    window.addEventListener("storage", theme);
+    return () => window.removeEventListener("storage", theme);
+  }, []);
+  return <>
+    {notice && <p role="status" className={styles.hint}>{notice}</p>}
+    {src && <iframe ref={frame} src={src} title={`Edit ${file.name}`} className={styles.frame} allow="clipboard-read; clipboard-write; display-capture; microphone; fullscreen" allowFullScreen />}
+  </>;
+}
+
 function DelimitedTable({ text, delimiter }: { text: string; delimiter: string }) {
   const rows = useMemo(() => {
     const rows: string[][] = []; let row: string[] = [], cell = "", quoted = false;
@@ -60,11 +109,11 @@ function DelimitedTable({ text, delimiter }: { text: string; delimiter: string }
 
 const sandboxHtml = (html: string) => `<!doctype html><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; base-uri 'none'; form-action 'none'"><style>body{margin:20px;font:14px system-ui}img{max-width:100%}</style>${html}`;
 
-export default function GardenFileViewer({ file, onChanged, onClose, onDirtyChange }: {
-  file: GardenFileEntry; onChanged: (entry: GardenFileEntry) => void; onClose: () => void; onDirtyChange?: (dirty: boolean) => void;
+export default function GardenFileViewer({ file, onChanged, onClose, onDirtyChange, startEditing = false }: {
+  file: GardenFileEntry; onChanged: (entry: GardenFileEntry) => void; onClose: () => void; onDirtyChange?: (dirty: boolean) => void; startEditing?: boolean;
 }) {
   const [preview, setPreview] = useState<Preview | null>(null), [editor, setEditor] = useState<Editor | null>(null);
-  const [editing, setEditing] = useState(false), [content, setContent] = useState(""), [blocks, setBlocks] = useState<Record<string, string>>({});
+  const [editing, setEditing] = useState(() => startEditing && file.canEdit), [content, setContent] = useState(""), [blocks, setBlocks] = useState<Record<string, string>>({});
   const [error, setError] = useState(""), [busy, setBusy] = useState(false), [loading, setLoading] = useState(false), [reload, setReload] = useState(0);
   const [action, setAction] = useState<"rename" | "move" | "history" | "knowledge" | null>(null), [name, setName] = useState(file.name), [folder, setFolder] = useState(file.folder);
   const [versions, setVersions] = useState<GardenFileVersion[]>([]), [folders, setFolders] = useState<string[]>([]);
@@ -77,6 +126,8 @@ export default function GardenFileViewer({ file, onChanged, onClose, onDirtyChan
   usePageLoading(loading || busy);
   const menu = useRef<HTMLDetailsElement>(null), surface = useRef<HTMLDivElement>(null);
   const endpoint = gardenFileApi(file.gardenId, file.id), source = `${endpoint}/content`, mode = file.capabilities.editor;
+  // Sheets, Slides, PDF and Markdown edit in their GenOffice editors; Word keeps the Docs editor.
+  const office = file.canEdit ? officeEditorApp(file.name) : null, officeFlush = useRef<(() => Promise<void>) | null>(null);
   const modelFormat = gardenFileExtension(file.name) as ModelAttachmentFormat, convertModel = ["step", "stp", "iges", "igs", "brep"].includes(modelFormat);
   const resourceUrl = useCallback((url: string) => {
     if (/^(?:blob:|data:)/i.test(url)) return url;
@@ -113,7 +164,8 @@ export default function GardenFileViewer({ file, onChanged, onClose, onDirtyChan
     const controller = new AbortController();
     setError(""); setPreview(null); setEditor(null);
     const native = ["pdf", "image", "audio", "video", "binary"].includes(file.capabilities.viewer);
-    if ((editing && (mode === "text" || mode === "cells" || mode === "blocks")) || !native) {
+    if (editing && office) setLoading(false);
+    else if ((editing && (mode === "text" || mode === "cells" || mode === "blocks")) || !native) {
       setLoading(true);
       void fileRequest<Editor & Preview>(`${endpoint}/${editing ? "edit" : "preview"}`, { signal: controller.signal }).then(data => {
         if (controller.signal.aborted) return;
@@ -123,7 +175,7 @@ export default function GardenFileViewer({ file, onChanged, onClose, onDirtyChan
       }).catch(cause => { if (!controller.signal.aborted) setError(cause.message); }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
     } else setLoading(false);
     return () => controller.abort();
-  }, [endpoint, file.version, file.capabilities.viewer, mode, editing, reload]);
+  }, [endpoint, file.version, file.capabilities.viewer, mode, editing, reload, office]);
 
   const changed = useCallback((entry: GardenFileEntry) => { setError(""); setConflict(false); onChanged(entry); window.dispatchEvent(new CustomEvent("sb:garden-file-updated", { detail: entry })); }, [onChanged]);
   const mutate = useCallback(async (payload: Record<string, unknown>) => {
@@ -161,7 +213,15 @@ export default function GardenFileViewer({ file, onChanged, onClose, onDirtyChan
     if (next === "history") void fileRequest<{ versions: GardenFileVersion[] }>(`${endpoint}/versions`).then(body => setVersions(body.versions)).catch(cause => setError(cause.message));
     if (next === "move") void fileRequest<{ files: GardenFileEntry[] }>(gardenFileApi(file.gardenId)).then(body => setFolders(body.files.filter(entry => entry.kind === "folder").map(entry => entry.path))).catch(cause => setError(cause.message));
   };
-  const toggleEdit = () => { if (dirty && !window.confirm("Discard your unsaved changes?")) return; setNativeDirty(false); setEditing(value => !value); setAction(null); };
+  const toggleEdit = async () => {
+    if (editing && office) {
+      // The editor's own unsaved changes are saved into the Garden before it closes.
+      setBusy(true);
+      try { await officeFlush.current?.(); } finally { setBusy(false); }
+      setEditing(false); setAction(null); return;
+    }
+    if (dirty && !window.confirm("Discard your unsaved changes?")) return; setNativeDirty(false); setEditing(value => !value); setAction(null);
+  };
   const exportToExplorer = async () => {
     if (menu.current) menu.current.open = false;
     setBusy(true); setError("");
@@ -173,7 +233,8 @@ export default function GardenFileViewer({ file, onChanged, onClose, onDirtyChan
   };
 
   let viewer;
-  if (editing && editor && (mode === "text" || mode === "cells" || mode === "blocks")) {
+  if (editing && office) viewer = <OfficeEditor key={reload} file={file} onSaved={changed} onError={nativeError} flush={officeFlush} />;
+  else if (editing && editor && (mode === "text" || mode === "cells" || mode === "blocks")) {
     viewer = mode === "text" ? <textarea autoFocus className={styles.textEditor} aria-label={`Edit ${file.name}`} spellCheck={file.capabilities.viewer === "markdown"} value={content} onChange={event => setContent(event.target.value)} />
       : <div className={styles.scroll}><input className={styles.filter} aria-label="Find a cell or slide" placeholder={mode === "cells" ? "Find a sheet or cell…" : "Find slide text…"} value={filter} onChange={event => setFilter(event.target.value)} />
         {editor.truncated && <p className={styles.hint}>Only the first editable items are shown. Other content is preserved when saving.</p>}
@@ -199,8 +260,8 @@ export default function GardenFileViewer({ file, onChanged, onClose, onDirtyChan
     <header className={styles.toolbar}>
       <button onClick={onClose} title="Back to garden" aria-label="Back to garden"><ArrowLeft size={17} /></button>
       <div className={styles.title}><strong title={file.path}>{file.name}</strong><span>{file.folder ? `${file.folder} · ` : ""}{gardenFileSize(file.size)}{file.visibility === "private" ? " · Private" : " · Shared with garden"}</span></div>
-      {file.canEdit && mode && mode !== "pdf" && <button onClick={toggleEdit} disabled={busy || loading} className={styles.labeled}>{editing ? <X size={15} /> : <Pencil size={15} />}{editing ? "Done" : "Edit"}</button>}
-      {editing && mode !== "docx" && <button className={styles.labeled} onClick={() => void save()} disabled={!dirty || busy}><Save size={15} />{busy ? "Saving…" : "Save"}</button>}
+      {file.canEdit && (office || (mode && mode !== "pdf")) && <button onClick={() => void toggleEdit()} disabled={busy || loading} className={styles.labeled}>{editing ? <X size={15} /> : <Pencil size={15} />}{editing ? "Done" : "Edit"}</button>}
+      {editing && mode !== "docx" && !office && <button className={styles.labeled} onClick={() => void save()} disabled={!dirty || busy}><Save size={15} />{busy ? "Saving…" : "Save"}</button>}
       <a href={`${source}?download=1`} download={file.name} aria-label="Download original" title="Download"><Download size={17} /></a>
       {file.canEdit && <details ref={menu} className={styles.menu}><summary aria-label="File actions" title="File actions"><MoreHorizontal size={18} /></summary><div>
         <button onClick={() => chooseAction("rename")} disabled={dirty}>Rename</button><button onClick={() => chooseAction("move")} disabled={dirty}>Move to…</button>

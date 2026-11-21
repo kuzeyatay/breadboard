@@ -115,17 +115,27 @@ export default function GardenFilesBridge({ iframeRef, quartzOrigin, initialClus
     generation.current++; dirty.current = false; setFile(null); setFolder(null); setPicker(null); post({ type: "second-brain:file-view", open: false });
     const url = new URL(window.location.href); url.searchParams.delete("file"); url.searchParams.delete("fileGarden"); window.history.replaceState(window.history.state, "", url);
   }, [mayLeave, post]);
+  const [startEditing, setStartEditing] = useState(false);
   const openFile = useCallback(async (cluster: string, id: string, history = true) => {
     if (!mayLeave()) return;
     const ticket = ++generation.current; setError("");
     try {
       const body = await fileRequest<{ file: GardenFileEntry }>(gardenFileApi(cluster, id));
       if (generation.current !== ticket) return;
-      dirty.current = false; setFile(body.file); setFolder(null); setPicker(null);
+      // Office opens documents straight into their editor with ?edit=1.
+      const params = new URLSearchParams(location.search), edit = params.get("edit") === "1";
+      if (params.has("edit")) { const url = new URL(location.href); url.searchParams.delete("edit"); window.history.replaceState(window.history.state, "", url); }
+      dirty.current = false; setStartEditing(edit); setFile(body.file); setFolder(null); setPicker(null);
       await refresh(cluster);
       if (generation.current !== ticket) return;
       post({ type: "second-brain:file-view", open: true, fileId: id });
       if (history) { const url = new URL(window.location.href); url.searchParams.set("file", id); url.searchParams.set("fileGarden", cluster); window.history.pushState(window.history.state, "", url); }
+      // Office hands a document to Bread by opening it with ?ask=: attach it to this Garden's chat with the instruction ready to send.
+      const ask = new URLSearchParams(location.search).get("ask");
+      if (ask !== null) {
+        const url = new URL(location.href); url.searchParams.delete("ask"); window.history.replaceState(window.history.state, "", url);
+        window.dispatchEvent(new CustomEvent("sb:garden-file-use", { detail: { file: body.file, action: "chat", instruction: ask } }));
+      }
     } catch (cause) { setError(cause instanceof Error ? cause.message : "The file could not be opened."); }
   }, [mayLeave, post, refresh]);
   const openFolder = useCallback((target: Target) => {
@@ -226,7 +236,7 @@ export default function GardenFilesBridge({ iframeRef, quartzOrigin, initialClus
           await refresh(target.cluster);
         }).catch(cause => setError(cause.message));
       }}>
-      {file ? <Viewer key={file.id} file={file} onChanged={onChanged} onClose={close} onDirtyChange={onDirty} /> : folder && <FilesFolder target={folder} files={folder.trash ? trash : snapshots[folder.cluster]?.files ?? []} canEdit={snapshots[folder.cluster]?.canEdit ?? false}
+      {file ? <Viewer key={file.id} file={file} startEditing={startEditing} onChanged={onChanged} onClose={close} onDirtyChange={onDirty} /> : folder && <FilesFolder target={folder} files={folder.trash ? trash : snapshots[folder.cluster]?.files ?? []} canEdit={snapshots[folder.cluster]?.canEdit ?? false}
         onOpen={entry => void openFile(entry.gardenId, entry.id)} onFolder={openFolder} onClose={close} onAdd={() => pickFiles.current?.click()} onImportFolder={() => pickFolder.current?.click()}
         onRefresh={() => { void refresh(folder.cluster); if (folder.trash) void fileRequest<{ files: GardenFileEntry[] }>(`${gardenFileApi(folder.cluster)}?trash=1`).then(body => setTrash(body.files)); }} onError={setError}
         onNote={path => { close(); post({ type: "second-brain:open-library-note", cluster: folder.cluster, path }); }} />}

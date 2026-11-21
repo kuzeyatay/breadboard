@@ -22,7 +22,7 @@ import AsciiArtwork from "@/app/components/ascii-artwork";
 import RainBackground from "@/app/components/rain-background";
 import { SpotifyAmbientProvider } from "@/app/components/spotify-ambient-context";
 import VoiceShortcut from "@/app/components/voice-shortcut";
-import GestureShortcut from "@/app/components/gesture-shortcut";
+import OfficeShortcut from "@/app/components/office-shortcut";
 import ScreenTimeShortcut from "@/app/components/screen-time-shortcut";
 import NewTabSearch from "./new-tab-search";
 import type { NewTabGarden } from "@/lib/new-tab-gardens";
@@ -156,7 +156,7 @@ export default function NewTabClient({
           ))}
           <BrowserShortcut query="" />
           <VoiceShortcut className={styles.destinationButton} errorClassName={styles.browserError} />
-          <GestureShortcut className={styles.destinationButton} />
+          <OfficeShortcut className={styles.destinationButton} />
               <ScreenTimeShortcut className={styles.destinationButton} />
         </nav>
 

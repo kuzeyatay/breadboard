@@ -297,6 +297,9 @@ export async function executeGardenTool(input: {
     if (input.tool === "garden_save_note") {
       return await executeSaveNote(cluster, token, input.args);
     }
+    if (input.tool === "garden_save_file") {
+      return await executeSaveFile(cluster, token, input.args);
+    }
     if ((GARDEN_STRUCTURE_TOOLS as readonly string[]).includes(input.tool)) {
       return await executeStructureTool(input.tool, cluster, token, input.args);
     }
@@ -767,6 +770,45 @@ async function executeSaveNote(
         : {}),
     },
   };
+}
+
+/**
+ * Copy a chat artifact into the Garden's file library, where Office lists it.
+ * With fileId it becomes a new version of that file (Office's "Write with
+ * Bread" hands Bread a blank file to fill); otherwise it is a new file.
+ */
+async function executeSaveFile(
+  cluster: ClusterRow,
+  token: CapabilityToken,
+  args: Record<string, unknown>,
+): Promise<GardenToolResult> {
+  const tool = "garden_save_file";
+  if (!["dashboard_terminal", "garden_chat"].includes(token.surface) || token.userId !== cluster.user_id || !token.conversationId) {
+    return { ok: false, tool, error: "Saving files into a Garden requires its owner's signed-in chat." };
+  }
+  const { getArtifactById, artifactDeliveryFile } = await import("./artifact-store.ts");
+  const artifact = typeof args.artifactId === "string" ? getArtifactById(args.artifactId.trim()) : null;
+  if (!artifact || artifact.user_id !== token.userId || artifact.conversation_id !== token.conversationId) {
+    return { ok: false, tool, error: "That artifact is not in this chat. Create or import it first." };
+  }
+  const delivery = artifactDeliveryFile(artifact);
+  const { gardenFiles } = await import("../garden-files/repository.ts");
+  const { gardenFilePath } = await import("../garden-files/store.ts");
+  const { gardenFileExtension } = await import("../garden-files/types.ts");
+  const store = gardenFiles();
+  const scope = { gardenId: cluster.slug, clusterId: cluster.id, ownerId: cluster.user_id, userId: token.userId };
+  const fileId = typeof args.fileId === "string" ? args.fileId.trim() : "";
+  const target = fileId ? store.get(scope, fileId) : null;
+  if (target && gardenFileExtension(target.name) !== gardenFileExtension(delivery.filename)) {
+    return { ok: false, tool, error: `${target.name} needs a .${gardenFileExtension(target.name)} file, but the artifact is ${delivery.filename}. Make the matching file type, or omit fileId to save it as a new file.` };
+  }
+  const folder = typeof args.folder === "string" && args.folder.trim() ? args.folder.trim() : "Office";
+  const filename = typeof args.filename === "string" && args.filename.trim() ? args.filename.trim() : delivery.filename;
+  const stage = await store.stage(fs.createReadStream(delivery.absolutePath));
+  try {
+    const file = target ? store.save(scope, target.id, target.revision, stage) : store.import(scope, gardenFilePath(`${folder}/${filename}`), stage);
+    return { ok: true, tool, data: { saved: true, gardenId: cluster.slug, gardenName: cluster.name, fileId: file.id, name: file.name, path: file.path, version: file.version, replaced: Boolean(target) } };
+  } finally { store.discard(stage); }
 }
 
 /**

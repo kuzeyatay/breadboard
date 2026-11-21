@@ -2452,6 +2452,12 @@ function checkResourcesRoot(resources, binRoot, label) {
     path.join(dashboard, "public", "genoffice-editor", "app.css"),
     `${label} GenOffice Office-style CSS`,
   );
+  for (const app of ["markdown", "pdf", "sheets", "slides"]) {
+    requireFile(path.join(dashboard, "public", "genoffice", app, "preload.js"), `${label} GenOffice ${app} editor bridge`);
+    requireFile(path.join(dashboard, "genoffice-host", `${app}.cjs`), `${label} GenOffice ${app} host`);
+  }
+  requireFile(path.join(dashboard, "genoffice-host", "resources", "wasm", "pdfium.wasm"), `${label} GenOffice PDF engine`);
+  requireFile(path.join(dashboard, "genoffice-host", "resources", "native", "xlsx-sidecar.exe"), `${label} GenOffice spreadsheet engine`);
   requireFile(
     path.join(dashboard, "scripts", "learn-worker.mjs"),
     `${label} durable Learn worker entrypoint`,

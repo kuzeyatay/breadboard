@@ -9,6 +9,8 @@ export async function GET(request: Request, context: Context) {
     const { gardenId } = await context.params;
     const { store, scope } = await gardenFileContext(gardenId);
     const files = store.list(scope, new URL(request.url).searchParams.get("trash") === "1");
+    // Documents added before Office existed get their Quartz notes on the next visit.
+    if (scope.userId === scope.ownerId) void import("@/lib/office/quartz-mirror.ts").then(({ scheduleOfficeMirrors }) => scheduleOfficeMirrors(store, scope)).catch(() => undefined);
     return fileJson({ files, canEdit: scope.userId === scope.ownerId });
   } catch (error) { return fileError(error); }
 }

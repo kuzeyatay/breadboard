@@ -1,0 +1,15 @@
+/* Dialogs the Breadboard host shows inside a GenOffice editor (message boxes from the main process). */
+.breadboard-office-dialog { border: 1px solid rgba(0, 0, 0, 0.12); border-radius: 10px; padding: 20px 22px 16px; max-width: 420px; font: 14px/1.45 system-ui, sans-serif; color: #1d1d1f; background: #fff; box-shadow: 0 18px 48px rgba(0, 0, 0, 0.18); }
+.breadboard-office-dialog::backdrop { background: rgba(0, 0, 0, 0.25); }
+.breadboard-office-dialog p { margin: 0 0 10px; white-space: pre-wrap; }
+.breadboard-office-dialog-title { font-weight: 600; }
+.breadboard-office-dialog label { display: flex; gap: 6px; align-items: center; margin: 4px 0 10px; }
+.breadboard-office-dialog-buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+.breadboard-office-dialog-buttons button { border: 1px solid rgba(0, 0, 0, 0.16); border-radius: 6px; padding: 6px 14px; font: inherit; background: #f5f5f7; color: inherit; cursor: pointer; }
+.breadboard-office-dialog-buttons button[data-default] { background: #2b6fd6; border-color: #2b6fd6; color: #fff; }
+@media (prefers-color-scheme: dark) {
+  .breadboard-office-dialog { background: #2a2a2c; color: #f2f2f4; border-color: rgba(255, 255, 255, 0.12); }
+  .breadboard-office-dialog-buttons button { background: #3a3a3d; border-color: rgba(255, 255, 255, 0.14); }
+}
+
+.breadboard-office-ended { margin: 40vh auto 0; text-align: center; font: 15px system-ui, sans-serif; color: #9aa0a6; }

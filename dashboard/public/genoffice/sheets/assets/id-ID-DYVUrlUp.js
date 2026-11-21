@@ -1,0 +1,1 @@
+import{m as a}from"./index-vIV-5X14.js";const e={"sheets-note-ui":{note:{placeholder:"Ketik di sini"},rightClick:{addNote:"Tambah Catatan",deleteNote:"Hapus Catatan",toggleNote:"Tampilkan/Sembunyikan Catatan"}}},o=a(e);export{o as default};
