@@ -28,6 +28,7 @@ import ArtifactViewer, {
 } from "./artifact-viewer";
 import { artifactLocalPath, openInFileExplorer } from "@/lib/desktop-file-explorer";
 import ArtifactImageStudio from "./artifact-image-studio";
+import { openImageInDesign } from "@/app/design/open-in-design";
 import ArtifactImagePreview from "./artifact-image-preview";
 import ArtifactVideoStudio from "./artifact-video-studio";
 import ArtifactVideoPreview from "./artifact-video-preview";
@@ -190,8 +191,6 @@ export interface InlineImageStudioRequest {
   seed?: { title?: string; prompt?: string; heading?: string };
   /** A text artifact whose content should seed the prompt. */
   promptArtifact?: PresentedArtifact | null;
-  /** An existing image to edit rather than create. */
-  sourceArtifact?: PresentedArtifact | null;
   onCreated?: (artifact: PresentedArtifact) => void;
 }
 
@@ -321,7 +320,7 @@ export function InlineArtifactCardsProvider({
     artifacts: PresentedArtifact[];
   }>(() => ({ query, artifacts: artifactCache.get(query) ?? [] }));
   const [openId, setOpenId] = useState<string | null>(null);
-  const [imageStudioSource, setImageStudioSource] = useState<PresentedArtifact | "new" | null>(null);
+  const [imageStudioOpen, setImageStudioOpen] = useState(false);
   const [imagePromptSource, setImagePromptSource] = useState<PresentedArtifact | null>(null);
   const [imageStudioRequest, setImageStudioRequest] =
     useState<InlineImageStudioRequest | null>(null);
@@ -338,7 +337,7 @@ export function InlineArtifactCardsProvider({
   if (editorQuery !== query) {
     setEditorQuery(query);
     setOpenId(null);
-    setImageStudioSource(null);
+    setImageStudioOpen(false);
     setImagePromptSource(null);
     setImageStudioRequest(null);
     setVideoStudioSource(null);
@@ -475,7 +474,7 @@ export function InlineArtifactCardsProvider({
     setOpenId(null);
     setImageStudioRequest(request);
     setImagePromptSource(request.promptArtifact ?? null);
-    setImageStudioSource(request.sourceArtifact ?? "new");
+    setImageStudioOpen(true);
   }, []);
 
   // The video studio takes no seed and creates nothing: it always opens on one
@@ -487,7 +486,7 @@ export function InlineArtifactCardsProvider({
   }, []);
 
   const closeImageStudio = useCallback(() => {
-    setImageStudioSource(null);
+    setImageStudioOpen(false);
     setImagePromptSource(null);
     setImageStudioRequest(null);
   }, []);
@@ -517,7 +516,7 @@ export function InlineArtifactCardsProvider({
         // editor must stay mounted while an AI-applied document save becomes
         // visible to the surrounding transcript.
         onUpdated={registerArtifact}
-        onEditImage={(artifact) => openImageStudio({ sourceArtifact: artifact })}
+        onEditImage={openImageInDesign}
         onCreateImage={(artifact) => openImageStudio({ promptArtifact: artifact })}
         onEditVideo={openVideoStudio}
       />
@@ -528,9 +527,8 @@ export function InlineArtifactCardsProvider({
           onClose={closeVideoStudio}
         />
       ) : null}
-      {imageStudioSource ? (
+      {imageStudioOpen ? (
         <ArtifactImageStudio
-          sourceArtifact={imageStudioSource === "new" ? null : imageStudioSource}
           promptArtifact={imagePromptSource}
           seed={imageStudioRequest?.seed ?? null}
           creationConversationId={conversationId}

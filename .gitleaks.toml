@@ -142,3 +142,8 @@ condition = "AND"
 paths = ['''^paper-orchestra/utils/paper_banana_utils\.py$''']
 regexTarget = "line"
 regexes = ['''^\s*output_key = "top10_diagrams"\s*$''']
+
+[[allowlists]]
+description = "Doory upstream snapshot: placeholder tokens in its tests, the RFC 6455 sample WebSocket key in CI, and a localStorage key name"
+targetRules = ["generic-api-key"]
+paths = ['''^doory/(\.github/workflows/ci\.yml|backend/apps/[^/]+/tests/.*|frontend/src/features/settings/ApiTokensSection\.test\.tsx|frontend/src/lib/contrast\.ts)$''']

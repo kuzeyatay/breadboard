@@ -1,0 +1,182 @@
+.menu {
+  position: fixed;
+  z-index: var(--z-drawer);
+  min-width: 220px;
+  max-width: min(320px, calc(100vw - 16px));
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+  padding: var(--space-1);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface-raised);
+  box-shadow: var(--shadow-md);
+  animation: menu-in var(--duration-fast) var(--ease-out);
+}
+
+.item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-height: 34px;
+  padding: 0 var(--space-3) 0 var(--space-2);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text);
+  font: 500 var(--text-sm) / 1.2 var(--font-sans);
+  text-align: left;
+  cursor: pointer;
+}
+
+.item:hover,
+.item:focus-visible {
+  outline: none;
+  background: var(--color-bg-muted);
+}
+/* High contrast: keyboard focus gets a ring, not only the faint hover wash. */
+:global(:root[data-contrast='more']) .item:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--color-text);
+}
+
+.item[aria-disabled='true'] {
+  opacity: 0.4;
+  cursor: default;
+  pointer-events: none;
+}
+
+.danger {
+  color: var(--color-danger);
+}
+
+.icon {
+  display: inline-flex;
+  width: 20px;
+  justify-content: center;
+  color: var(--color-text-muted);
+}
+
+.item[aria-checked='true'] .icon {
+  color: var(--color-brand);
+}
+
+.label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kbd {
+  margin-left: var(--space-4);
+  color: var(--color-text-subtle);
+  font: 500 var(--text-xs) / 1 var(--font-sans);
+}
+
+.heading {
+  padding: var(--space-2) var(--space-2) var(--space-1);
+  color: var(--color-text-subtle);
+  font: 600 12px / 1.3 var(--font-sans);
+}
+
+.sep {
+  height: 1px;
+  margin: var(--space-1) var(--space-2);
+  background: var(--color-border);
+}
+
+@keyframes menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+}
+
+.hint {
+  margin-left: auto;
+  padding-left: var(--space-4);
+  color: var(--color-text-muted);
+  font: 500 11px / 1 var(--font-sans);
+}
+
+/* Tiles: a grid of three short choices (file types in the Share menu). */
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  padding: 2px var(--space-1) var(--space-1);
+}
+.tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  padding: 8px 4px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text);
+  cursor: pointer;
+}
+.tile:hover,
+.tile:focus-visible {
+  outline: none;
+  border-color: var(--color-border-strong);
+  background: var(--color-bg-muted);
+}
+.tile:focus-visible,
+.feature:focus-visible {
+  box-shadow: var(--focus-ring);
+}
+.tileLabel {
+  font: 700 var(--text-sm) / 1.2 var(--font-sans);
+}
+.tileHint {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--color-text-subtle);
+  font: 500 11px / 1.2 var(--font-sans);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A highlighted row: the suggested download. */
+.feature {
+  min-height: 0;
+  margin: 2px 0 6px;
+  padding: 10px;
+  border: 1px solid var(--color-brand-border, var(--color-border-strong));
+  background: var(--color-brand-soft);
+}
+.feature:hover,
+.feature:focus-visible {
+  background: var(--color-brand-soft);
+  border-color: var(--color-brand);
+}
+.badge {
+  flex: none;
+  width: 38px;
+  padding: 3px 0;
+  border-radius: 6px;
+  background: var(--color-surface);
+  color: var(--color-brand);
+  font: 800 11px / 1.2 var(--font-sans);
+  letter-spacing: 0.03em;
+  text-align: center;
+}
+.featureText {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.featureLabel {
+  font: 700 var(--text-sm) / 1.25 var(--font-sans);
+}
+.featureHint {
+  color: var(--color-text-muted);
+  font: 500 12px / 1.3 var(--font-sans);
+}

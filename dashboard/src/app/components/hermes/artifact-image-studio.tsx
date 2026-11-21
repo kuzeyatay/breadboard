@@ -1,13 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { releaseCanvasPixels } from "@/app/components/canvas-resource";
+import { useEffect, useState } from "react";
 import type { PresentedArtifact } from "@/lib/hermes/artifact-types";
 import { artifactUrl } from "./artifact-viewer";
 import { openArtifactConversation } from "./artifact-conversation";
 
 type CreateTab = "generate" | "upload";
-type EditTab = "adjust" | "ai";
 
 /**
  * Opening values for a caller that has the copy in hand already — a social post
@@ -21,8 +19,8 @@ export interface ArtifactImageStudioSeed {
   heading?: string;
 }
 
+/** Creates image artifacts. Editing an existing image happens on the Design page (open-in-design.ts). */
 interface ArtifactImageStudioProps {
-  sourceArtifact?: PresentedArtifact | null;
   /** A non-image artifact whose content should seed a new image. */
   promptArtifact?: PresentedArtifact | null;
   seed?: ArtifactImageStudioSeed | null;
@@ -36,8 +34,6 @@ interface ArtifactImageStudioProps {
 
 const fieldClass =
   "w-full rounded-lg border border-[var(--line)] bg-[var(--paper-raised)] px-3 py-2 text-sm text-[var(--ink)] outline-none placeholder:text-[var(--ink-muted)] focus:border-[var(--botanical)] focus:ring-1 focus:ring-[var(--botanical)]";
-const buttonClass =
-  "neu-button rounded-lg border border-[var(--line)] bg-[var(--paper-strong)] px-3 py-2 text-xs font-medium text-[var(--ink-heading)] transition-colors hover:bg-[var(--paper-raised)] disabled:cursor-not-allowed disabled:opacity-50";
 const primaryButtonClass =
   "neu-button neu-button-accent rounded-lg px-4 py-2 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-50";
 
@@ -52,18 +48,7 @@ async function responseArtifact(response: Response): Promise<PresentedArtifact> 
   return body.artifact;
 }
 
-function canvasBlob(canvas: HTMLCanvasElement): Promise<Blob> {
-  return new Promise((resolve, reject) => {
-    canvas.toBlob(
-      (blob) => (blob ? resolve(blob) : reject(new Error("The edited image could not be encoded."))),
-      "image/png",
-      0.95,
-    );
-  });
-}
-
 export default function ArtifactImageStudio({
-  sourceArtifact = null,
   promptArtifact = null,
   seed = null,
   creationConversationId,
@@ -73,35 +58,19 @@ export default function ArtifactImageStudio({
   onClose,
   onCreated,
 }: ArtifactImageStudioProps) {
-  const editing = Boolean(sourceArtifact);
-  const originArtifact = sourceArtifact ?? promptArtifact;
   const [createTab, setCreateTab] = useState<CreateTab>("generate");
-  const [editTab, setEditTab] = useState<EditTab>("adjust");
   const [prompt, setPrompt] = useState("");
   const [title, setTitle] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [filePreview, setFilePreview] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [rotation, setRotation] = useState(0);
-  const [flipX, setFlipX] = useState(false);
-  const [flipY, setFlipY] = useState(false);
-  const [brightness, setBrightness] = useState(100);
-  const [contrast, setContrast] = useState(100);
-  const [saturation, setSaturation] = useState(100);
-  const [imageReady, setImageReady] = useState(false);
-  const sourceImageRef = useRef<HTMLImageElement | null>(null);
-
-  const sourceUrl = sourceArtifact ? artifactUrl(sourceArtifact, "preview") : "";
-  const previewFilter = `brightness(${brightness}%) contrast(${contrast}%) saturate(${saturation}%)`;
-  const previewTransform = `rotate(${rotation}deg) scale(${flipX ? -1 : 1}, ${flipY ? -1 : 1})`;
-  const activeTab = editing ? editTab : createTab;
-  const modalTitle = editing
-    ? `Edit ${sourceArtifact?.title ?? "image"}`
-    : (seed?.heading ??
-      (promptArtifact
-        ? `Create image for ${String(promptArtifact.metadata.socialsManagerNetworkName ?? "social post")}`
-        : "Create image artifact"));
+  const activeTab = createTab;
+  const modalTitle =
+    seed?.heading ??
+    (promptArtifact
+      ? `Create image for ${String(promptArtifact.metadata.socialsManagerNetworkName ?? "social post")}`
+      : "Create image artifact");
 
   useEffect(() => {
     if (!file) {
@@ -162,13 +131,8 @@ export default function ArtifactImageStudio({
     return () => window.removeEventListener("keydown", onKey);
   }, [busy, onClose]);
 
-  const adjustments = useMemo(
-    () => ({ rotation, flipX, flipY, brightness, contrast, saturation }),
-    [brightness, contrast, flipX, flipY, rotation, saturation],
-  );
-
   async function resolveConversationId(): Promise<string> {
-    if (originArtifact?.conversationId) return originArtifact.conversationId;
+    if (promptArtifact?.conversationId) return promptArtifact.conversationId;
     if (creationConversationId) return creationConversationId;
     if (ensureCreationConversation) return ensureCreationConversation();
     if (!sourceSurface) throw new Error("Open a Terminal or Garden chat before creating an image.");
@@ -176,14 +140,14 @@ export default function ArtifactImageStudio({
     return openArtifactConversation({
       surface: sourceSurface,
       gardenSlug,
-      title: editing ? "Image editing" : "Artifact images",
+      title: "Artifact images",
     });
   }
 
-  async function submitJson(operation: "generate" | "edit") {
+  async function generate() {
     const normalizedPrompt = prompt.trim();
     if (!normalizedPrompt) {
-      setError(operation === "edit" ? "Describe the change you want." : "Describe the image you want.");
+      setError("Describe the image you want.");
       return;
     }
     setBusy(true);
@@ -194,11 +158,10 @@ export default function ArtifactImageStudio({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          operation,
+          operation: "generate",
           conversationId,
           prompt: normalizedPrompt,
           ...(title.trim() ? { title: title.trim() } : {}),
-          ...(sourceArtifact ? { sourceArtifactId: sourceArtifact.id } : {}),
           ...(promptArtifact ? { parentArtifactId: promptArtifact.id } : {}),
         }),
       });
@@ -211,7 +174,7 @@ export default function ArtifactImageStudio({
     }
   }
 
-  async function submitUpload(upload: File, source?: PresentedArtifact | null) {
+  async function submitUpload(upload: File) {
     setBusy(true);
     setError(null);
     try {
@@ -220,10 +183,6 @@ export default function ArtifactImageStudio({
       form.set("conversationId", conversationId);
       form.set("file", upload);
       if (title.trim()) form.set("title", title.trim());
-      if (source) {
-        form.set("sourceArtifactId", source.id);
-        form.set("adjustments", JSON.stringify(adjustments));
-      }
       if (promptArtifact) form.set("parentArtifactId", promptArtifact.id);
       const response = await fetch("/api/hermes/artifacts/images", {
         method: "POST",
@@ -236,49 +195,6 @@ export default function ArtifactImageStudio({
     } finally {
       setBusy(false);
     }
-  }
-
-  async function saveAdjustments() {
-    const image = sourceImageRef.current;
-    if (!image || !imageReady) {
-      setError("The source image is still loading.");
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    let canvas: HTMLCanvasElement | null = null;
-    try {
-      const quarterTurn = Math.abs(rotation % 180) === 90;
-      canvas = document.createElement("canvas");
-      canvas.width = quarterTurn ? image.naturalHeight : image.naturalWidth;
-      canvas.height = quarterTurn ? image.naturalWidth : image.naturalHeight;
-      const context = canvas.getContext("2d");
-      if (!context) throw new Error("Image editing is unavailable in this browser.");
-      context.filter = previewFilter;
-      context.translate(canvas.width / 2, canvas.height / 2);
-      context.rotate((rotation * Math.PI) / 180);
-      context.scale(flipX ? -1 : 1, flipY ? -1 : 1);
-      context.drawImage(image, -image.naturalWidth / 2, -image.naturalHeight / 2);
-      const blob = await canvasBlob(canvas);
-      releaseCanvasPixels(canvas);
-      canvas = null;
-      const edited = new File([blob], "edited-image.png", { type: "image/png" });
-      await submitUpload(edited, sourceArtifact);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "The edited image could not be saved.");
-      setBusy(false);
-    } finally {
-      if (canvas) releaseCanvasPixels(canvas);
-    }
-  }
-
-  function resetAdjustments() {
-    setRotation(0);
-    setFlipX(false);
-    setFlipY(false);
-    setBrightness(100);
-    setContrast(100);
-    setSaturation(100);
   }
 
   const tabButton = (active: boolean) =>
@@ -304,9 +220,7 @@ export default function ArtifactImageStudio({
           <div className="min-w-0 flex-1">
             <h2 className="truncate text-sm font-semibold text-[var(--ink-heading)]">{modalTitle}</h2>
             <p className="text-xs text-[var(--ink-muted)]">
-              {editing
-                ? "Save adjustments or create an AI-edited child artifact."
-                : promptArtifact || seed
+              {promptArtifact || seed
                   ? "Generate or upload artwork for this post. The caption is already included in the prompt."
                   : "Generate with AI or upload an existing image."}
             </p>
@@ -324,18 +238,7 @@ export default function ArtifactImageStudio({
 
         <div className="flex min-h-0 flex-1 flex-col md:flex-row">
           <div className="flex min-h-[18rem] flex-1 items-center justify-center overflow-auto bg-[var(--neu-surface-pressed)] p-5 sm:p-7">
-            {editing ? (
-              // eslint-disable-next-line @next/next/no-img-element -- private, auth-scoped artifact preview
-              <img
-                ref={sourceImageRef}
-                src={sourceUrl}
-                alt={sourceArtifact?.title ?? "Image being edited"}
-                className="max-h-[74vh] max-w-full rounded-lg border border-[var(--line)] object-contain shadow-lg transition-transform"
-                style={{ filter: previewFilter, transform: previewTransform }}
-                onLoad={() => setImageReady(true)}
-                onError={() => setError("The source image could not be loaded.")}
-              />
-            ) : filePreview ? (
+            {filePreview ? (
               // eslint-disable-next-line @next/next/no-img-element -- local user-selected object URL
               <img src={filePreview} alt="Upload preview" className="max-h-[74vh] max-w-full rounded-lg border border-[var(--line)] object-contain shadow-lg" />
             ) : (
@@ -353,39 +256,30 @@ export default function ArtifactImageStudio({
 
           <aside className="w-full shrink-0 overflow-y-auto border-t border-[var(--line)] bg-[var(--paper-surface)] p-4 md:w-[26rem] md:border-l md:border-t-0">
             <div className="mb-4 flex rounded-lg bg-[var(--paper-strong)] p-1" role="tablist" aria-label="Image tools">
-              {editing ? (
-                <>
-                  <button type="button" role="tab" aria-selected={editTab === "adjust"} className={`flex-1 ${tabButton(editTab === "adjust")}`} onClick={() => setEditTab("adjust")}>Adjust</button>
-                  <button type="button" role="tab" aria-selected={editTab === "ai"} className={`flex-1 ${tabButton(editTab === "ai")}`} onClick={() => setEditTab("ai")}>AI edit</button>
-                </>
-              ) : (
-                <>
-                  <button type="button" role="tab" aria-selected={createTab === "generate"} className={`flex-1 ${tabButton(createTab === "generate")}`} onClick={() => setCreateTab("generate")}>Generate</button>
-                  <button type="button" role="tab" aria-selected={createTab === "upload"} className={`flex-1 ${tabButton(createTab === "upload")}`} onClick={() => setCreateTab("upload")}>Upload</button>
-                </>
-              )}
+              <button type="button" role="tab" aria-selected={createTab === "generate"} className={`flex-1 ${tabButton(createTab === "generate")}`} onClick={() => setCreateTab("generate")}>Generate</button>
+              <button type="button" role="tab" aria-selected={createTab === "upload"} className={`flex-1 ${tabButton(createTab === "upload")}`} onClick={() => setCreateTab("upload")}>Upload</button>
             </div>
 
             <label className="mb-4 block text-xs font-medium text-[var(--ink-heading)]">
               Artifact title <span className="font-normal text-[var(--ink-muted)]">(optional)</span>
-              <input className={`${fieldClass} mt-1.5`} value={title} maxLength={240} placeholder={editing ? `Edited — ${sourceArtifact?.title ?? "image"}` : "Generated image"} onChange={(event) => setTitle(event.target.value)} />
+              <input className={`${fieldClass} mt-1.5`} value={title} maxLength={240} placeholder="Generated image" onChange={(event) => setTitle(event.target.value)} />
             </label>
 
-            {activeTab === "generate" || activeTab === "ai" ? (
+            {activeTab === "generate" ? (
               <>
                 <label className="block text-xs font-medium text-[var(--ink-heading)]">
-                  {editing ? "What should change?" : "Describe the image"}
+                  Describe the image
                   <textarea
                     className={`${fieldClass} mt-1.5 min-h-32 resize-y`}
                     value={prompt}
                     maxLength={4000}
-                    placeholder={editing ? "Replace the background with a vivid twilight city scene…" : "A cinematic poster with sapphire and violet light…"}
+                    placeholder="A cinematic poster with sapphire and violet light…"
                     onChange={(event) => setPrompt(event.target.value)}
                   />
                 </label>
                 <p className="mt-2 text-[10px] leading-4 text-[var(--ink-muted)]">Uses the image provider selected for chat.</p>
-                <button type="button" className={`${primaryButtonClass} mt-4 w-full`} disabled={busy || !prompt.trim()} onClick={() => void submitJson(editing ? "edit" : "generate")}>
-                  {busy ? (editing ? "Editing…" : "Generating…") : (editing ? "Create AI edit" : "Generate artifact")}
+                <button type="button" className={`${primaryButtonClass} mt-4 w-full`} disabled={busy || !prompt.trim()} onClick={() => void generate()}>
+                  {busy ? "Generating…" : "Generate artifact"}
                 </button>
               </>
             ) : null}
@@ -402,31 +296,6 @@ export default function ArtifactImageStudio({
                   {busy ? "Uploading…" : "Upload artifact"}
                 </button>
               </>
-            ) : null}
-
-            {activeTab === "adjust" ? (
-              <div className="space-y-4">
-                <div className="grid grid-cols-2 gap-2">
-                  <button type="button" className={buttonClass} onClick={() => setRotation((value) => value - 90)}>Rotate left</button>
-                  <button type="button" className={buttonClass} onClick={() => setRotation((value) => value + 90)}>Rotate right</button>
-                  <button type="button" className={buttonClass} onClick={() => setFlipX((value) => !value)}>Flip horizontal</button>
-                  <button type="button" className={buttonClass} onClick={() => setFlipY((value) => !value)}>Flip vertical</button>
-                </div>
-                {([
-                  ["Brightness", brightness, setBrightness, 20, 180],
-                  ["Contrast", contrast, setContrast, 20, 180],
-                  ["Saturation", saturation, setSaturation, 0, 200],
-                ] as const).map(([label, value, setter, min, max]) => (
-                  <label key={label} className="block text-xs font-medium text-[var(--ink-heading)]">
-                    <span className="flex justify-between"><span>{label}</span><span className="font-normal text-[var(--ink-muted)]">{value}%</span></span>
-                    <input className="mt-2 w-full accent-[var(--botanical)]" type="range" min={min} max={max} value={value} onChange={(event) => setter(Number(event.target.value))} />
-                  </label>
-                ))}
-                <div className="flex gap-2">
-                  <button type="button" className={`${buttonClass} flex-1`} disabled={busy} onClick={resetAdjustments}>Reset</button>
-                  <button type="button" className={`${primaryButtonClass} flex-[1.4]`} disabled={busy || !imageReady} onClick={() => void saveAdjustments()}>{busy ? "Saving…" : "Save as new artifact"}</button>
-                </div>
-              </div>
             ) : null}
 
             {error ? (

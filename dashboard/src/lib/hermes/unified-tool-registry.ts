@@ -17,6 +17,7 @@ import {
   runtimeMcpConfig,
 } from "./mcp-connections.ts";
 import { MCP_INSTALLER_CONNECTION, MCP_INSTALLER_CONTEXT } from "./mcp-installer-context.ts";
+import { DOORY_CONNECTION, dooryContext } from "../doory/context.ts";
 
 export interface ConnectedAppTurnRegistry {
   connectionNames: string[];
@@ -79,8 +80,9 @@ export async function connectedAppRegistryForTurn(input: {
   const tools: Record<string, boolean> = { ...websiteApis.tools };
   // The MCP installer is always on the table: "add an MCP for X" can come up in any chat.
   tools.mcp_call = true;
-  const connectionNames: string[] = [...websiteApis.connectionNames, MCP_INSTALLER_CONNECTION];
-  const contextLines: string[] = [websiteApis.systemContext, MCP_INSTALLER_CONTEXT];
+  // So is the Design editor: Bread drives it whenever an image or design is being made or changed.
+  const connectionNames: string[] = [...websiteApis.connectionNames, MCP_INSTALLER_CONNECTION, DOORY_CONNECTION];
+  const contextLines: string[] = [websiteApis.systemContext, MCP_INSTALLER_CONTEXT, dooryContext(input.userId)];
   let toolCount = websiteApis.toolCount;
 
   try {

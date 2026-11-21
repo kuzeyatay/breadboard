@@ -6,7 +6,7 @@ function source(relativePath) {
   return fs.readFileSync(new URL(relativePath, import.meta.url), "utf8");
 }
 
-test("artifact pages keep image editing without a standalone new-image button", () => {
+test("artifact pages edit images on the Design page and create them in the studio", () => {
   const panel = source("../src/app/components/hermes/artifact-panel.tsx");
   const studio = source("../src/app/components/hermes/artifact-image-studio.tsx");
   const viewer = source("../src/app/components/hermes/artifact-viewer.tsx");
@@ -15,17 +15,33 @@ test("artifact pages keep image editing without a standalone new-image button", 
   assert.doesNotMatch(panel, />\s*New image\s*</);
   assert.match(studio, />Generate</);
   assert.match(studio, />Upload</);
-  assert.match(studio, />AI edit</);
-  assert.match(studio, />Adjust</);
+  assert.doesNotMatch(studio, />AI edit<|>Adjust<|Save as new artifact/);
   assert.match(viewer, />\s*Edit image\s*</);
   assert.match(viewer, /sourceHermesTool === "socials_manager_draft"/);
   assert.match(viewer, />\s*Create image\s*</);
-  assert.match(studio, /sourceArtifactId/);
+  assert.match(inline, /onEditImage=\{openImageInDesign\}/);
+  assert.match(panel, /openImageInDesign\(artifact\)/);
   assert.match(studio, /promptArtifact/);
   assert.match(studio, /Post copy:/);
   assert.match(inline, /onCreateImage=/);
   assert.match(inline, /<ArtifactImageStudio/);
-  assert.match(studio, /Save as new artifact/);
+});
+
+test("Design opens chat images in Doory with Bread on the left and saves back as a child artifact", () => {
+  const open = source("../src/app/design/open-in-design.ts");
+  const client = source("../src/app/design/design-client.tsx");
+  const route = source("../src/app/api/doory/route.ts");
+  const mcp = source("../src/app/api/hermes/tools/mcp/route.ts");
+  const registry = source("../src/lib/hermes/unified-tool-registry.ts");
+  const launcher = source("../src/app/new-tab/combined-home-launcher.tsx");
+  assert.match(open, /\/design\?/);
+  assert.match(client, /<DashboardAgentTerminal[^>]*presentation="drawer"/);
+  assert.match(client, /action: "import"/);
+  assert.match(client, /Save to chat/);
+  assert.match(route, /parentArtifactId: artifact\.id/);
+  assert.match(mcp, /slug === DOORY_CONNECTION/);
+  assert.match(registry, /DOORY_CONNECTION/);
+  assert.ok(launcher.indexOf('href="/design"') > launcher.indexOf('href="/crumbs"'), "Design sits next to Crumbs");
 });
 
 test("Hermes generates verified image artifacts and renders the full image above its menu", () => {

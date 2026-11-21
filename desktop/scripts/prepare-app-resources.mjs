@@ -3689,6 +3689,36 @@ fs.copyFileSync(
   );
 }
 
+// --- Doory design editor (the Design page) --------------------------------
+// The dashboard starts doory/breadboard/serve.py on first use and builds its
+// Python venv below the data root (lib/doory/server.ts), so the app image only
+// carries the reviewed backend source and the built web app.
+{
+  const sourceRoot = path.join(repoRoot, "doory");
+  const targetRoot = path.join(stagingRoot, "doory");
+  requirePinnedVendoredSource("Doory", sourceRoot, "a05f1a86ecf8b7769b6329387f071b3ca988e126");
+  const frontend = path.join(sourceRoot, "frontend");
+  if (!fs.existsSync(path.join(frontend, "dist", "index.html"))) {
+    const npm = path.join(path.dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js");
+    for (const args of [[npm, "ci", "--no-audit", "--no-fund"], [path.join(frontend, "node_modules", "vite", "bin", "vite.js"), "build"]]) {
+      const built = spawnSync(process.execPath, args, { cwd: frontend, stdio: "inherit", shell: false });
+      if (built.status !== 0) fail(`Doory web app build failed: ${path.basename(args[0])} ${args[1]}`);
+    }
+  }
+  freshDir(targetRoot);
+  const mutable = /(^|\/)(?:\.venv|node_modules|__pycache__|\.pytest_cache|tests|media|staticfiles)(?:\/|$)|\.sqlite3$|(^|\/)\.env$/u;
+  copyTree(path.join(sourceRoot, "backend"), path.join(targetRoot, "backend"), (rel) => mutable.test(rel));
+  copyTree(path.join(sourceRoot, "breadboard"), path.join(targetRoot, "breadboard"), (rel) => mutable.test(rel));
+  copyTree(path.join(frontend, "dist"), path.join(targetRoot, "frontend", "dist"));
+  copyTree(path.join(sourceRoot, "licenses"), path.join(targetRoot, "licenses"));
+  for (const file of ["LICENSE", "NOTICE", "THIRD_PARTY.md", "BREADBOARD_SOURCE_COMMIT"]) {
+    fs.copyFileSync(path.join(sourceRoot, file), path.join(targetRoot, file));
+  }
+  for (const required of ["breadboard/serve.py", "backend/requirements.txt", "backend/doory/mcp_asgi.py", "frontend/dist/index.html", "frontend/dist/render.html"]) {
+    if (!fs.existsSync(path.join(targetRoot, ...required.split("/")))) fail(`Doory staged source is incomplete: ${required}`);
+  }
+}
+
 // --- Wardrobe pinned immutable source and packaged runtime -----------------
 // Installed mode starts Vite from this reviewed application-root closure.
 // Its gallery/library/model-reference data remains under the writable data

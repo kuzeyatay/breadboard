@@ -1,0 +1,30 @@
+.chosen {
+  display: flex;
+  flex: 1;
+  gap: var(--space-3);
+  align-items: center;
+  min-width: 0;
+  margin-right: auto;
+}
+
+.chosen > span {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.chosen strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chosen small {
+  color: var(--color-text-subtle);
+}
+
+@media (max-width: 639px) {
+  .chosen > small {
+    display: none;
+  }
+}

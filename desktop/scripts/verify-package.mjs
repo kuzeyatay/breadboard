@@ -3797,6 +3797,18 @@ function checkResourcesRoot(resources, binRoot, label) {
     (name) => name === ".venv" || name === ".runtime" || name === "node_modules" || name === "__pycache__",
     `${label} forbidden HyperFrames mutable/cache file staged`,
   );
+  const dooryRoot = path.join(resources, "app-services", "doory");
+  for (const relative of [
+    ["LICENSE"], ["BREADBOARD_SOURCE_COMMIT"], ["breadboard", "serve.py"], ["backend", "requirements.txt"],
+    ["backend", "doory", "mcp_asgi.py"], ["frontend", "dist", "index.html"], ["frontend", "dist", "render.html"],
+  ]) {
+    requireDirectFile(path.join(dooryRoot, ...relative), `${label} Doory design editor ${relative.join("/")}`);
+  }
+  forbidMatches(
+    dooryRoot,
+    (name) => name === ".venv" || name === "node_modules" || name === "__pycache__" || name.endsWith(".sqlite3") || name === ".env",
+    `${label} forbidden Doory mutable/cache file staged`,
+  );
   const openworkRoot = path.join(resources, "app-services", "openwork");
   for (const relative of [
     ["apps", "server", "src", "cli.ts"],

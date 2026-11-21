@@ -35,6 +35,7 @@ import ArtifactViewer, {
   highlightArtifactRequest,
 } from "./artifact-viewer";
 import ArtifactImageStudio from "./artifact-image-studio";
+import { openImageInDesign } from "@/app/design/open-in-design";
 import ArtifactVideoStudio from "./artifact-video-studio";
 import {
   ArtifactDockHostProvider,
@@ -446,7 +447,7 @@ export default function ArtifactPanel({
     sourceSurface !== "dashboard_terminal" && inheritedViewerHost !== null;
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [imageStudioSource, setImageStudioSource] = useState<PresentedArtifact | "new" | null>(null);
+  const [imageStudioOpen, setImageStudioOpen] = useState(false);
   const [imagePromptSource, setImagePromptSource] = useState<PresentedArtifact | null>(null);
   const [videoStudioSource, setVideoStudioSource] = useState<PresentedArtifact | null>(null);
   const [ownedCreationConversationId, setOwnedCreationConversationId] = useState<string | null>(null);
@@ -1030,13 +1031,12 @@ export default function ArtifactPanel({
           }}
           onEditImage={(artifact) => {
             setOpenId(null);
-            setImagePromptSource(null);
-            setImageStudioSource(artifact);
+            openImageInDesign(artifact);
           }}
           onCreateImage={(artifact) => {
             setOpenId(null);
             setImagePromptSource(artifact);
-            setImageStudioSource("new");
+            setImageStudioOpen(true);
           }}
           onEditVideo={(artifact) => {
             setOpenId(null);
@@ -1053,9 +1053,8 @@ export default function ArtifactPanel({
           onClose={() => setVideoStudioSource(null)}
         />
       ) : null}
-      {imageStudioSource ? (
+      {imageStudioOpen ? (
         <ArtifactImageStudio
-          sourceArtifact={imageStudioSource === "new" ? null : imageStudioSource}
           promptArtifact={imagePromptSource}
           creationConversationId={creationConversationId ?? ownedCreationConversationId ?? conversationId}
           ensureCreationConversation={resolveCreationConversation}
@@ -1063,7 +1062,7 @@ export default function ArtifactPanel({
           gardenSlug={gardenSlug}
           onCreated={handleImageCreated}
           onClose={() => {
-            setImageStudioSource(null);
+            setImageStudioOpen(false);
             setImagePromptSource(null);
           }}
         />

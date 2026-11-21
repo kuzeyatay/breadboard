@@ -92,6 +92,7 @@ compression) after those exclusions.
 | `DeepTutor` | https://github.com/HKUDS/DeepTutor | `main` | `37c3db6df7e886aee4f61c97ec5e618b8ab379e8` |
 | `deer-flow` | https://github.com/bytedance/deer-flow.git | `main` | `99c926b7bbcd0570870bc24ceb13ab934935f49c` |
 | `diagram-design` | https://github.com/cathrynlavery/diagram-design | `main` | `09df49d8d1a1c7fb2efdfcdc7a2a0713534350a6` |
+| `doory` | https://github.com/shaongitbd/doory | `main` | `a05f1a86ecf8b7769b6329387f071b3ca988e126` |
 | `emilkowalski-skills` | https://github.com/emilkowalski/skills | `main` | `de33dbed000212b54400a33767d1e4d03654db2a` |
 | `goal` | https://github.com/secemp9/goal | `main` | `0161050d73ee1b3ec71d92ef88a3c0d0725ed65f` |
 | `gods-eye-view` | https://github.com/bilawalsidhu/gods-eye-view | `main` | `314a0e1c2ef668cb110674b737e19a44ff6fc1ef` |

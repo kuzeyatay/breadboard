@@ -52,6 +52,7 @@ import { isCodeIndexConnectionSlug } from "@/lib/code-index/repository-digest.ts
 import { getConversationById } from "@/lib/conversations/store.ts";
 import { missingRunArtifact } from "@/lib/hermes/artifact-completion.ts";
 import { callMcpInstaller, MCP_INSTALLER_CONNECTION } from "@/lib/hermes/mcp-installer.ts";
+import { DOORY_CONNECTION } from "@/lib/doory/context.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -231,6 +232,17 @@ export async function POST(request: Request) {
         });
       }
       return NextResponse.json({ ok: true, data: result.data });
+    }
+
+    if (slug === DOORY_CONNECTION) {
+      const { callDooryMcp } = await import("@/lib/doory/server.ts");
+      const data = await callDooryMcp(tool, args, request.signal);
+      recordAuditEvent({
+        eventType: "mcp.tool_completed", runtimeSessionId: session.id,
+        userId: session.user_id, gardenId: session.garden_id,
+        payload: { runId: run.id, provider: DOORY_CONNECTION, tool, success: (data as { isError?: boolean }).isError !== true },
+      });
+      return NextResponse.json({ ok: true, data });
     }
 
     if (slug === API_ANYTHING_CONNECTION) {

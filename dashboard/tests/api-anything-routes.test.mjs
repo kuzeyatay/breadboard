@@ -42,7 +42,8 @@ test("every shared chat registry includes website APIs even when other connector
   };
   for (const deferMcpConnections of [false, true]) {
     const registry = await connectedAppRegistryForTurn({ runtime, userId: 7, directory: root, mode: "research", deferMcpConnections });
-    assert.deepEqual(registry.connectionNames, ["api-anything", "mcp-installer"]);
+    assert.deepEqual(registry.connectionNames, ["api-anything", "mcp-installer", "doory"]);
+    assert.match(registry.systemContext, /mcp_call connection="doory"/);
     assert.equal(registry.tools.mcp_call, true);
     assert.equal(registry.toolCount, 4);
     assert.match(registry.systemContext, /prefer Breadboard's embedded API Anything/);
