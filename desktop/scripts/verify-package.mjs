@@ -3805,7 +3805,7 @@ function checkResourcesRoot(resources, binRoot, label) {
   );
   const dooryRoot = path.join(resources, "app-services", "doory");
   for (const relative of [
-    ["LICENSE"], ["BREADBOARD_SOURCE_COMMIT"], ["breadboard", "serve.py"], ["backend", "requirements.txt"],
+    ["LICENSE"], ["BREADBOARD_SOURCE_COMMIT"], ["breadboard", "serve.py"], ["breadboard", "bridge.js"], ["breadboard", "fonts", "SourceSans3.ttf"], ["backend", "requirements.txt"],
     ["backend", "doory", "mcp_asgi.py"], ["frontend", "dist", "index.html"], ["frontend", "dist", "render.html"],
   ]) {
     requireDirectFile(path.join(dooryRoot, ...relative), `${label} Doory design editor ${relative.join("/")}`);

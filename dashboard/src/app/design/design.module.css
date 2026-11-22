@@ -27,3 +27,17 @@
 
 @media (prefers-reduced-motion: reduce) { .rail { transition: none; } }
 @media (max-width: 720px) { .rail[data-open] { position: absolute; z-index: 5; height: 100%; background: var(--paper-surface); box-shadow: 0 0 30px rgb(0 0 0 / 18%); } }
+
+/* The design assistant: Bread for this page, laid out like the PDF assistant. */
+.assistant { display: flex; height: 100%; min-height: 0; flex-direction: column; background: var(--paper-bg); color: var(--ink); }
+.assistantHead { display: flex; align-items: center; gap: 6px; padding: 10px 12px 10px 16px; border-bottom: 1px solid var(--line); }
+.assistantTitle { flex: 1; min-width: 0; margin: 0; font-size: 14px; font-weight: 600; color: var(--ink-heading); }
+.history { max-height: 14rem; flex-shrink: 0; overflow: auto; padding: 6px; border-bottom: 1px solid var(--line); font-size: 12px; }
+.history p { margin: 0; padding: 8px; color: var(--ink-muted); }
+.history button { display: flex; width: 100%; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 6px; text-align: left; }
+.history button span:first-child { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.history button:hover:not(:disabled) { background: var(--paper-strong); }
+.history button:disabled { opacity: 0.4; }
+.assistantEmpty { margin: 0; padding: 32px 20px; text-align: center; font-size: 14px; line-height: 1.5; color: var(--ink-muted); }
+.assistantContext { display: flex; min-width: 0; gap: 4px; margin: 0 0 4px; padding: 0 12px; font-size: 11px; line-height: 20px; color: var(--ink-muted); }
+.assistantContext strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; color: var(--ink); }

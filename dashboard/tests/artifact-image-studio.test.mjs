@@ -35,13 +35,26 @@ test("Design opens chat images in Doory with Bread on the left and saves back as
   const registry = source("../src/lib/hermes/unified-tool-registry.ts");
   const launcher = source("../src/app/new-tab/combined-home-launcher.tsx");
   assert.match(open, /\/design\?/);
-  assert.match(client, /<DashboardAgentTerminal[^>]*presentation="drawer"/);
+  // A dedicated design assistant (like the PDF one), not the browser drawer terminal.
+  const assistant = source("../src/app/design/design-assistant.tsx");
+  assert.match(client, /<DesignAssistant /);
+  assert.doesNotMatch(client, /DashboardAgentTerminal/);
+  assert.match(assistant, /useAgentSession\("dashboard_terminal"/);
+  assert.match(assistant, /pageSlug: DESIGN_CHATS/);
+  assert.match(assistant, /Design assistant/);
   assert.match(client, /action: "import"/);
   assert.match(client, /Save to chat/);
   assert.match(route, /parentArtifactId: artifact\.id/);
   assert.match(mcp, /slug === DOORY_CONNECTION/);
   assert.match(registry, /DOORY_CONNECTION/);
   assert.ok(launcher.indexOf('href="/design"') > launcher.indexOf('href="/crumbs"'), "Design sits next to Crumbs");
+  // The framed editor wears Breadboard's theme and font, without Doory's name, bunny or account menu.
+  const bridge = source("../../doory/breadboard/bridge.js");
+  assert.match(client, /source: "breadboard-theme"/);
+  assert.match(bridge, /'--color-bg': t\.bg/);
+  assert.match(bridge, /Source Sans 3/);
+  assert.match(bridge, /replace\(NAME, 'Design'\)/);
+  assert.match(bridge, /\[aria-label\^="Account menu for"\]\{display:none/);
 });
 
 test("Hermes generates verified image artifacts and renders the full image above its menu", () => {

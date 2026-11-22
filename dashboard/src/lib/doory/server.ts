@@ -26,7 +26,11 @@ const venv = () => path.join(data(), ".venv");
 const python = () => path.join(venv(), process.platform === "win32" ? "Scripts/python.exe" : "bin/python");
 
 async function healthy(): Promise<boolean> {
-  try { return (await fetch(`${DOORY_ORIGIN}/mcp/health`, { signal: AbortSignal.timeout(1500) })).ok; } catch { return false; }
+  // Doory's own answer, not just any 200: a single-page app on the port answers every path with its index.html.
+  try {
+    const response = await fetch(`${DOORY_ORIGIN}/mcp/health`, { signal: AbortSignal.timeout(1500) });
+    return response.ok && (await response.json() as { status?: string }).status === "ok";
+  } catch { return false; }
 }
 
 function run(command: string, args: string[], cwd: string, log: string): Promise<void> {

@@ -22,10 +22,8 @@ sys.path[:0] = [str(HERE), str(ROOT / "backend")]
 BREAD_EMAIL = "bread@breadboard.local"
 TOKEN_NAME = "Bread (Breadboard)"
 # Reports the editor's address to the Design page so Bread knows which design is open.
-REPORTER = (
-    b"<script>(function(){var last='';setInterval(function(){if(location.href!==last){last=location.href;"
-    b"try{parent.postMessage({source:'doory',href:last},'*')}catch(e){}}},500)})()</script>"
-)
+# Location reports, Breadboard's theme and name, injected into every page of the app (bridge.js).
+REPORTER = b"<script>" + (Path(__file__).with_name("bridge.js")).read_bytes() + b"</script>"
 
 
 def _secret(path: Path) -> str:
@@ -130,6 +128,11 @@ def build_app(data: Path):
             return await mcp_app(scope, receive, send)
         if scope["type"] == "websocket" or path.startswith(django_prefixes):
             return await django_app(scope, receive, send)
+        if path.startswith("/bb-fonts/"):
+            # Breadboard's own font (Source Sans 3, OFL), so the editor reads like the rest of the app.
+            file = inside(Path(__file__).with_name("fonts"), path[len("/bb-fonts/"):])
+            if file:
+                return await send_file(send, file, True)
         if path.startswith("/media/"):
             file = inside(media, path[len("/media/"):])
             if file:

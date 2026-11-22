@@ -3720,7 +3720,7 @@ fs.copyFileSync(
   for (const file of ["LICENSE", "NOTICE", "THIRD_PARTY.md", "BREADBOARD_SOURCE_COMMIT"]) {
     fs.copyFileSync(path.join(sourceRoot, file), path.join(targetRoot, file));
   }
-  for (const required of ["breadboard/serve.py", "backend/requirements.txt", "backend/doory/mcp_asgi.py", "frontend/dist/index.html", "frontend/dist/render.html"]) {
+  for (const required of ["breadboard/serve.py", "breadboard/bridge.js", "breadboard/fonts/SourceSans3.ttf", "backend/requirements.txt", "backend/doory/mcp_asgi.py", "frontend/dist/index.html", "frontend/dist/render.html"]) {
     if (!fs.existsSync(path.join(targetRoot, ...required.split("/")))) fail(`Doory staged source is incomplete: ${required}`);
   }
 }

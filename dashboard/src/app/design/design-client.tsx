@@ -1,8 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { Check, PanelLeftClose, PanelLeftOpen, Send } from "lucide-react";
-import DashboardAgentTerminal from "@/app/components/hermes/dashboard-agent-terminal";
+import { Check, PanelLeftOpen, Send } from "lucide-react";
+import DesignAssistant from "./design-assistant";
 import { cancelNavigationProgress, startNavigationProgress } from "@/app/components/navigation-progress";
 import styles from "./design.module.css";
 
@@ -14,6 +14,18 @@ const MIN_RAIL = 340, MAX_RAIL = 720;
 
 function stored<T>(key: string, fallback: T): T {
   try { const raw = localStorage.getItem(key); return raw ? JSON.parse(raw) as T : fallback; } catch { return fallback; }
+}
+
+/** Breadboard's current theme, read live so the framed editor matches whichever theme is on. */
+function currentTheme() {
+  const root = getComputedStyle(document.documentElement);
+  const token = (name: string) => root.getPropertyValue(name).trim();
+  return {
+    bg: token("--paper-bg"), surface: token("--paper-surface"), raised: token("--paper-raised"), strong: token("--paper-strong"),
+    ink: token("--ink"), muted: token("--ink-muted"), line: token("--line"), lineStrong: token("--line-strong"),
+    accent: token("--botanical"), accentHover: token("--botanical-hover"),
+    font: getComputedStyle(document.body).fontFamily, scheme: document.documentElement.dataset.theme === "dark" || root.colorScheme.includes("dark") ? "dark" : "light",
+  };
 }
 
 async function call(body: Record<string, unknown>) {
@@ -28,6 +40,7 @@ export default function DesignClient({ artifact, initialDesign }: { artifact: So
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
   const [designId, setDesignId] = useState<string | null>(initialDesign);
+  const [designTitle, setDesignTitle] = useState<string | null>(artifact?.title ?? null);
   const [rail, setRail] = useState({ open: true, width: 440 });
   const [resizing, setResizing] = useState(false);
   const [save, setSave] = useState<{ state: "idle" | "saving" | "saved"; error?: string }>({ state: "idle" });
@@ -69,9 +82,11 @@ export default function DesignClient({ artifact, initialDesign }: { artifact: So
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
       if (event.source !== frame.current?.contentWindow) return;
-      const data = event.data as { source?: string; href?: string } | null;
+      const data = event.data as { source?: string; href?: string; title?: string } | null;
       if (data?.source !== "doory" || typeof data.href !== "string") return;
-      setDesignId(DESIGN_PATH.exec(data.href)?.[1] ?? null);
+      const id = DESIGN_PATH.exec(data.href)?.[1] ?? null;
+      setDesignId(id);
+      setDesignTitle(id && data.title && data.title !== "Design" ? data.title : null);
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
@@ -81,6 +96,18 @@ export default function DesignClient({ artifact, initialDesign }: { artifact: So
     setSave({ state: "idle" });
   }, [designId]);
   useEffect(() => () => { void call({ action: "focus", designId: null }).catch(() => {}); }, []);
+
+  // The editor wears Breadboard's theme, and follows it when the theme changes.
+  const sendTheme = useCallback(() => {
+    frame.current?.contentWindow?.postMessage({ source: "breadboard-theme", theme: currentTheme() }, "*");
+  }, []);
+  useEffect(() => {
+    const observer = new MutationObserver(sendTheme);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "data-theme", "style"] });
+    const media = matchMedia("(prefers-color-scheme: dark)");
+    media.addEventListener("change", sendTheme);
+    return () => { observer.disconnect(); media.removeEventListener("change", sendTheme); };
+  }, [sendTheme]);
 
   async function saveToChat() {
     if (!artifact || !designId) return;
@@ -113,21 +140,21 @@ export default function DesignClient({ artifact, initialDesign }: { artifact: So
 
   return (
     <div className={styles.shell} data-resizing={resizing || undefined}>
-      <aside className={styles.rail} data-open={rail.open || undefined} style={{ width: rail.open ? rail.width : 0 }} aria-label="Bread" aria-hidden={!rail.open}>
+      <aside className={styles.rail} data-open={rail.open || undefined} style={{ width: rail.open ? rail.width : 0 }} aria-label="Design assistant" aria-hidden={!rail.open}>
         <div className={styles.railInner} style={{ width: rail.width }}>
-          <div className="browser-tool-panel browser-tool-panel-terminal" data-active="true">
-            <DashboardAgentTerminal scope="mine" restoreOwnerKey="design" presentation="drawer" />
-          </div>
+          <DesignAssistant designTitle={designTitle} editing={Boolean(designId)} onHide={() => updateRail({ ...rail, open: false })} />
         </div>
-        {rail.open && <div className={styles.resize} role="separator" aria-orientation="vertical" aria-label="Resize Bread" onPointerDown={startResize} />}
+        {rail.open && <div className={styles.resize} role="separator" aria-orientation="vertical" aria-label="Resize design assistant" onPointerDown={startResize} />}
       </aside>
       <main className={styles.stage}>
         <header className={styles.bar}>
-          <button type="button" className={styles.iconButton} onClick={() => updateRail({ ...rail, open: !rail.open })}
-            aria-label={rail.open ? "Hide Bread" : "Show Bread"} title={rail.open ? "Hide Bread" : "Show Bread"} aria-expanded={rail.open}>
-            {rail.open ? <PanelLeftClose size={17} /> : <PanelLeftOpen size={17} />}
-          </button>
-          <span className={styles.title}>{artifact ? artifact.title : "Design"}</span>
+          {!rail.open && (
+            <button type="button" className={styles.iconButton} onClick={() => updateRail({ ...rail, open: true })}
+              aria-label="Show design assistant" title="Show design assistant" aria-expanded={false}>
+              <PanelLeftOpen size={17} />
+            </button>
+          )}
+          <span className={styles.title}>{designTitle ?? "Design"}</span>
           {save.error && <span role="alert" className={styles.error}>{save.error}</span>}
           {artifact && (
             <button type="button" className={styles.primary} disabled={!designId || save.state === "saving"} onClick={() => void saveToChat()}
@@ -142,7 +169,7 @@ export default function DesignClient({ artifact, initialDesign }: { artifact: So
             {error} <button type="button" onClick={() => setAttempt(n => n + 1)}>Try again</button>
           </p>
         ) : frameSrc ? (
-          <iframe ref={frame} className={styles.frame} src={frameSrc} title="Design editor" onLoad={cancelNavigationProgress}
+          <iframe ref={frame} className={styles.frame} src={frameSrc} title="Design editor" onLoad={() => { sendTheme(); cancelNavigationProgress(); }}
             allow="clipboard-read; clipboard-write; fullscreen" />
         ) : <div className={styles.frame} />}
       </main>
