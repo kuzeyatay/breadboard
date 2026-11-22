@@ -53,7 +53,10 @@
     '[class^="_hero_"],[class*=" _hero_"]{background:var(--color-bg-subtle)!important;border:1px solid var(--color-border);padding-right:var(--space-6)!important}' +
     // Hard-coded white fills around thumbnails and on the "All sizes" tile; the design pages themselves stay white.
     '[class^="_thumb_"],[class*=" _thumb_"]{background:var(--color-surface)!important;border-color:var(--color-border)!important}' +
-    '[class^="_allSizes_"],[class*=" _allSizes_"]{background:transparent!important}';
+    '[class^="_allSizes_"],[class*=" _allSizes_"]{background:transparent!important}' +
+    // The download dialog's preview stage is dark in every theme; Breadboard's ground instead of Doory's plum.
+    // ponytail: the class hash belongs to download.module.css as built; it changes only if that file changes.
+    '[class*="_preview_wx6q6_"]{background:#141815!important}';
   (document.head || document.documentElement).appendChild(brand);
 
   function rename(root) {
