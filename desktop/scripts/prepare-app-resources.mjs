@@ -3725,6 +3725,32 @@ fs.copyFileSync(
   }
 }
 
+// --- Timeline Studio video editor (the Video Studio page) ------------------
+// A static browser app: the dashboard starts timeline-studio/breadboard/serve.mjs
+// with its own Node (lib/timeline-studio/server.ts), which serves dist/ and the
+// bridge Bread drives it through. Only the build, the glue and licenses ship.
+{
+  const sourceRoot = path.join(repoRoot, "timeline-studio");
+  const targetRoot = path.join(stagingRoot, "timeline-studio");
+  requirePinnedVendoredSource("Timeline Studio", sourceRoot, "8891c08072f015fe97634d6eefd8e5aaef1be3df");
+  if (!fs.existsSync(path.join(sourceRoot, "dist", "index.html"))) {
+    const npm = path.join(path.dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js");
+    for (const args of [[npm, "ci", "--no-audit", "--no-fund", "--ignore-scripts"], [path.join(sourceRoot, "node_modules", "vite", "bin", "vite.js"), "build"]]) {
+      const built = spawnSync(process.execPath, args, { cwd: sourceRoot, stdio: "inherit", shell: false, env: { ...process.env, NODE_OPTIONS: "--max-old-space-size=8192" } });
+      if (built.status !== 0) fail(`Timeline Studio build failed: ${path.basename(args[0])} ${args[1]}`);
+    }
+  }
+  freshDir(targetRoot);
+  copyTree(path.join(sourceRoot, "dist"), path.join(targetRoot, "dist"));
+  copyTree(path.join(sourceRoot, "breadboard"), path.join(targetRoot, "breadboard"));
+  for (const file of ["LICENSE", "MODEL_LICENSES.md", "BREADBOARD_SOURCE_COMMIT"]) {
+    fs.copyFileSync(path.join(sourceRoot, file), path.join(targetRoot, file));
+  }
+  for (const required of ["breadboard/serve.mjs", "breadboard/bridge.js", "dist/index.html"]) {
+    if (!fs.existsSync(path.join(targetRoot, ...required.split("/")))) fail(`Timeline Studio staged source is incomplete: ${required}`);
+  }
+}
+
 // --- Wardrobe pinned immutable source and packaged runtime -----------------
 // Installed mode starts Vite from this reviewed application-root closure.
 // Its gallery/library/model-reference data remains under the writable data

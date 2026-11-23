@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { ListTodo, Palette, Settings, Timer, UsersRound } from "lucide-react";
+import { Clapperboard, ListTodo, Palette, Settings, Timer, UsersRound } from "lucide-react";
 import VSCodeIcon from "@/app/components/vscode-icon";
 import CrumbsIcon from "@/app/components/crumbs-icon";
 import BrowserHomeAccessories from "@/app/browser/browser-home-accessories";
@@ -135,6 +135,9 @@ export default function CombinedHomeLauncher({ data, navigation }: { data: Combi
               </NavigationLink>
               <NavigationLink href="/design" label="Design" prefetch={false} className={controls.destinationButton}>
                 <Palette size={15} aria-hidden="true" />Design
+              </NavigationLink>
+              <NavigationLink href="/video-studio" label="Video" prefetch={false} className={controls.destinationButton}>
+                <Clapperboard size={15} aria-hidden="true" />Video
               </NavigationLink>
             </nav>
             <BrowserQuickLinks navigate={url => void navigate(url)} ownerKey={data.widgetOwnerKey} active={active} />

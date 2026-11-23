@@ -1,6 +1,6 @@
 import type { ConversationRow } from "../conversations/store.ts";
 import db from "../db.ts";
-import { isPdfAssistantPageContext } from "../pdf-assistant-scope.ts";
+import { isReaderAssistantPageContext } from "../pdf-assistant-scope.ts";
 import { conversationOrigin } from "./session-surface.ts";
 import {
   listConversationMessages,
@@ -156,12 +156,12 @@ function presentSessionBase(conversation: ConversationRow) {
   const origin = conversationOrigin(conversation);
   // Agent mode off never creates a runtime. The first reserved user turn
   // already carries the PDF key, so its chat still restores in that reader.
-  const pdfContext = !runtime?.page_slug && ["PDF", "PDF Assistant"].includes(conversation.origin_label ?? "")
+  const pdfContext = !runtime?.page_slug && ["PDF", "PDF Assistant", "Video Assistant"].includes(conversation.origin_label ?? "")
     ? db.prepare(`SELECT json_extract(metadata, '$.activePageSlug') AS pageSlug
         FROM conversation_messages WHERE conversation_id = ? AND role = 'user'
         AND json_valid(metadata) ORDER BY order_index LIMIT 1`).get(conversation.id) as { pageSlug?: unknown } | undefined
     : undefined;
-  const pageSlug = runtime?.page_slug ?? (isPdfAssistantPageContext(conversation.surface, pdfContext?.pageSlug) ? pdfContext!.pageSlug as string : null);
+  const pageSlug = runtime?.page_slug ?? (isReaderAssistantPageContext(conversation.surface, pdfContext?.pageSlug) ? pdfContext!.pageSlug as string : null);
   return {
     ...presentConversation(conversation),
     surface: conversation.surface,

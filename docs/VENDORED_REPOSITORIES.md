@@ -140,6 +140,7 @@ compression) after those exclusions.
 | `stable-fast-3d` | https://github.com/Stability-AI/stable-fast-3d | `main` | `ff21fc491b4dc5314bf6734c7c0dabd86b5f5bb2` |
 | `stirling-pdf` | https://github.com/Stirling-Tools/stirling-pdf | `main` | `833d951fd0f8ba946138def5a93eab7e1e877850` |
 | `subsai` | https://github.com/absadiki/subsai | `main` | `5ed78a85d2b868a907c811404f7cd9179db39968` |
+| `timeline-studio` | https://github.com/MartinDelophy/ai-video-editor | `main` | `8891c08072f015fe97634d6eefd8e5aaef1be3df` |
 | `tradingagents` | https://github.com/tauricresearch/tradingagents | `main` | `271e8c88a9874cae3f4ba8059b78301c13fa9e18` |
 | `ts-fsrs` | https://github.com/open-spaced-repetition/ts-fsrs | `main` | `cdec8d2f8340f8e62ced596c1da02e20e70073f0` |
 | `unlazy` | https://github.com/Leonxlnx/unlazy | `main` | `754d9a68109e39b836cc72a39fb9a823f9d6b613` |

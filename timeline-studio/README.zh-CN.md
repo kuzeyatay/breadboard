@@ -1,0 +1,223 @@
+# Timeline Studio — 浏览器 AI 视频编辑器
+
+[English](README.md) | **中文** | [日本語](README.ja.md) | [한국어](README.ko.md) | [Español](README.es.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | [Português](README.pt-BR.md) | [ไทย](README.th.md) | [Tiếng Việt](README.vi.md) | [Русский](README.ru.md)
+
+[![在线体验](https://img.shields.io/badge/在线体验-Timeline_Studio-35ead9?style=flat-square)](https://video-editor.ai-creator.top/)
+[![GitHub Release](https://img.shields.io/github/v/release/MartinDelophy/ai-video-editor?style=flat-square)](https://github.com/MartinDelophy/ai-video-editor/releases)
+[![MIT License](https://img.shields.io/github/license/MartinDelophy/ai-video-editor?style=flat-square)](LICENSE)
+[![skills.sh](https://skills.sh/b/MartinDelophy/ai-video-editor)](https://skills.sh/MartinDelophy/ai-video-editor)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=flat-square)](CONTRIBUTING.md) [![LINUX DO](https://shorturl.at/ggSqS)](https://linux.do)
+
+## 在 Anna 中体验更进一步的创作
+
+Anna 版将 AI 辅助剪辑与工程续作接入同一体验：
+
+- 用自然语言向 Anna 描述剪辑需求，查看基于需求和素材元数据生成的方案，确认后应用支持的片段排序与简单的 1× 视频裁切。
+- 工程和媒体默认自动保存到 Anna 云端，同一 Anna 账号可在另一浏览器恢复续作；也可保存本地工程检查点，方便主动恢复。
+- 继续在可编辑的多轨时间线上精修，添加 AI 配音和手动字幕，并使用浏览器可用的编码器导出 MP4。
+
+当前为桌面预览版；规划阶段不分析视频画面或声音，本地 AI 功能受 Anna 容器能力影响。
+
+→ [前往 Anna 体验 Timeline Studio](https://anna.partners/store/@martindelophy/timeline-studio)
+
+## 深度合成使用声明
+
+本工具基于深度合成技术，仅用于技术研究与学习。
+
+使用者应确保：
+
+- 仅使用本人或已取得合法授权的人脸图像/视频；
+- 不制作、不传播任何违法、侵权、虚假或误导性内容；
+- 不将生成内容冒充为真实影像，不在未经同意的情况下冒用他人身份。
+
+因违反上述要求导致的任何法律责任，由使用者自行承担。
+
+## 项目动态
+
+- **2026-11-13** — 导入视频时批量提取时间线缩略图。拖动播放头时预览更新更及时，帧时间点保持不变。 拖动播放头时减少重复计算，片段较多的工程响应更快。
+- **2026-11-10** — 媒体素材库新增 120 个音效，可搜索、试听并添加到时间轴。音效和背景音乐共用一条曲线，竖拖中段调音量，横拖两端圆点调淡入淡出。「回忆漩涡卡点」在关键节拍加入音效。 多选片段整体拖动时显示对齐辅助线，吸附后保留组内间距。
+- **2026-11-09** — 新增两个可编辑卡点模板。「3D 透视卡点」包含四组收放横幅和 16 张可单独替换的画中画卡片。「回忆漩涡卡点」用 48 个素材位的照片或视频帧拼成玻璃隧道，再逐段卡点切换。 桌面端色轮新增 RGB 示波器，可检查调色后的 SDR 通道电平。4K 离线导出按需加载当前画面素材，大体积 MP4 和 MOV 在编码过程中写入容器，减轻内存压力。
+- **2026-11-08** — 在「替换片段」弹窗中，拖动两端手柄可分别调整起点和终点，拖动中间选区可整体平移，取用时长和倍速保持不变。关闭图标在桌面和手机上均居中。 右侧属性跟随时间轴或播放器中选中的片段，画中画设置会填满可用空间并支持滚动。 选中画面或画中画片段时，预览会高亮对应图层，时间轴在关键帧的位置显示菱形。特效轨道名限制在左栏内，拖动播放头时降低特效预览开销。 新增「扑克牌旋转卡点」方屏模板，包含霓虹四花色开场、10 个可替换的卡点片段和随 BPM 调整的配乐。画面和画中画片段上的菱形可横向拖动，调整关键帧时间。 扑克牌旋转卡点支持为四个花色设置照片或视频。新增七分屏卡点、幻觉胶片卡点、水波纹蒙版卡点、错位蒙版卡点四个可换素材的模板。 WebMCP 支持审阅并追加卡点模板、读取时间轴特效和设置蒙版转场，Timeline Studio Skill 已同步操作流程。
+- **2026-11-07** — 在「特效」后新增「模板」工作区。三分屏卡点可换入自己的图片、视频和可选配乐，调整 BPM 后生成可编辑的时间轴。优化网点和多画面叠加的预览性能。 模板配置移到右侧，内置配乐随 BPM 卡点。主画面和画中画可右键选择「替换片段」，取用新素材指定的时间段并保留原有时间轴位置和时长。 预览会提前解码下一镜和即将入场的画中画，减少接缝处的停顿。 替换片段弹窗显示素材缩略图与文件名，超过四项可拖动自定义横向滚动条，取用区间会实时计算所需倍速。
+在公开 [Roadmap](ROADMAP.md) 查看计划与 TODO，在 [Releases](https://github.com/MartinDelophy/ai-video-editor/releases) 查看已发布功能，在 [Issues](https://github.com/MartinDelophy/ai-video-editor/issues) 跟踪具体任务和缺陷。
+
+## 它能制作什么？
+
+查看可复现的前后对比示例与剪辑配方：
+
+→ [AI Video Editing Skills Handbook](https://github.com/MartinDelophy/timeline-studio-handbook)
+
+<p align="center">
+  <a href="https://trendshift.io/repositories/77422?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-77422" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/77422/daily?language=JavaScript" alt="MartinDelophy%2Fai-video-editor | Trendshift" width="250" height="55"/></a>
+  <a href="https://trendshift.io/repositories/77422?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-77422" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/77422/weekly?language=JavaScript" alt="MartinDelophy%2Fai-video-editor | Trendshift" width="250" height="55"/></a>
+</p>
+
+Timeline Studio 是一个本地优先、直接运行在浏览器中的 AI 视频编辑器。它把接近剪映/CapCut 的多轨时间线，与 WebGPU AI 音乐和修复、多语言配音、自动字幕、数字人和确定性离线导出结合在一起。
+
+[打开在线编辑器](https://video-editor.ai-creator.top/) · [观看演示](https://www.youtube.com/watch?v=chdRPG2ndMs) · [Hugging Face Space](https://huggingface.co/spaces/haixin/timeline-studio)
+
+## 视频演示
+
+### Codex 操作三分屏卡点模板
+
+Codex 通过 WebMCP 提交剪辑方案。审阅并应用后，可以手动微调画中画关键帧，再从编辑器导出成片。这段 37 秒演示使用 Timeline Studio 本地生成的「若溪」旁白。
+
+https://github.com/user-attachments/assets/b290de2c-4ca8-46c2-b099-cb9d7f231fcb
+
+### 自动剪辑
+
+画面分析、关键帧、字幕与导出。
+
+https://github.com/user-attachments/assets/e8327caa-429e-40ff-a7fe-a59e6cf7a464
+
+### AI 修复
+
+分时段水印移除与前后对比。
+
+https://github.com/user-attachments/assets/aea9f5b4-c720-4b0c-9067-5ec124eef982
+
+### AI 配音
+
+https://github.com/user-attachments/assets/304a744e-d620-4380-9c17-19af3726f5a4
+
+![Timeline Studio 编辑器](docs/screenshots/editor-timeline.png)
+
+## AI 能力
+
+- **多语言 AI 配音：** 中文及中英混合使用 Hojo TTS Light 80M FP16 的晴岚、若溪两条内置参考女声，自回归生成走 WebGPU、稳定波形解码走 WASM；英文使用 Kokoro 82M，德语、西班牙语、法语、意大利语和巴西葡萄牙语使用浏览器 Piper 声音。
+- **本地 AI 音乐：** Stable Audio 3 Small Q4 ONNX 通过 WebGPU 在浏览器运行，支持自由提示词自动翻译、30/60/90/120 秒选项、长音乐波形感知循环、模型持久缓存，并在完成后自动加入“我的素材”。
+- **自动字幕：** Whisper small q8 ONNX，结合音频能量修正时间戳，并对中文识别结果做克制的高置信纠错。
+- **智能画面：** YOLOS tiny 主体检测与 MODNet 人像抠图，用于图片和完整视频的智能裁切、字幕避让与背景移除。
+- **AI 修复：** 浏览器本地 MI-GAN 支持多区域、可分时段的水印/物体移除；NanoVSR 644K 通过 WebGPU 为图片和视频提供 4× 高清修复，并支持同步前后对比。
+- **AI 人声分离：** 在浏览器工作流中提取人声，并把伴奏放入音乐轨。
+- **数字人：** JoyVASA 音频驱动 + LivePortrait 神经渲染，支持 WebGPU、256px 快速预览与 512px 高质量路径。
+- **本地优先推理：** 大模型按需加载、锁定版本并由 Service Worker 缓存；受支持的流程不需要把项目素材上传到编辑后端。
+
+## 稳定的双线路模型交付
+
+浏览器 AI 模型同时镜像在 Hugging Face 和 ModelScope。Timeline Studio 会在首次请求时进行轻量连通性竞速，记住当前运行环境中更快且可用的线路；网络发生变化或下载失败时会自动切换另一条线路。两家平台共用同一缓存标识，因此切换线路不会重复下载相同版本。
+
+- Stable Audio：[Hugging Face](https://huggingface.co/haixin/stable-audio-3-small-music-onnx) · [ModelScope](https://www.modelscope.cn/models/martindelophy/stable-audio-3-small-music-onnx/files?version=main)
+- 语音模型：[Hugging Face](https://huggingface.co/haixin/timeline-studio-voice-models/tree/074a57bc4dac9c58568b031898ea79da6f36b282) · [ModelScope](https://www.modelscope.cn/models/martindelophy/timeline-studio-voice-models/files?version=9cb5ab964c014b182701153bd00f7a2202f5dce8)（含不同上游许可证，详见模型仓库说明）
+- Timeline Studio ONNX 模型：[Hugging Face](https://huggingface.co/haixin/timeline-studio-onnx-models) · [ModelScope](https://www.modelscope.cn/models/martindelophy/timeline-studio-onnx-models/files?version=main)
+- Depth Anything V2 Small Q4F16：[Hugging Face](https://huggingface.co/haixin/timeline-studio-onnx-models/tree/a0806c6fb9484894dcb78df523156d244461515d/depth-anything-v2-small) · [ModelScope](https://www.modelscope.cn/models/martindelophy/timeline-studio-onnx-models/files?version=4cc757f80330e22cb8f82b628c53ceca6307fd12&subpath=depth-anything-v2-small)（Apache-2.0）
+- 人声分离模型：[Hugging Face](https://huggingface.co/haixin/timeline-studio-vocal-remover) · [ModelScope](https://www.modelscope.cn/models/martindelophy/timeline-studio-vocal-remover/files?version=main)
+
+## 剪辑与导出
+
+- 连续主画面轨，以及可自由定时的画中画图层。
+- 在画布中直接选择、移动、等比缩放和旋转，并支持遮罩、滤镜、效果、动画、速度与显式关键帧；PC 端另提供四分区色轮，色温、色调、饱和度以及各色轮的色相、饱和度、明度均可添加关键帧。
+- 字幕、贴纸、配音、分离后的视频原声和背景音乐使用独立时间轨。
+- 支持磁吸、全轨对齐线、右键菜单、切分/复制/删除、双指缩放、撤销重做和可移植 `.timeline` 项目。
+- 播放预览使用原生媒体路径保证流畅；导出使用独立的确定性离线渲染路径。
+- WebCodecs MP4/WebM 合成统一处理画面、音频混音、字幕、画中画、效果与变换，并提供 MediaRecorder 兼容回退。
+- 支持安装为 PWA，缓存应用外壳，并提供多语言界面。
+
+## Agent Skill
+
+仓库包含 Codex 兼容的 [`edit-timeline-studio`](skills/edit-timeline-studio/SKILL.md) Skill，用于规划、执行和验证可继续编辑的视频时间线。
+
+它可以帮助 Agent：
+
+- 检查素材并保留用户的原始剪辑意图；
+- 使用稳定片段 ID 和明确秒数描述可撤销的编辑计划；
+- 通过浏览器兼容路径操作在线版或本地编辑器；
+- 使用 `skills/edit-timeline-studio/scripts/validate_edit_plan.mjs` 校验声明式编辑计划；
+- 验证轨道位置、转场、字幕、画中画、实际可听音频和最终导出文件；
+- 始终保留可编辑的 `.timeline` 项目，而不是只交付不可逆的视频成片。
+
+当前 Skill 可通过版本化 CLI 与本地 STDIO MCP 读取工程、预览语义差异并以事务方式写入新的 `.timeline` 文件；无头渲染支持已明确列出的画面、配音与音乐子集。浏览器 WebMCP 提供 15 个工具，可检查打开的工程，先审阅再应用画面、字幕、音频和标记修改，插入已有素材与画中画，撤销并保存工程，还可准备和启动真实视频导出、查询进度与结果、取消任务。高级效果编辑与 AI 生成继续使用编辑器已有入口。详见 [WebMCP 接入说明](docs/webmcp.md)。
+
+通过公开的 [skills.sh](https://skills.sh/MartinDelophy/ai-video-editor) 目录安装（当前 CLI 要求 Node.js 22.20.0 或更高版本）：
+
+```bash
+npx skills add MartinDelophy/ai-video-editor --skill edit-timeline-studio
+```
+
+也可以使用 GitHub CLI 2.90.0 或更高版本安装：
+
+```bash
+# Claude Code
+gh skill install MartinDelophy/ai-video-editor edit-timeline-studio --agent claude-code --scope user
+
+# Codex
+gh skill install MartinDelophy/ai-video-editor edit-timeline-studio --agent codex --scope user
+```
+
+如需安装已经验证过的固定版本，而不是跟随最新 Release，请在命令末尾添加 `--pin v1.0.8`。安装前可以先预览 Skill：
+
+```bash
+gh skill preview MartinDelophy/ai-video-editor edit-timeline-studio
+```
+
+## 路线图
+
+- **当前：** 加固确定性离线导出并提高时间线编辑可靠性。
+- **下一步：** 扩展无头渲染与浏览器导出的能力一致性，增加可审阅的 WebMCP 编辑命令，并让可复用工程模板更易分享。
+- **未来：** 增加协作审阅流程、插件扩展能力，以及更多经过本地验证的 AI 模型。
+
+路线图优先级会在 [GitHub Discussions](https://github.com/MartinDelophy/ai-video-editor/discussions) 中共同讨论。欢迎提交功能建议和真实工作流反馈。
+
+## 期待你的参与
+
+我们正在寻找对浏览器媒体、WebCodecs、WebGPU/ONNX、时间线交互、本地化或文档感兴趣的贡献者。
+
+- 体验[在线编辑器](https://video-editor.ai-creator.top/)，并在 [Issues](https://github.com/MartinDelophy/ai-video-editor/issues) 中提交可复现的问题。
+- 加入 [Discussions](https://github.com/MartinDelophy/ai-video-editor/discussions)，提出功能建议、分享作品或帮助确定路线图优先级。
+- 尤其欢迎聚焦的小型修复、翻译、文档和示例项目贡献。
+
+## 快速启动
+
+建议使用 Node.js 20+ 和现代 Chromium 浏览器；运行大型 AI 模型时推荐 WebGPU。
+
+```bash
+git clone https://github.com/MartinDelophy/ai-video-editor.git
+cd ai-video-editor
+npm install
+npm run dev
+```
+
+打开 Vite 输出的本地地址即可。首次使用某项 AI 能力时可能需要下载模型，后续会复用浏览器缓存。
+
+## 验证与构建
+
+```bash
+npm run build
+npm run preview
+```
+
+运行完整仓库检查：
+
+```bash
+npm run check
+```
+
+## 部署
+
+仓库中的 [`netlify.toml`](netlify.toml) 会执行 `npm run build`、发布 `dist`、配置 SPA 回退，并启用浏览器 AI/媒体 Worker 所需的跨域隔离响应头。
+
+```bash
+npx netlify-cli deploy --prod --dir=dist
+```
+
+## 支持与反馈
+
+如果这个项目对你有帮助，欢迎点亮 ⭐ Star；遇到问题请[提交 Issue](https://github.com/MartinDelophy/ai-video-editor/issues)。
+
+欢迎加入我们的 [Discord 社区](https://discord.gg/uq2uvUTBr)，提问、分享反馈，并与其他用户和贡献者交流。
+
+## License
+
+Timeline Studio 的原创源代码采用 [MIT License](LICENSE)。
+
+本仓库的 MIT License **不自动适用于**第三方模型、模型权重、数据集、字体、图库媒体或其他随仓库提供及运行时远程下载的资源。无论这些资源存放在哪里，也无论项目通过下载脚本、缓存、镜像或集成方式使用它们，均应继续遵守各自的上游许可证和使用条款。重新分发或商业使用前，请查阅 [MODEL_LICENSES.md](MODEL_LICENSES.md)。
+
+## Star History
+
+<a href="https://www.star-history.com/?repos=MartinDelophy/ai-video-editor">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=MartinDelophy/ai-video-editor&amp;type=date&amp;theme=dark&amp;legend=top-left" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=MartinDelophy/ai-video-editor&amp;type=date&amp;legend=top-left" />
+    <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=MartinDelophy/ai-video-editor&amp;type=date&amp;legend=top-left" />
+  </picture>
+</a>

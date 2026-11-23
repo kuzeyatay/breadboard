@@ -106,7 +106,8 @@ test("Garden artifact tabs use the archive icon without a duplicate panel header
   assert.match(gardenWorkspace, /setArtifactCount\(filterArtifactsForArchive\(data\.artifacts\)\.length\)/);
   assert.match(gardenWorkspace, /<ArtifactPanel[\s\S]*?onArchiveCountChange=\{setArtifactCount\}/);
   assert.match(panel, /onArchiveCountChange\?: \(count: number\) => void/);
-  assert.match(panel, /onArchiveCountChange\?\.\(archiveArtifacts\.length\)/);
+  // The count is of artifacts: an artifact with several versions is one block.
+  assert.match(panel, /onArchiveCountChange\?\.\(new Set\(archiveArtifacts\.map\(\(item\) => item\.id\)\)\.size\)/);
   assert.match(
     gardenWorkspace,
     /<ArtifactPanel[\s\S]{0,180}?compact[\s\S]{0,180}?hideHeader[\s\S]{0,180}?gardenSlug=\{clusterSlug\}[\s\S]{0,180}?sourceSurface="garden_chat"/,
@@ -233,9 +234,9 @@ test("artifacts are picked over and deleted in one sweep, never one row at a tim
   // a second copy, so a sweep can only remove what the user can see.
   assert.match(
     panel,
-    /const selectedArtifacts = filteredArtifacts\.filter\(\(artifact\) => selectedIds\.has\(artifactVersionKey\(artifact\)\)\)/,
+    /const selectedArtifacts = blocks\.map\(\(block\) => block\.artifact\)\.filter\(\(artifact\) => selectedIds\.has\(artifactVersionKey\(artifact\)\)\)/,
   );
-  assert.match(panel, /onSelectAll=\{\(\) => setSelectedIds\(new Set\(filteredArtifacts\.map\(artifactVersionKey\)\)\)\}/);
+  assert.match(panel, /onSelectAll=\{\(\) => setSelectedIds\(new Set\(blocks\.map\(\(block\) => artifactVersionKey\(block\.artifact\)\)\)\)\}/);
 
   // One confirmation for the sweep, deletes run one at a time, and a partial
   // result is reported rather than assumed away.

@@ -16,7 +16,7 @@ import db from "@/lib/db";
 import { GLOBAL_MODEL_SENTINEL } from "../ai-models.ts";
 import { readVoiceAssistantPreferences } from "../speech/assistant-store.ts";
 import { voiceReasoningEffort } from "../speech/assistant-preferences.ts";
-import { isPdfAssistantPageContext } from "../pdf-assistant-scope.ts";
+import { isReaderAssistantPageContext } from "../pdf-assistant-scope.ts";
 import {
   organizationClusterClause,
   organizationIdsForUser,
@@ -531,7 +531,7 @@ export async function resolveConversationRuntime(input: {
   }
   // PDF keys identify a reader conversation; they grant no garden/file access.
   // The document itself is supplied through authenticated chat attachments.
-  if (input.activePageSlug && !active && !isPdfAssistantPageContext(input.surface, input.activePageSlug)) {
+  if (input.activePageSlug && !active && !isReaderAssistantPageContext(input.surface, input.activePageSlug)) {
     throw new ApiError(400, "garden_required", "An active page requires an active garden.");
   }
 

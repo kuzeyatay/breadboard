@@ -17,7 +17,7 @@ import {
 import { getActiveRuntimeRun, parseRuntimeRunDispatch } from "@/lib/hermes/run-store.ts";
 import { createImportedArtifact, presentArtifact } from "@/lib/hermes/artifact-store.ts";
 import {
-  VIDEO_SKILLS,
+  turnVideoSkill,
   VIDEO_TOOL,
   VideoRequestError,
   validateMusicAnalysisRequest,
@@ -70,7 +70,7 @@ export async function POST(request: Request) {
       throw new ApiError(409, "video_run_required", "Video rendering requires a current run.");
     }
     const decision = getActiveCapabilityDecision(session.id);
-    const skill = VIDEO_SKILLS.find((slug) => decision?.selectedConditionalSkills.includes(slug));
+    const skill = turnVideoSkill(decision?.selectedConditionalSkills);
     if (!decision || !decision.allowedTools.includes(VIDEO_TOOL) || !skill) {
       throw new ApiError(
         403,

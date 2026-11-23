@@ -606,7 +606,8 @@ test("the studio opens for every video artifact, from every surface that shows o
     "src/app/components/hermes/inline-artifact-cards.tsx",
   ]) {
     const source = read(file);
-    assert.match(source, /ArtifactVideoStudio/, file);
+    // Edit video opens the one video capability, Video Studio, in its own tab.
+    assert.match(source, /openVideoInStudio/, file);
     assert.match(source, /onEditVideo/, file);
   }
 });

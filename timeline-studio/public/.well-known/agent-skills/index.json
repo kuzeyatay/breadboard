@@ -1,0 +1,12 @@
+{
+  "$schema": "https://schemas.agentskills.io/discovery/0.2.0/schema.json",
+  "skills": [
+    {
+      "name": "edit-timeline-studio-browser",
+      "type": "skill-md",
+      "description": "Use native WebMCP tools to edit the project open in Timeline Studio. Inspect clips and available assets, preview and apply multi-track, caption style/position and project framing edits; append beat templates and set transitions; sample rendered media; run local voiceover, transcription, relighting analysis and depth-video jobs; insert media; undo; save; or export video with progress and cancellation. Use for the live browser editor, not local project-file editing.",
+      "url": "/.well-known/agent-skills/edit-timeline-studio-browser/SKILL.md",
+      "digest": "sha256:e9937891a78471ca9bda640bd5a31b9c32837345eb81fb632712c427888c2261"
+    }
+  ]
+}

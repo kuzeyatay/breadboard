@@ -716,6 +716,7 @@ export type DesktopTabKind =
   | "screen-time"
   | "crumbs"
   | "design"
+  | "video-studio"
   | "calendar"
   | "gardens"
   | "lessons"
@@ -741,6 +742,7 @@ const ROUTE_LABELS: Record<string, { label: string; kind: DesktopTabKind }> = {
   "screen-time": { label: "Screen Time", kind: "screen-time" },
   crumbs: { label: "Crumbs", kind: "crumbs" },
   design: { label: "Design", kind: "design" },
+  "video-studio": { label: "Video", kind: "video-studio" },
   calendar: { label: "Calendar", kind: "calendar" },
   garden: { label: "Gardens", kind: "gardens" },
   gardens: { label: "Gardens", kind: "gardens" },

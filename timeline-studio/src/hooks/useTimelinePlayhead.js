@@ -1,0 +1,213 @@
+import { useCallback, useLayoutEffect, useRef, useState } from "react";
+
+function playbackTime(state, now) {
+  const duration = Math.max(0, Number(state.playbackDuration) || 0);
+  const startedAt = Number(state.visualPlaybackStartedAtRef?.current);
+  const startTime = Number(state.visualPlaybackStartTimeRef?.current);
+  const time = state.isPlaying
+    ? startedAt > 0 && Number.isFinite(startTime)
+      ? startTime + Math.max(0, now - startedAt) / 1000
+      : Number(state.currentTimeRef?.current) || state.currentTime
+    : state.currentTime;
+  return Math.max(0, Math.min(state.isPlaying ? duration : state.timelineDuration, Number(time) || 0));
+}
+
+// The playback clock is deliberately independent from React's scheduled
+// inspector/timecode updates. On desktop, native transform animations also keep
+// the line and ruler triangle moving when a React commit occupies the main
+// thread. rAF follows the same clock for mobile scrolling and older browsers.
+export function useTimelinePlayhead(state) {
+  const playheadRef = useRef(null);
+  const rulerPlayheadRef = useRef(null);
+  const stateRef = useRef(state);
+  const syncRef = useRef(null);
+  const suspendedRef = useRef(false);
+  const wasPlayingRef = useRef(false);
+  const revealRef = useRef(false);
+  const offscreenRef = useRef(false);
+  const [showReturnToPlayhead, setShowReturnToPlayhead] = useState(false);
+  const suspendPlayheadFollow = useCallback(() => { suspendedRef.current = true; }, []);
+  const returnToPlayhead = useCallback(() => {
+    suspendedRef.current = false;
+    revealRef.current = true;
+    syncRef.current?.();
+  }, []);
+  stateRef.current = state;
+
+  useLayoutEffect(() => {
+    const track = state.trackScrollRef.current;
+    const ruler = state.rulerCanvasRef.current;
+    const scroll = track?.parentElement;
+    if (!track || !ruler || !scroll) return undefined;
+    const mobile = window.matchMedia?.("(max-width: 760px)");
+    let trackWidth = 0;
+    let rulerWidth = 0;
+    let frameId = 0;
+    let animationKey = "";
+    let animations = [];
+    let lastAriaTime = -1;
+    let scrubTime = null;
+    let scrubActive = false;
+    let lastScrubPosition = null;
+
+    const stopAnimations = () => {
+      animations.forEach((animation) => animation.cancel());
+      animations = [];
+      animationKey = "";
+    };
+    const position = (now) => {
+      const current = stateRef.current;
+      if (revealRef.current) {
+        // A template can extend the track in the same commit as the seek.
+        trackWidth = track.getBoundingClientRect().width;
+        rulerWidth = ruler.getBoundingClientRect().width;
+      }
+      if (current.isPlaying && !wasPlayingRef.current) suspendedRef.current = false;
+      wasPlayingRef.current = current.isPlaying;
+      const time = scrubTime ?? playbackTime(current, now);
+      const duration = Math.max(0.001, Number(current.timelineDuration) || 0.001);
+      const ratio = Math.max(0, Math.min(1, time / duration));
+      const line = playheadRef.current;
+      const triangle = rulerPlayheadRef.current;
+      if (!line || !triangle) return;
+      const canAnimate = current.isPlaying && !scrubActive && !mobile?.matches
+        && current.playbackDuration > time
+        && typeof line.animate === "function" && typeof triangle.animate === "function";
+      const key = canAnimate
+        ? [current.visualPlaybackStartTimeRef?.current, current.visualPlaybackStartedAtRef?.current,
+          current.playbackDuration, duration, trackWidth, rulerWidth].join(":")
+        : "";
+
+      if (!canAnimate || key !== animationKey) {
+        // Install the exact current position before cancelling an older native
+        // animation so pause, seeking and zoom never reveal its stale origin.
+        const lineX = ratio * trackWidth;
+        const triangleX = ratio * rulerWidth;
+        const previous = lastScrubPosition;
+        if (!scrubActive || previous?.line !== line || previous?.triangle !== triangle
+          || previous.lineX !== lineX || previous.triangleX !== triangleX) {
+          line.style.transform = `translate3d(${lineX}px, 0, 0)`;
+          triangle.style.transform = `translate3d(${triangleX}px, 0, 0)`;
+          lastScrubPosition = scrubActive ? { line, triangle, lineX, triangleX } : null;
+        }
+        stopAnimations();
+        if (canAnimate) {
+          const remainingMs = (current.playbackDuration - time) * 1000;
+          const endRatio = Math.max(0, Math.min(1, current.playbackDuration / duration));
+          const startTime = document.timeline?.currentTime;
+          animations = [[line, trackWidth], [triangle, rulerWidth]].map(([element, width]) => {
+            const animation = element.animate([
+              { transform: `translate3d(${ratio * width}px, 0, 0)` },
+              { transform: `translate3d(${endRatio * width}px, 0, 0)` },
+            ], { duration: remainingMs, easing: "linear", fill: "forwards" });
+            if (typeof startTime === "number") animation.startTime = startTime;
+            return animation;
+          });
+          animationKey = key;
+        }
+      }
+      if (mobile?.matches && (current.isPlaying || revealRef.current)) {
+        scroll.scrollLeft = ratio * trackWidth;
+        // Keep the sticky ruler in the same frame; its normal scroll listener
+        // still publishes the lower-frequency viewport/thumbnail state.
+        ruler.style.transform = `translateX(${-scroll.scrollLeft}px)`;
+      }
+      if (!mobile?.matches && (current.isPlaying || revealRef.current || suspendedRef.current || offscreenRef.current)) {
+        const x = ratio * trackWidth;
+        const width = scroll.clientWidth;
+        const relative = x - scroll.scrollLeft;
+        const revealOutsideView = revealRef.current && (relative < 12 || relative >= width - 12);
+        if (revealOutsideView || (current.isPlaying && !suspendedRef.current
+          && (relative < 0 || relative >= width * 0.85))) {
+          scroll.scrollLeft = Math.max(0, Math.min(scroll.scrollWidth - width, x - width * 0.2));
+          ruler.style.transform = `translateX(${-scroll.scrollLeft}px)`;
+        }
+        const outside = suspendedRef.current && (x < scroll.scrollLeft || x > scroll.scrollLeft + width);
+        if (outside !== offscreenRef.current) {
+          offscreenRef.current = outside;
+          setShowReturnToPlayhead(outside);
+        }
+      }
+      revealRef.current = false;
+      const ariaTime = Math.round(time);
+      if (ariaTime !== lastAriaTime) {
+        line.setAttribute("aria-valuenow", String(ariaTime));
+        lastAriaTime = ariaTime;
+      }
+    };
+    const tick = (now) => {
+      frameId = 0;
+      position(now);
+      if (stateRef.current.isPlaying) frameId = window.requestAnimationFrame(tick);
+    };
+    const sync = () => {
+      position(performance.now());
+      if (stateRef.current.isPlaying && !frameId) frameId = window.requestAnimationFrame(tick);
+      if (!stateRef.current.isPlaying && frameId) {
+        window.cancelAnimationFrame(frameId);
+        frameId = 0;
+      }
+    };
+    const measure = () => {
+      trackWidth = track.getBoundingClientRect().width;
+      rulerWidth = ruler.getBoundingClientRect().width;
+      sync();
+    };
+    const seekPosition = (event) => {
+      if (!Number.isFinite(event.detail?.time)) return;
+      scrubTime = event.detail.time;
+      position(performance.now());
+      if (!scrubActive) scrubTime = null;
+    };
+    const seekState = (event) => {
+      scrubActive = event.detail?.active === true;
+      if (!scrubActive) {
+        scrubTime = null;
+        lastScrubPosition = null;
+      }
+    };
+    window.addEventListener("timeline-seek-position", seekPosition);
+    window.addEventListener("timeline-seek-state", seekState);
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    observer?.observe(track);
+    observer?.observe(ruler);
+    window.addEventListener("resize", measure);
+    mobile?.addEventListener?.("change", measure);
+    syncRef.current = sync;
+    scroll.addEventListener("scroll", sync, { passive: true });
+    measure();
+    return () => {
+      if (frameId) window.cancelAnimationFrame(frameId);
+      stopAnimations();
+      scroll.removeEventListener("scroll", sync);
+      window.removeEventListener("timeline-seek-position", seekPosition);
+      window.removeEventListener("timeline-seek-state", seekState);
+      observer?.disconnect();
+      window.removeEventListener("resize", measure);
+      mobile?.removeEventListener?.("change", measure);
+      if (syncRef.current === sync) syncRef.current = null;
+    };
+  }, [state.trackScrollRef, state.rulerCanvasRef]);
+
+  useLayoutEffect(() => {
+    syncRef.current?.();
+  }, [state.currentTime, state.isPlaying, state.playbackDuration, state.timelineDuration]);
+
+  useLayoutEffect(() => {
+    if (!state.revealRequest) return undefined;
+    const track = state.trackScrollRef.current;
+    const ruler = state.rulerCanvasRef.current;
+    const elements = [track, ruler].filter(Boolean);
+    const stopReveal = () => elements.forEach((element) => element.classList.remove("is-revealing-playhead"));
+    // Read the final width, not a frame of the ruler's width animation.
+    elements.forEach((element) => element.classList.add("is-revealing-playhead"));
+    returnToPlayhead();
+    const frame = requestAnimationFrame(() => {
+      returnToPlayhead();
+      stopReveal();
+    });
+    return () => { cancelAnimationFrame(frame); stopReveal(); };
+  }, [state.revealRequest, state.trackScrollRef, state.rulerCanvasRef, returnToPlayhead]);
+
+  return { playheadRef, rulerPlayheadRef, suspendPlayheadFollow, returnToPlayhead, showReturnToPlayhead };
+}

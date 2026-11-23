@@ -72,7 +72,12 @@ function access(): DooryAccess {
 export function ensureDoory(): Promise<DooryAccess> {
   if (starting) return starting;
   starting = (async () => {
-    if (await healthy()) return access();
+    if (await healthy()) {
+      try { return access(); } catch {
+        // Another Breadboard on this computer (say the desktop app beside a dev server) started the editor on this port; its sign-in is not ours to read.
+        throw new Error(`Design's editor on port ${DOORY_PORT} belongs to another Breadboard running on this computer. Close that one, or set DOORY_PORT for this one, then try again.`);
+      }
+    }
     if (!fs.existsSync(path.join(home(), "breadboard", "serve.py"))) throw new Error("Design (doory/) is not part of this installation.");
     fs.mkdirSync(data(), { recursive: true });
     const log = path.join(data(), "doory.log");

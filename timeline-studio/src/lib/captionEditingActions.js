@@ -1,0 +1,368 @@
+import { remapCaptionHighlights } from "./captionKeywords.js";
+import { getCaptionScript } from "./timeline.js";
+
+export function setCaptionSegmentPlacement(segments, segmentId, placement) {
+  return segments.map((segment) => (
+    segment.id === segmentId ? { ...segment, placement: { ...placement } } : segment
+  ));
+}
+
+export function snapCaptionPlacement(x, y, thresholdX, thresholdY) {
+  const closest = (value, anchors, threshold) => {
+    const anchor = anchors.reduce((best, item) => (
+      Math.abs(item - value) < Math.abs(best - value) ? item : best
+    ));
+    return Math.abs(anchor - value) <= threshold ? anchor : null;
+  };
+  const guideX = closest(x, [50], thresholdX);
+  const guideY = closest(y, [18, 50, 78], thresholdY);
+  return {
+    x: guideX ?? x,
+    y: guideY ?? y,
+    guideX,
+    guideY,
+  };
+}
+
+export function findCaptionAudioLinkTarget(caption, audioSegments) {
+  if (!caption || !audioSegments?.length) return null;
+  const remembered = audioSegments.find((segment) => segment.id === caption.detachedAudioSegmentId);
+  if (remembered) return remembered;
+  const captionStart = Number(caption.start) || 0;
+  const captionEnd = Number(caption.end) || captionStart;
+  const captionCenter = (captionStart + captionEnd) / 2;
+  return [...audioSegments].sort((a, b) => {
+    const overlap = (segment) => Math.max(0, Math.min(captionEnd, segment.start + segment.duration) - Math.max(captionStart, segment.start));
+    const overlapDelta = overlap(b) - overlap(a);
+    if (overlapDelta) return overlapDelta;
+    const center = (segment) => segment.start + segment.duration / 2;
+    return Math.abs(center(a) - captionCenter) - Math.abs(center(b) - captionCenter);
+  })[0] ?? null;
+}
+
+export function createCaptionEditingActions(d) {
+  const t = typeof d.t === "function" ? d.t : (key) => key;
+  function updateScript(nextScript) {
+    d.setScript(nextScript);
+  }
+
+  function updateCaptionSegmentText(segmentId, text) {
+    if (d.trackLocks.caption) {
+      d.notify("字幕轨已锁定，无法编辑");
+      return;
+    }
+    d.setCaptionSegments((items) => {
+      const nextSegments = items.map((segment) =>
+        segment.id === segmentId ? { ...segment, text, ...(segment.highlightRanges ? { highlightRanges: remapCaptionHighlights(segment.text || "", text, segment.highlightRanges) } : {}) } : segment,
+      );
+      d.setScript(getCaptionScript(nextSegments));
+      return nextSegments;
+    });
+  }
+
+  function toggleCaptionSegmentHidden(segmentId) {
+    if (d.trackLocks.caption) {
+      d.notify("字幕轨已锁定，无法隐藏");
+      return;
+    }
+    d.setCaptionSegments((items) =>
+      items.map((segment) =>
+        segment.id === segmentId ? { ...segment, hidden: !segment.hidden } : segment,
+      ),
+    );
+    d.notify("字幕显示状态已更新");
+  }
+
+  function unlinkCaptionAudio(segmentId) {
+    if (d.trackLocks.caption) return void d.notify(t("captionTrackLocked"));
+    d.setCaptionSegments((items) => items.map((segment) => segment.id === segmentId && segment.audioSegmentId
+      ? { ...segment, detachedAudioSegmentId: segment.audioSegmentId, audioSegmentId: "" }
+      : segment));
+    d.notify(t("captionAudioUnlinked"));
+  }
+
+  function linkCaptionAudio(segmentId) {
+    if (d.trackLocks.caption) return void d.notify(t("captionTrackLocked"));
+    let linked = false;
+    d.setCaptionSegments((items) => {
+      const caption = items.find((segment) => segment.id === segmentId);
+      const target = findCaptionAudioLinkTarget(caption, d.audioSegments);
+      if (!caption || !target) return items;
+      linked = true;
+      return items.map((segment) => segment.id === segmentId
+        ? { ...segment, audioSegmentId: target.id, detachedAudioSegmentId: "" }
+        : segment);
+    });
+    d.notify(t(linked ? "captionAudioLinked" : "captionAudioUnavailable"));
+  }
+
+  function linkAllCaptionAudio() {
+    if (d.trackLocks.caption) return void d.notify(t("captionTrackLocked"));
+    const availableAudioIds = new Set(d.audioSegments.map((segment) => segment.id));
+    const linked = d.captionSegments.some((caption) => (
+      !caption.audioSegmentId
+      && caption.detachedAudioSegmentId
+      && availableAudioIds.has(caption.detachedAudioSegmentId)
+    ));
+    d.setCaptionSegments((items) => items.map((caption) => {
+      if (caption.audioSegmentId && availableAudioIds.has(caption.audioSegmentId)) return caption;
+      if (!caption.detachedAudioSegmentId || !availableAudioIds.has(caption.detachedAudioSegmentId)) return caption;
+      return { ...caption, audioSegmentId: caption.detachedAudioSegmentId, detachedAudioSegmentId: "" };
+    }));
+    d.notify(t(linked ? "captionAudioLinked" : "captionAudioUnavailable"));
+  }
+
+  function unlinkAllCaptionAudio() {
+    if (d.trackLocks.caption) return void d.notify(t("captionTrackLocked"));
+    const unlinked = d.captionSegments.some((caption) => caption.audioSegmentId);
+    d.setCaptionSegments((items) => items.map((caption) => {
+      if (!caption.audioSegmentId) return caption;
+      return { ...caption, detachedAudioSegmentId: caption.audioSegmentId, audioSegmentId: "" };
+    }));
+    if (unlinked) d.notify(t("captionAudioUnlinked"));
+  }
+
+  function alignCaptionToAudio(segmentId) {
+    if (d.trackLocks.caption) return void d.notify(t("captionTrackLocked"));
+    let aligned = false;
+    d.setCaptionSegments((items) => items.map((segment) => {
+      if (segment.id !== segmentId) return segment;
+      const target = d.audioSegments.find((audio) => audio.id === segment.audioSegmentId);
+      if (!target) return segment;
+      aligned = true;
+      return { ...segment, start: target.start, end: target.start + target.duration };
+    }));
+    d.notify(t(aligned ? "captionAlignedToAudio" : "captionAudioUnavailable"));
+  }
+
+  function linkAudioToCaption(audioId) {
+    if (d.trackLocks.caption) return void d.notify(t("captionTrackLocked"));
+    const audio = d.audioSegments.find((segment) => segment.id === audioId);
+    if (!audio) return void d.notify(t("captionAudioUnavailable"));
+    let linked = false;
+    d.setCaptionSegments((items) => {
+      const remembered = items.find((caption) => caption.detachedAudioSegmentId === audioId);
+      const candidates = items.filter((caption) => !caption.audioSegmentId);
+      const caption = remembered ?? findCaptionAudioLinkTarget(
+        { start: audio.start, end: audio.start + audio.duration },
+        candidates.map((item) => ({ id: item.id, start: item.start, duration: item.end - item.start })),
+      );
+      const targetId = remembered?.id ?? caption?.id;
+      if (!targetId) return items;
+      linked = true;
+      return items.map((item) => item.id === targetId
+        ? { ...item, audioSegmentId: audioId, detachedAudioSegmentId: "" }
+        : item);
+    });
+    d.notify(t(linked ? "captionAudioLinked" : "captionAudioUnavailable"));
+  }
+
+  function unlinkAudioCaptions(audioId) {
+    if (d.trackLocks.caption) return void d.notify(t("captionTrackLocked"));
+    d.setCaptionSegments((items) => items.map((caption) => caption.audioSegmentId === audioId
+      ? { ...caption, detachedAudioSegmentId: audioId, audioSegmentId: "" }
+      : caption));
+    d.notify(t("captionAudioUnlinked"));
+  }
+
+  function alignAudioCaptions(audioId) {
+    if (d.trackLocks.caption) return void d.notify(t("captionTrackLocked"));
+    const audio = d.audioSegments.find((segment) => segment.id === audioId);
+    if (!audio) return void d.notify(t("captionAudioUnavailable"));
+    d.setCaptionSegments((items) => items.map((caption) => caption.audioSegmentId === audioId
+      ? { ...caption, start: audio.start, end: audio.start + audio.duration }
+      : caption));
+    d.notify(t("captionAlignedToAudio"));
+  }
+
+  function disableSmartCaptionAvoidance() {
+    if (!d.previewVisionKey || !d.previewVisionRecord?.options?.avoidCaptions) return false;
+    d.setVisionRecords((records) => {
+      const record = records[d.previewVisionKey];
+      return record
+        ? {
+            ...records,
+            [d.previewVisionKey]: {
+              ...record,
+              options: { ...record.options, avoidCaptions: false },
+            },
+          }
+        : records;
+    });
+    return true;
+  }
+
+  function handleCaptionPositionChange(position, segmentId = "") {
+    const placementMap = {
+      top: { x: 50, y: 18 },
+      middle: { x: 50, y: 50 },
+      bottom: { x: 50, y: 78 },
+    };
+    const placement = placementMap[position] ?? placementMap.bottom;
+    if (segmentId) {
+      d.setCaptionSegments((items) => position === d.captionPosition
+        ? items.map((segment) => {
+          if (segment.id !== segmentId) return segment;
+          const { placement: _placement, ...rest } = segment;
+          return rest;
+        })
+        : setCaptionSegmentPlacement(items, segmentId, placement));
+    } else {
+      d.setCaptionPosition(position);
+      d.setCaptionPlacement(placement);
+      d.setCaptionSegments((items) => items.map((segment) => {
+        if (!segment.placement) return segment;
+        const { placement: _placement, ...rest } = segment;
+        return rest;
+      }));
+    }
+    if (disableSmartCaptionAvoidance()) {
+      d.notify("已切回手动字幕位置，智能避让已关闭");
+    }
+  }
+
+  function syncCaptionPositions(segmentId = "") {
+    const source = d.captionSegments.find((segment) => segment.id === segmentId);
+    const placement = source?.placement || d.captionPlacement || { x: 50, y: 78 };
+    const normalizedPlacement = {
+      x: Math.max(10, Math.min(90, Number(placement.x) || 50)),
+      y: Math.max(10, Math.min(90, Number(placement.y) || 78)),
+    };
+    const anchor = [
+      ["top", 18],
+      ["middle", 50],
+      ["bottom", 78],
+    ].find(([, y]) => Math.abs(normalizedPlacement.x - 50) < 4 && Math.abs(normalizedPlacement.y - y) < 4)?.[0] || "custom";
+
+    d.setCaptionPlacement(normalizedPlacement);
+    d.setCaptionPosition(anchor);
+    d.setCaptionSegments((items) => items.map((segment) => {
+      if (!segment.placement) return segment;
+      const { placement: _placement, ...rest } = segment;
+      return rest;
+    }));
+    d.notify(t(disableSmartCaptionAvoidance() ? "captionPositionSyncedSmartOff" : "captionPositionSynced"));
+  }
+
+  function startCaptionDrag(event, segmentId = d.currentCaptionSegment?.id) {
+    if (event.button !== 0) return;
+    if (d.trackLocks.caption) {
+      d.notify("字幕轨已锁定，无法拖动");
+      return;
+    }
+
+    event.stopPropagation();
+    d.setSelectedTrack("caption");
+    if (segmentId) d.setSelectedSegmentId(segmentId);
+
+    const frame = d.previewCanvasRef.current;
+    const rect = frame?.getBoundingClientRect();
+    const captionRect = event.currentTarget?.getBoundingClientRect();
+    if (!rect?.width || !rect?.height || !captionRect) return;
+    const startX = event.clientX, startY = event.clientY;
+    const centerX = ((captionRect.left + captionRect.width / 2 - rect.left) / rect.width) * 100;
+    const centerY = ((captionRect.top + captionRect.height / 2 - rect.top) / rect.height) * 100;
+    let moved = false, disabledSmartAvoidance = false;
+    const applyPlacement = (clientX, clientY) => {
+      const rawX = Math.max(10, Math.min(90, centerX + ((clientX - startX) / rect.width) * 100));
+      const rawY = Math.max(10, Math.min(90, centerY + ((clientY - startY) / rect.height) * 100));
+      const { x, y, guideX, guideY } = snapCaptionPlacement(
+        rawX,
+        rawY,
+        (9 / Math.max(1, rect.width)) * 100,
+        (9 / Math.max(1, rect.height)) * 100,
+      );
+      frame.style.setProperty("--caption-guide-x", `${guideX ?? 50}%`);
+      frame.style.setProperty("--caption-guide-y", `${guideY ?? 50}%`);
+      frame.toggleAttribute("data-caption-guide-x", guideX !== null);
+      frame.toggleAttribute("data-caption-guide-y", guideY !== null);
+      if (segmentId) {
+        d.setCaptionSegments((items) => setCaptionSegmentPlacement(items, segmentId, { x, y }));
+      } else {
+        d.setCaptionPlacement({ x, y });
+      }
+      d.setCaptionPosition("custom");
+    };
+
+    const handlePointerMove = (moveEvent) => {
+      if (moveEvent.pointerId !== event.pointerId) return;
+      if (!moved) {
+        if (Math.hypot(moveEvent.clientX - startX, moveEvent.clientY - startY) < 4) return;
+        moved = true;
+        disabledSmartAvoidance = disableSmartCaptionAvoidance();
+      }
+      applyPlacement(moveEvent.clientX, moveEvent.clientY);
+    };
+    const handlePointerUp = (upEvent) => {
+      if (upEvent.pointerId !== event.pointerId) return;
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+      window.removeEventListener("pointercancel", handlePointerUp);
+      const frame = d.previewCanvasRef.current;
+      frame?.removeAttribute("data-caption-guide-x");
+      frame?.removeAttribute("data-caption-guide-y");
+      if (moved) d.notify(disabledSmartAvoidance
+        ? "字幕位置已手动调整，智能避让已关闭"
+        : "字幕位置已调整");
+    };
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+    window.addEventListener("pointercancel", handlePointerUp);
+  }
+
+  function commitCaptionSegments(nextSegments, message, nextSelectedIndex = 0) {
+    if (d.trackLocks.caption) {
+      d.notify("字幕轨已锁定，无法修改片段");
+      return;
+    }
+    let inheritedFontId = d.captionStyle?.fontId || "default";
+    const normalizedSegments = nextSegments.map((segment) => {
+      inheritedFontId = segment.fontId || inheritedFontId;
+      return segment.fontId ? segment : { ...segment, fontId: inheritedFontId };
+    });
+    d.setCaptionSegments(normalizedSegments);
+    d.setScript(getCaptionScript(normalizedSegments));
+    d.setSelectedTrack("caption");
+    d.setSelectedSegmentId(
+      normalizedSegments.length
+        ? normalizedSegments[Math.min(nextSelectedIndex, normalizedSegments.length - 1)]?.id ?? ""
+        : "",
+    );
+    d.notify(message);
+  }
+
+  function deleteCaptionSegment(segmentId = d.selectedSegmentId) {
+    if (d.trackLocks.caption) {
+      d.notify("字幕轨已锁定，无法删除");
+      return;
+    }
+    if (!d.captionSegments.length) {
+      d.notify("当前没有字幕片段可删除");
+      return;
+    }
+    const fallbackIndex = d.focusedSegmentIndex >= 0 ? d.focusedSegmentIndex : 0;
+    const segmentIndex = d.captionSegments.findIndex((segment) => segment.id === segmentId);
+    const index = segmentIndex >= 0 ? segmentIndex : fallbackIndex;
+    const nextSegments = d.captionSegments.filter((_, currentIndex) => currentIndex !== index);
+    commitCaptionSegments(nextSegments, "已删除当前字幕片段", Math.max(0, index - 1));
+  }
+
+  return {
+    commitCaptionSegments,
+    alignCaptionToAudio,
+    alignAudioCaptions,
+    deleteCaptionSegment,
+    handleCaptionPositionChange,
+    syncCaptionPositions,
+    linkCaptionAudio,
+    linkAllCaptionAudio,
+    linkAudioToCaption,
+    startCaptionDrag,
+    toggleCaptionSegmentHidden,
+    unlinkCaptionAudio,
+    unlinkAllCaptionAudio,
+    unlinkAudioCaptions,
+    updateCaptionSegmentText,
+    updateScript,
+  };
+}

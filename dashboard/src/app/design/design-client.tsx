@@ -1,7 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { Check, PanelLeftOpen, Send } from "lucide-react";
+import { Check, Send } from "lucide-react";
+import BackLink from "@/app/components/back-link";
+import NavbarFlowerWind from "@/app/components/navbar-flower-wind";
 import DesignAssistant from "./design-assistant";
 import { cancelNavigationProgress, startNavigationProgress } from "@/app/components/navigation-progress";
 import styles from "./design.module.css";
@@ -35,7 +37,7 @@ async function call(body: Record<string, unknown>) {
   return json;
 }
 
-export default function DesignClient({ artifact, initialDesign }: { artifact: SourceArtifact | null; initialDesign: string | null }) {
+export default function DesignClient({ artifact, initialDesign, showFlowers }: { artifact: SourceArtifact | null; initialDesign: string | null; showFlowers: boolean }) {
   const [frameSrc, setFrameSrc] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
@@ -140,21 +142,15 @@ export default function DesignClient({ artifact, initialDesign }: { artifact: So
 
   return (
     <div className={styles.shell} data-resizing={resizing || undefined}>
-      <aside className={styles.rail} data-open={rail.open || undefined} style={{ width: rail.open ? rail.width : 0 }} aria-label="Design assistant" aria-hidden={!rail.open}>
-        <div className={styles.railInner} style={{ width: rail.width }}>
-          <DesignAssistant designTitle={designTitle} editing={Boolean(designId)} onHide={() => updateRail({ ...rail, open: false })} />
-        </div>
-        {rail.open && <div className={styles.resize} role="separator" aria-orientation="vertical" aria-label="Resize design assistant" onPointerDown={startResize} />}
-      </aside>
-      <main className={styles.stage}>
-        <header className={styles.bar}>
-          {!rail.open && (
-            <button type="button" className={styles.iconButton} onClick={() => updateRail({ ...rail, open: true })}
-              aria-label="Show design assistant" title="Show design assistant" aria-expanded={false}>
-              <PanelLeftOpen size={17} />
-            </button>
-          )}
-          <span className={styles.title}>{designTitle ?? "Design"}</span>
+      <header className={`breadboard-flower-navbar ${styles.navbar}`}>
+        <NavbarFlowerWind showFlowers={showFlowers} />
+        <nav className={styles.crumbs} aria-label="Breadcrumb">
+          <BackLink fallbackHref="/new-tab" fallbackLabel="Back to home" />
+          <span aria-hidden="true">/</span>
+          <strong>Design</strong>
+          {designTitle && <><span aria-hidden="true">/</span><span className={styles.crumbTitle} title={designTitle}>{designTitle}</span></>}
+        </nav>
+        <div className={styles.actions}>
           {save.error && <span role="alert" className={styles.error}>{save.error}</span>}
           {artifact && (
             <button type="button" className={styles.primary} disabled={!designId || save.state === "saving"} onClick={() => void saveToChat()}
@@ -163,7 +159,16 @@ export default function DesignClient({ artifact, initialDesign }: { artifact: So
               {save.state === "saving" ? "Saving…" : save.state === "saved" ? "Saved to chat" : "Save to chat"}
             </button>
           )}
-        </header>
+        </div>
+      </header>
+      <div className={styles.body}>
+      <aside className={styles.rail} style={{ width: rail.width }} aria-label="Design assistant">
+        <div className={styles.railInner}>
+          <DesignAssistant designTitle={designTitle} editing={Boolean(designId)} />
+        </div>
+        <div className={styles.resize} role="separator" aria-orientation="vertical" aria-label="Resize design assistant" onPointerDown={startResize} />
+      </aside>
+      <main className={styles.stage}>
         {error ? (
           <p role="alert" className={styles.failure}>
             {error} <button type="button" onClick={() => setAttempt(n => n + 1)}>Try again</button>
@@ -173,6 +178,7 @@ export default function DesignClient({ artifact, initialDesign }: { artifact: So
             allow="clipboard-read; clipboard-write; fullscreen" />
         ) : <div className={styles.frame} />}
       </main>
+      </div>
     </div>
   );
 }

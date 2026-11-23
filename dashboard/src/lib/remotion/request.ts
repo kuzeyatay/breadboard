@@ -9,6 +9,11 @@ export const FILM_SKILL = "film";
 export const VIDEO_SKILLS: readonly string[] = [FILM_SKILL, VIDEO_SKILL];
 export const VIDEO_TOOL = "video_render";
 
+/** The render skill for a turn: the decision lists the turn's own skill first, and a broad turn can select both. */
+export function turnVideoSkill(selected: readonly string[] | undefined): string | undefined {
+  return selected?.find((slug) => VIDEO_SKILLS.includes(slug));
+}
+
 export const VIDEO_FRAME_RATES = [30, 60] as const;
 export type VideoFrameRate = (typeof VIDEO_FRAME_RATES)[number];
 export const MAX_NARRATION_LINES = 12;

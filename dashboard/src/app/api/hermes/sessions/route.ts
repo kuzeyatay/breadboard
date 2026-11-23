@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { isPdfAssistantPageContext } from "@/lib/pdf-assistant-scope.ts";
+import { isPdfAssistantPageContext, isVideoAssistantPageContext } from "@/lib/pdf-assistant-scope.ts";
 import { requireUserId } from "@/lib/server-auth";
 import {
   apiErrorResponse,
@@ -175,7 +175,7 @@ export async function POST(request: Request) {
       userId,
       title,
       surface,
-      originLabel: body.sideChat === true ? "Side chat" : isPdfAssistantPageContext(surface, pageSlug) ? "PDF Assistant" : surface === 'dashboard_terminal' && body.voice === true ? 'Voice' : surface === "dashboard_terminal" && body.browser === true
+      originLabel: body.sideChat === true ? "Side chat" : isPdfAssistantPageContext(surface, pageSlug) ? "PDF Assistant" : isVideoAssistantPageContext(surface, pageSlug) ? "Video Assistant" : surface === 'dashboard_terminal' && body.voice === true ? 'Voice' : surface === "dashboard_terminal" && body.browser === true
         ? "Browser"
         : undefined,
       temporary: body.sideChat === true || body.temporary === true,

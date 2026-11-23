@@ -21,6 +21,13 @@ import styles from "./artifact-panel.module.css";
 import ArtifactCardContent from "./artifact-card-content";
 import AttachmentPreviewDialog from "@/app/components/attachment-preview-dialog";
 import { artifactVersionKey } from "./use-learn-artifacts";
+import { ChevronDown } from "lucide-react";
+import { groupArtifactVersions } from "@/lib/hermes/artifact-search";
+
+function formatVersionTime(value: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "" : date.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
 import {
   filterArtifactsForArchive,
   filterArtifactsForSearch,
@@ -36,7 +43,7 @@ import ArtifactViewer, {
 } from "./artifact-viewer";
 import ArtifactImageStudio from "./artifact-image-studio";
 import { openImageInDesign } from "@/app/design/open-in-design";
-import ArtifactVideoStudio from "./artifact-video-studio";
+import { openVideoInStudio } from "@/app/video-studio/open-in-video-studio";
 import {
   ArtifactDockHostProvider,
   useArtifactDockHost,
@@ -449,7 +456,6 @@ export default function ArtifactPanel({
   const [error, setError] = useState<string | null>(null);
   const [imageStudioOpen, setImageStudioOpen] = useState(false);
   const [imagePromptSource, setImagePromptSource] = useState<PresentedArtifact | null>(null);
-  const [videoStudioSource, setVideoStudioSource] = useState<PresentedArtifact | null>(null);
   const [ownedCreationConversationId, setOwnedCreationConversationId] = useState<string | null>(null);
   // What the panel is doing to the list, what is picked, and the color in hand
   // while marking. null is the eraser.
@@ -458,6 +464,9 @@ export default function ArtifactPanel({
   const [pen, setPen] = useState<string | null>(CHAT_HIGHLIGHTS[0].id);
   const [menuPosition, setMenuPosition] = useState<MenuPosition | null>(null);
   const [deleting, setDeleting] = useState(false);
+  // Which version each multi-version block shows (default: the newest), and whose version menu is open.
+  const [pickedVersions, setPickedVersions] = useState<Record<string, number>>({});
+  const [versionMenuId, setVersionMenuId] = useState<string | null>(null);
 
   const query = useMemo(() => {
     const params = new URLSearchParams({ presentation: "archive" });
@@ -527,8 +536,8 @@ export default function ArtifactPanel({
     [artifacts],
   );
   useEffect(() => {
-    if (hasLoadedArtifacts) onArchiveCountChange?.(archiveArtifacts.length);
-  }, [archiveArtifacts.length, hasLoadedArtifacts, onArchiveCountChange]);
+    if (hasLoadedArtifacts) onArchiveCountChange?.(new Set(archiveArtifacts.map((item) => item.id)).size);
+  }, [archiveArtifacts, hasLoadedArtifacts, onArchiveCountChange]);
   const openArtifact = openId ? archiveArtifacts.find((item) => artifactVersionKey(item) === openId) ?? null : null;
   const filteredArtifacts = useMemo(
     () => {
@@ -541,13 +550,23 @@ export default function ArtifactPanel({
     [archiveArtifacts, searchQuery, category, sortOrder],
   );
   const searching = Boolean(searchQuery.trim());
+  const archiveArtifactCount = useMemo(() => new Set(archiveArtifacts.map((item) => item.id)).size, [archiveArtifacts]);
+  // One block per artifact, showing the version picked from its chip (default: the newest).
+  const blocks = useMemo(
+    () => groupArtifactVersions(filteredArtifacts).map(({ id, versions }) => ({
+      id,
+      versions,
+      artifact: versions.find((version) => version.version === pickedVersions[id]) ?? versions[0]!,
+    })),
+    [filteredArtifacts, pickedVersions],
+  );
 
   // Checked ids are intersected with the visible list on every render rather
   // than mirrored into a second copy: an artifact can leave it while checked
   // (deleted here, deleted in another chat, or filtered out by the search
   // above), and deriving keeps the count and the delete honest — a sweep can
   // only ever remove what the user can currently see.
-  const selectedArtifacts = filteredArtifacts.filter((artifact) => selectedIds.has(artifactVersionKey(artifact)));
+  const selectedArtifacts = blocks.map((block) => block.artifact).filter((artifact) => selectedIds.has(artifactVersionKey(artifact)));
 
   const toggleOpenArtifact = useCallback((id: string) => {
     setOpenId((current) => (current === id ? null : id));
@@ -729,7 +748,7 @@ export default function ArtifactPanel({
           <div>
             <h3 className="text-sm font-semibold text-[var(--ink-heading)]">Artifacts</h3>
             <p className="text-[10px] text-[var(--ink-muted)]">
-              {searching ? `${filteredArtifacts.length} of ${archiveArtifacts.length}` : archiveArtifacts.length} {scopeLabel}
+              {searching ? `${blocks.length} of ${archiveArtifactCount}` : archiveArtifactCount} {scopeLabel}
             </p>
           </div>
           {mode === "idle" ? menuButton : null}
@@ -786,7 +805,7 @@ export default function ArtifactPanel({
         ))}
       </div>
       <div className={styles.listHeading}>
-        <span aria-live="polite">{filteredArtifacts.length} {filteredArtifacts.length === 1 ? "artifact" : "artifacts"}</span>
+        <span aria-live="polite">{blocks.length} {blocks.length === 1 ? "artifact" : "artifacts"}</span>
         <select aria-label="Sort artifacts" value={sortOrder} onChange={event => setSortOrder(event.target.value)}>
           <option value="recent">Recent first</option>
           <option value="name">Name A–Z</option>
@@ -839,9 +858,9 @@ export default function ArtifactPanel({
         {mode === "selecting" ? (
           <SelectionBar
             count={selectedArtifacts.length}
-            total={filteredArtifacts.length}
+            total={blocks.length}
             busy={deleting}
-            onSelectAll={() => setSelectedIds(new Set(filteredArtifacts.map(artifactVersionKey)))}
+            onSelectAll={() => setSelectedIds(new Set(blocks.map((block) => artifactVersionKey(block.artifact))))}
             onClear={() => setSelectedIds(new Set())}
             onDelete={() => void deleteSelected()}
             onCancel={stopWorking}
@@ -851,7 +870,7 @@ export default function ArtifactPanel({
           <HighlightBar pen={pen} onPickPen={setPen} onDone={stopWorking} />
         ) : null}
 
-        {filteredArtifacts.map((artifact) => {
+        {blocks.map(({ id: artifactId, versions, artifact }) => {
           const pdfHref = artifactPdfHref(artifact);
           const videoHref = artifactVideoHref(artifact);
           const checked = selectedIds.has(artifactVersionKey(artifact));
@@ -859,7 +878,7 @@ export default function ArtifactPanel({
           const attaching = attachingArtifactIds?.has(artifact.id) ?? false;
           const attachmentSelectionBusy = (attachingArtifactIds?.size ?? 0) > 0;
           const highlight = chatHighlight(artifact.highlight);
-          const rowInner = <ArtifactCardContent artifact={artifact} showVersion />;
+          const rowInner = <ArtifactCardContent artifact={artifact} showVersion={versions.length === 1} />;
           const openClasses =
             `${styles.open} flex min-w-0 flex-1 items-center gap-3 rounded-lg text-left outline-none focus-visible:ring-2 focus-visible:ring-[var(--botanical)]`;
           // The mark and the checked outline are painted inline because the
@@ -873,7 +892,7 @@ export default function ArtifactPanel({
           ].filter(Boolean);
           return (
             <div
-              key={artifactVersionKey(artifact)}
+              key={artifactId}
               className={`bb-neu-artifact-card ${styles.row}`}
               data-open={openId === artifactVersionKey(artifact) || attached || undefined}
               style={{
@@ -928,6 +947,48 @@ export default function ArtifactPanel({
               )}
               {mode === "idle" ? (
                 <div className={styles.actions}>
+                  {versions.length > 1 ? (
+                    <Popover.Root open={versionMenuId === artifactId} onOpenChange={(open) => setVersionMenuId(open ? artifactId : null)}>
+                      <Popover.Trigger asChild>
+                        <button
+                          type="button"
+                          data-row-menu-button
+                          className={styles.versionChip}
+                          title={`Version ${artifact.version} of ${versions.length}. Choose a version`}
+                          aria-label={`${artifact.title}, version ${artifact.version} of ${versions.length}. Choose a version`}
+                        >
+                          v{artifact.version}
+                          <ChevronDown size={11} aria-hidden="true" />
+                        </button>
+                      </Popover.Trigger>
+                      <Popover.Portal>
+                        <Popover.Content
+                          aria-label={`Versions of ${artifact.title}`}
+                          side="bottom"
+                          align="end"
+                          sideOffset={6}
+                          collisionPadding={8}
+                          className={`${styles.versionMenu} z-[70] rounded-lg border border-[var(--line)] bg-[var(--paper-raised)] p-1 shadow-[0_10px_26px_rgba(0,0,0,0.18)]`}
+                        >
+                          {versions.map((version) => (
+                            <button
+                              key={version.version}
+                              type="button"
+                              aria-current={version.version === artifact.version || undefined}
+                              onClick={() => {
+                                setVersionMenuId(null);
+                                setPickedVersions((current) => ({ ...current, [artifactId]: version.version }));
+                                setOpenId(artifactVersionKey(version));
+                              }}
+                            >
+                              <span>Version {version.version}{version.version === versions[0]!.version ? " (latest)" : ""}</span>
+                              <small>{formatVersionTime(version.updatedAt)}</small>
+                            </button>
+                          ))}
+                        </Popover.Content>
+                      </Popover.Portal>
+                    </Popover.Root>
+                  ) : null}
                   <Popover.Root
                     open={openColorPaletteId === artifactVersionKey(artifact)}
                     onOpenChange={(open) => {
@@ -1040,19 +1101,10 @@ export default function ArtifactPanel({
           }}
           onEditVideo={(artifact) => {
             setOpenId(null);
-            setVideoStudioSource(artifact);
+            openVideoInStudio(artifact);
           }}
         />
       </ArtifactDockHostProvider>
-      {videoStudioSource ? (
-        <ArtifactVideoStudio
-          artifact={videoStudioSource}
-          onUpdated={() => {
-            void refresh();
-          }}
-          onClose={() => setVideoStudioSource(null)}
-        />
-      ) : null}
       {imageStudioOpen ? (
         <ArtifactImageStudio
           promptArtifact={imagePromptSource}

@@ -30,7 +30,7 @@ import { artifactLocalPath, openInFileExplorer } from "@/lib/desktop-file-explor
 import ArtifactImageStudio from "./artifact-image-studio";
 import { openImageInDesign } from "@/app/design/open-in-design";
 import ArtifactImagePreview from "./artifact-image-preview";
-import ArtifactVideoStudio from "./artifact-video-studio";
+import { openVideoInStudio } from "@/app/video-studio/open-in-video-studio";
 import ArtifactVideoPreview from "./artifact-video-preview";
 import InlineInteractiveVisualizer from "./inline-interactive-visualizer";
 
@@ -324,7 +324,6 @@ export function InlineArtifactCardsProvider({
   const [imagePromptSource, setImagePromptSource] = useState<PresentedArtifact | null>(null);
   const [imageStudioRequest, setImageStudioRequest] =
     useState<InlineImageStudioRequest | null>(null);
-  const [videoStudioSource, setVideoStudioSource] = useState<PresentedArtifact | null>(null);
   const [editorQuery, setEditorQuery] = useState(query);
   const snapshotRef = useRef(snapshot);
 
@@ -340,7 +339,6 @@ export function InlineArtifactCardsProvider({
     setImageStudioOpen(false);
     setImagePromptSource(null);
     setImageStudioRequest(null);
-    setVideoStudioSource(null);
   }
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
@@ -477,12 +475,10 @@ export function InlineArtifactCardsProvider({
     setImageStudioOpen(true);
   }, []);
 
-  // The video studio takes no seed and creates nothing: it always opens on one
-  // artifact that already exists, so the whole of its state is which one.
-  const closeVideoStudio = useCallback(() => setVideoStudioSource(null), []);
+  // Editing a video opens Video Studio (Timeline Studio with Bread) in its own tab.
   const openVideoStudio = useCallback((artifact: PresentedArtifact) => {
     setOpenId(null);
-    setVideoStudioSource(artifact);
+    openVideoInStudio(artifact);
   }, []);
 
   const closeImageStudio = useCallback(() => {
@@ -520,13 +516,6 @@ export function InlineArtifactCardsProvider({
         onCreateImage={(artifact) => openImageStudio({ promptArtifact: artifact })}
         onEditVideo={openVideoStudio}
       />
-      {videoStudioSource ? (
-        <ArtifactVideoStudio
-          artifact={videoStudioSource}
-          onUpdated={() => void refresh()}
-          onClose={closeVideoStudio}
-        />
-      ) : null}
       {imageStudioOpen ? (
         <ArtifactImageStudio
           promptArtifact={imagePromptSource}

@@ -2,7 +2,6 @@ import type { Metadata } from "next";
 import { getServerSession } from "next-auth/next";
 import { redirect } from "next/navigation";
 
-import NavBar from "@/app/components/navbar";
 import { authOptions } from "@/lib/auth-options";
 import { getNavbarFlowers } from "@/lib/profile/navbar-shortcuts-store.ts";
 import DesignClient from "./design-client";
@@ -21,8 +20,8 @@ export default async function DesignPage({ searchParams }: { searchParams: Searc
   const params = await searchParams;
   return (
     <div className="h-screen flex flex-col overflow-hidden">
-      <NavBar email={user.email ?? ""} username={user.name} showFlowers={getNavbarFlowers(Number(user.id))} showActions={false} />
       <DesignClient
+        showFlowers={getNavbarFlowers(Number(user.id))}
         artifact={one(params.artifact) && one(params.conversation)
           ? { id: one(params.artifact)!, conversationId: one(params.conversation)!, title: one(params.title) ?? "Image" }
           : null}

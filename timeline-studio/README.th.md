@@ -1,0 +1,141 @@
+# Timeline Studio — โปรแกรมตัดต่อวิดีโอ AI บนเบราว์เซอร์
+
+[English](README.md) | [中文](README.zh-CN.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | [Español](README.es.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | [Português](README.pt-BR.md) | **ไทย** | [Tiếng Việt](README.vi.md) | [Русский](README.ru.md)
+
+[![skills.sh](https://skills.sh/b/MartinDelophy/ai-video-editor)](https://skills.sh/MartinDelophy/ai-video-editor)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=flat-square)](CONTRIBUTING.md) [![LINUX DO](https://shorturl.at/ggSqS)](https://linux.do)
+
+## สร้างวิดีโอร่วมกับ Anna
+
+รุ่น Anna รวมการช่วยตัดต่อด้วย AI และการกลับมาทำโปรเจกต์ต่อไว้ด้วยกัน:
+
+- บอกความต้องการตัดต่อกับ Anna ตรวจสอบแผนที่อิงจากคำอธิบายและเมทาดาทาของสื่อ แล้วใช้การเรียงคลิปและการตัดวิดีโอแบบง่ายที่ความเร็ว 1× ที่รองรับ
+- โปรเจกต์และสื่อบันทึกอัตโนมัติบนคลาวด์ Anna และกลับมาทำต่อในเบราว์เซอร์อื่นด้วยบัญชีเดิมได้ พร้อมตัวเลือกบันทึกจุดกู้คืนโปรเจกต์ไว้ในเครื่อง
+- ปรับแต่งต่อบนไทม์ไลน์หลายแทร็กที่แก้ไขได้ เพิ่มเสียงพากย์ AI และคำบรรยายด้วยตนเอง แล้วส่งออก MP4 ด้วยตัวเข้ารหัสที่เบราว์เซอร์รองรับ
+
+ปัจจุบันเป็นรุ่นพรีวิวสำหรับเดสก์ท็อป ขั้นวางแผนไม่ได้วิเคราะห์ภาพวิดีโอหรือเสียง และฟังก์ชัน AI ในเครื่องขึ้นอยู่กับความสามารถของคอนเทนเนอร์ Anna
+
+→ [ทดลอง Timeline Studio บน Anna](https://anna.partners/store/@martindelophy/timeline-studio)
+
+## การใช้เทคโนโลยีสังเคราะห์เชิงลึกอย่างรับผิดชอบ
+
+เครื่องมือนี้ใช้เทคโนโลยีสังเคราะห์เชิงลึกและมีไว้เพื่อการวิจัยทางเทคนิคและการเรียนรู้เท่านั้น
+
+ผู้ใช้ต้องตรวจสอบให้แน่ใจว่า:
+
+- ใช้เฉพาะภาพหรือวิดีโอใบหน้าของตนเอง หรือของบุคคลที่ได้ให้การอนุญาตอย่างถูกต้องตามกฎหมายแล้ว
+- ไม่สร้างหรือเผยแพร่เนื้อหาที่ผิดกฎหมาย ละเมิดสิทธิ เป็นเท็จ หรือทำให้เข้าใจผิด
+- ไม่นำเสนอเนื้อหาที่สร้างขึ้นว่าเป็นภาพจริง และไม่สวมรอยเป็นบุคคลอื่นโดยไม่ได้รับความยินยอม
+
+ผู้ใช้ต้องรับผิดชอบแต่เพียงผู้เดียวต่อความรับผิดทางกฎหมายใด ๆ ที่เกิดจากการฝ่าฝืนข้อกำหนดเหล่านี้
+
+## ข่าวสารโครงการ
+
+- **2026-11-13** — เมื่อนำเข้าวิดีโอ ระบบจะดึงภาพขนาดย่อบนไทม์ไลน์เป็นชุด ภาพตัวอย่างอัปเดตไวขึ้นเมื่อลากหัวเล่น โดยคงตำแหน่งเวลาของเฟรมไว้ ลดการคำนวณซ้ำขณะลากหัวเล่น โดยเฉพาะในโปรเจกต์ที่มีหลายคลิป
+- **2026-11-10** — คลังสื่อมีเอฟเฟกต์เสียง 120 รายการให้ค้นหา ฟังตัวอย่าง และเพิ่มลงไทม์ไลน์ เอฟเฟกต์เสียงและเพลงใช้เส้นโค้งแบบเดียวกัน ลากช่วงกลางเพื่อปรับระดับเสียง และลากจุดทั้งสองเพื่อกำหนดระยะเฟดเข้าและเฟดออก เทมเพลตวังวนความทรงจำมีเอฟเฟกต์เสียงตามจังหวะสำคัญ เมื่อลากคลิปที่เลือกหลายคลิป จะมีเส้นช่วยจัดแนวและสแนปทั้งกลุ่มโดยคงระยะห่างเดิมระหว่างคลิป
+- **2026-11-09** — เพิ่มเทมเพลตตัดต่อเข้าจังหวะที่แก้ไขได้สองแบบ เทมเพลตสามมิติมีแถบเปิดปิดสี่ชุดและการ์ดภาพซ้อนที่เปลี่ยนแยกกันได้ 16 ใบ เทมเพลตอุโมงค์ความทรงจำใช้ภาพถ่ายหรือเฟรมวิดีโอจาก 48 ช่องมาสร้างอุโมงค์กระจกสี ก่อนเล่นแต่ละช็อตเต็มจอ วงล้อสีบนเดสก์ท็อปมีพาเหรด RGB สำหรับตรวจระดับ SDR หลังปรับสี การส่งออก 4K แบบออฟไลน์โหลดเฉพาะสื่อที่ต้องใช้และลดการใช้หน่วยความจำเมื่อบันทึกไฟล์ MP4 และ MOV ขนาดใหญ่
+- **2026-11-08** — ในหน้าต่างแทนที่คลิป ลากจุดจับแต่ละด้านเพื่อปรับจุดเริ่มต้นหรือจุดสิ้นสุด หรือลากช่วงที่เลือกเพื่อเลื่อนทั้งช่วงโดยคงความยาวและความเร็วในการเล่นไว้ ไอคอนปิดอยู่ตรงกลางปุ่มทั้งบนเดสก์ท็อปและมือถือ แผงคุณสมบัติจะแสดงคลิปที่เลือกจากไทม์ไลน์หรือหน้าต่างแสดงตัวอย่าง ส่วนการตั้งค่าภาพซ้อนภาพใช้พื้นที่แนวตั้งที่เหลือและเลื่อนดูได้ หน้าต่างแสดงตัวอย่างไฮไลต์คลิปภาพที่เลือก และไทม์ไลน์แสดงรูปข้าวหลามตัดที่คีย์เฟรม ชื่อแทร็กเอฟเฟกต์พิเศษอยู่ในคอลัมน์ และลดภาระการแสดงตัวอย่างเอฟเฟกต์ขณะลากหัวอ่าน เพิ่มเทมเพลตไพ่หมุนแบบสี่เหลี่ยมจัตุรัส มีฉากเปิดไพ่นีออน 10 คัตที่เปลี่ยนสื่อได้ และเพลงตาม BPM ลากรูปข้าวหลามตัดบนคลิปภาพหรือภาพซ้อนภาพเพื่อเปลี่ยนเวลาของคีย์เฟรม หน้าไพ่หมุนแต่ละดอกใส่รูปหรือวิดีโอได้ เพิ่มเทมเพลตแก้ไขได้สี่แบบ: เปิดเรื่องเจ็ดช่อง ฟิล์มนีออนหมุน คลื่นวงร่วมศูนย์ และมาสก์เหลื่อม WebMCP รองรับการตรวจสอบและเพิ่มเทมเพลตตามจังหวะ ดูเอฟเฟกต์บนไทม์ไลน์ และตั้งค่าการเปลี่ยนฉากด้วยมาสก์ โดยมีขั้นตอนใน Timeline Studio Skill
+- **2026-11-07** — เพิ่มพื้นที่เทมเพลตหลังเอฟเฟกต์พิเศษ ใส่ภาพ วิดีโอ และเพลงของคุณเองในเทมเพลตสามช่อง ปรับจังหวะแล้วเพิ่มลงไทม์ไลน์ที่แก้ไขได้ พร้อมปรับปรุงความลื่นไหลของตัวอย่างลายจุดและภาพหลายช่อง การตั้งค่าเทมเพลตอยู่ด้านขวา และเพลงในตัวจะเล่นตาม BPM คลิกขวาที่คลิปหลักหรือคลิปภาพซ้อนเพื่อเลือกช่วงจากสื่ออื่นมาแทน โดยคงตำแหน่งและความยาวเดิมบนไทม์ไลน์ การแสดงตัวอย่างถอดรหัสช็อตถัดไปและคลิปภาพซ้อนล่วงหน้าเพื่อให้เล่นผ่านรอยตัดได้ลื่นขึ้น หน้าต่างแทนที่คลิปแสดงภาพย่อและชื่อไฟล์ มีแถบเลื่อนแนวนอนเมื่อสื่อเกินสี่รายการ และคำนวณความเร็วสำหรับช่วงที่เลือก
+ดูงานที่วางแผนไว้ใน [Roadmap](ROADMAP.md) การเปลี่ยนแปลงที่เผยแพร่แล้วใน [Releases](https://github.com/MartinDelophy/ai-video-editor/releases) และงานหรือข้อผิดพลาดใน [Issues](https://github.com/MartinDelophy/ai-video-editor/issues)
+
+## สร้างอะไรได้บ้าง?
+
+สำรวจตัวอย่างก่อน–หลังที่ทำซ้ำได้และสูตรการตัดต่อ:
+
+→ [AI Video Editing Skills Handbook](https://github.com/MartinDelophy/timeline-studio-handbook)
+
+<p align="center">
+  <a href="https://trendshift.io/repositories/77422?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-77422" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/77422/daily?language=JavaScript" alt="MartinDelophy%2Fai-video-editor | Trendshift" width="250" height="55"/></a>
+  <a href="https://trendshift.io/repositories/77422?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-77422" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/77422/weekly?language=JavaScript" alt="MartinDelophy%2Fai-video-editor | Trendshift" width="250" height="55"/></a>
+</p>
+
+Timeline Studio คือโปรแกรมตัดต่อวิดีโอ AI แบบเน้นการทำงานในเครื่อง ซึ่งทำงานบนเบราว์เซอร์ รวมไทม์ไลน์หลายแทร็กแบบ CapCut เข้ากับเสียงพากย์ AI คำบรรยายอัตโนมัติ เครื่องมือวิเคราะห์ภาพ อวตารพูดได้ และการส่งออกแบบออฟไลน์ที่ให้ผลแน่นอน
+
+[เปิดโปรแกรมตัดต่อ](https://video-editor.ai-creator.top/) · [ชมเดโม](https://www.youtube.com/watch?v=chdRPG2ndMs) · [Hugging Face Space](https://huggingface.co/spaces/haixin/timeline-studio)
+
+![โปรแกรมตัดต่อ Timeline Studio](docs/screenshots/editor-timeline.png)
+
+## ความสามารถหลัก
+
+- เสียงพากย์หลายภาษาด้วย Piper/VITS ONNX และ Kokoro 82M
+- สร้างเพลง AI ในเครื่องด้วย Stable Audio 3 Small Q4 ONNX ผ่าน WebGPU รองรับการแปลพรอมต์อิสระ ระยะเวลา 30/60/90/120 วินาที การวนเพลงยาวโดยวิเคราะห์รูปคลื่น แคชโมเดลแบบถาวร และเพิ่มลงในสินทรัพย์ของฉันโดยอัตโนมัติ
+- คำบรรยายอัตโนมัติด้วย Whisper small q8 ONNX
+- การจัดเฟรมอัจฉริยะด้วย YOLOS tiny และ MODNet
+- แยกเสียงร้องและดนตรี พร้อมอวตาร JoyVASA และ LivePortrait
+- การตัดต่อหลายแทร็ก พร้อมโอเวอร์เลย์ มาสก์ ฟิลเตอร์ แอนิเมชัน และคีย์เฟรม
+- ส่งออก MP4/WebM ในเบราว์เซอร์ด้วย WebCodecs และการมิกซ์เสียง
+- PWA ที่ติดตั้งได้ แคชโมเดลในเครื่อง และโปรเจกต์ `.timeline`
+
+## เดโมเสียงพากย์ AI
+
+https://github.com/user-attachments/assets/304a744e-d620-4380-9c17-19af3726f5a4
+
+## Agent Skill
+
+รีโพซิทอรีนี้มี Agent Skill [`edit-timeline-studio`](skills/edit-timeline-studio/SKILL.md) สำหรับวางแผน ดำเนินการ และตรวจสอบไทม์ไลน์วิดีโอที่ยังแก้ไขต่อได้ ติดตั้งด้วย GitHub CLI 2.90.0 ขึ้นไป
+
+การติดตั้งผ่าน [skills.sh](https://skills.sh/MartinDelophy/ai-video-editor) ต้องใช้ Node.js 22.20.0 ขึ้นไป
+
+```bash
+npx skills add MartinDelophy/ai-video-editor --skill edit-timeline-studio
+```
+
+```bash
+# Claude Code
+gh skill install MartinDelophy/ai-video-editor edit-timeline-studio --agent claude-code --scope user
+
+# Codex
+gh skill install MartinDelophy/ai-video-editor edit-timeline-studio --agent codex --scope user
+```
+
+เพิ่ม `--pin v1.0.8` เพื่อติดตั้งรุ่นที่ผ่านการตรวจสอบแทนการติดตามรีลีสล่าสุด และตรวจสอบเนื้อหาก่อนติดตั้งได้ด้วย `gh skill preview MartinDelophy/ai-video-editor edit-timeline-studio`
+
+## แผนพัฒนา
+
+- **ขณะนี้:** เพิ่มความเสถียรของการส่งออกออฟไลน์แบบกำหนดผลลัพธ์ได้ ปรับปรุงความน่าเชื่อถือของไทม์ไลน์ และเพิ่มการทดสอบแบบ end-to-end ในเบราว์เซอร์
+- **ขั้นถัดไป:** ขยายความสามารถเรนเดอร์แบบ headless ให้ตรงกับเบราว์เซอร์ เพิ่มคำสั่ง WebMCP ที่ตรวจสอบได้ และปรับปรุงการแชร์เทมเพลตโปรเจกต์
+- **อนาคต:** เพิ่มการตรวจทานร่วมกัน ระบบส่วนขยาย และโมเดล AI ที่ผ่านการตรวจสอบในเครื่องเพิ่มเติม
+
+ร่วมกำหนดลำดับความสำคัญได้ใน [GitHub Discussions](https://github.com/MartinDelophy/ai-video-editor/discussions)
+
+## ต้องการผู้ช่วยพัฒนา
+
+ยินดีรับความช่วยเหลือด้านสื่อบนเบราว์เซอร์ WebCodecs, WebGPU/ONNX, UX ของไทม์ไลน์ การแปล การทดสอบ และเอกสาร โปรดแจ้งบั๊กที่ทำซ้ำได้ใน [Issues](https://github.com/MartinDelophy/ai-video-editor/issues) แบ่งปันแนวคิดใน [Discussions](https://github.com/MartinDelophy/ai-video-editor/discussions) หรือส่งการแก้ไข การทดสอบ คำแปล และตัวอย่างที่มีขอบเขตชัดเจน
+
+## เริ่มต้นใช้งาน
+
+ต้องใช้ Node.js 20+ และเบราว์เซอร์ Chromium รุ่นใหม่ แนะนำให้ใช้ WebGPU
+
+```bash
+git clone https://github.com/MartinDelophy/ai-video-editor.git
+cd ai-video-editor
+npm install
+npm run dev
+```
+
+## การตรวจสอบ
+
+```bash
+npm run build
+npm run check
+```
+
+## การสนับสนุนและข้อเสนอแนะ
+
+หากโปรเจกต์นี้มีประโยชน์กับคุณ โปรดกด ⭐ Star หากพบปัญหา โปรด[เปิด Issue](https://github.com/MartinDelophy/ai-video-editor/issues)
+
+เข้าร่วม[ชุมชน Discord](https://discord.gg/uq2uvUTBr) ของเราเพื่อสอบถาม แบ่งปันความคิดเห็น และพูดคุยกับผู้ใช้และผู้ร่วมพัฒนาคนอื่น ๆ
+
+## สัญญาอนุญาต
+
+[MIT](LICENSE)
+
+## Star History
+
+<a href="https://www.star-history.com/?repos=MartinDelophy/ai-video-editor">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=MartinDelophy/ai-video-editor&amp;type=date&amp;theme=dark&amp;legend=top-left" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=MartinDelophy/ai-video-editor&amp;type=date&amp;legend=top-left" />
+    <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=MartinDelophy/ai-video-editor&amp;type=date&amp;legend=top-left" />
+  </picture>
+</a>

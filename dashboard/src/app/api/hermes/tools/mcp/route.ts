@@ -53,6 +53,7 @@ import { getConversationById } from "@/lib/conversations/store.ts";
 import { missingRunArtifact } from "@/lib/hermes/artifact-completion.ts";
 import { callMcpInstaller, MCP_INSTALLER_CONNECTION } from "@/lib/hermes/mcp-installer.ts";
 import { DOORY_CONNECTION } from "@/lib/doory/context.ts";
+import { VIDEO_STUDIO_CONNECTION } from "@/lib/timeline-studio/context.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -241,6 +242,17 @@ export async function POST(request: Request) {
         eventType: "mcp.tool_completed", runtimeSessionId: session.id,
         userId: session.user_id, gardenId: session.garden_id,
         payload: { runId: run.id, provider: DOORY_CONNECTION, tool, success: (data as { isError?: boolean }).isError !== true },
+      });
+      return NextResponse.json({ ok: true, data });
+    }
+
+    if (slug === VIDEO_STUDIO_CONNECTION) {
+      const { callVideoStudioTool } = await import("@/lib/timeline-studio/tools.ts");
+      const data = await callVideoStudioTool({ userId: session.user_id, session, runId: run.id, tool, args, signal: request.signal });
+      recordAuditEvent({
+        eventType: "mcp.tool_completed", runtimeSessionId: session.id,
+        userId: session.user_id, gardenId: session.garden_id,
+        payload: { runId: run.id, provider: VIDEO_STUDIO_CONNECTION, tool, success: (data as { isError?: boolean }).isError !== true },
       });
       return NextResponse.json({ ok: true, data });
     }

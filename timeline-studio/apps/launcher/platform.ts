@@ -1,0 +1,88 @@
+import { execFile } from "node:child_process";
+import { access, chmod, lstat, mkdir } from "node:fs/promises";
+import { constants } from "node:fs";
+import { homedir, userInfo } from "node:os";
+import { isAbsolute, join } from "node:path";
+import { promisify } from "node:util";
+
+const execute = promisify(execFile);
+
+export async function selectLocalPaths(kind: "file" | "directory", multiple: boolean, mediaKinds?: ("image" | "video" | "audio")[]): Promise<string[]> {
+  if (process.platform !== "darwin") throw new Error("Native file selection is not yet available on this platform.");
+  const script = `function run(args) {
+    const app = Application.currentApplication();
+    app.includeStandardAdditions = true;
+    try {
+      const options = { multipleSelectionsAllowed: args[1] === "true" };
+      const kinds = JSON.parse(args[2]);
+      if (args[0] === "file" && kinds.length) options.ofType = kinds;
+      const result = args[0] === "directory" ? app.chooseFolder(options) : app.chooseFile(options);
+      const paths = Array.isArray(result) ? result : [result];
+      return JSON.stringify({ paths: paths.map(function(path) { return path.toString(); }) });
+    } catch (error) {
+      if (error.errorNumber === -128) return JSON.stringify({ cancelled: true });
+      throw error;
+    }
+  }`;
+  const types = { image: "public.image", video: "public.movie", audio: "public.audio" };
+  const { stdout } = await execute("/usr/bin/osascript", ["-l", "JavaScript", "-e", script, kind, String(multiple), JSON.stringify((mediaKinds ?? []).map(value => types[value]))],
+    { timeout: 120_000, maxBuffer: 65_536 });
+  const result: unknown = JSON.parse(stdout);
+  if (result && typeof result === "object" && "cancelled" in result && result.cancelled === true) return [];
+  if (!result || typeof result !== "object" || !("paths" in result) || !Array.isArray(result.paths) ||
+      !result.paths.length || result.paths.length > 256 || (!multiple && result.paths.length !== 1) ||
+      result.paths.some(path => typeof path !== "string" || !isAbsolute(path) || path.includes("\0"))) {
+    throw new Error("File selection returned an invalid result.");
+  }
+  return result.paths;
+}
+
+export async function machineDirectory(): Promise<string> {
+  if (process.platform !== "darwin") throw new Error("Local project storage currently requires macOS.");
+  if (Number(process.versions.node.split(".")[0]) !== 24) {
+    throw new Error("Timeline Studio host requires Node 24. No runtime was installed automatically.");
+  }
+  const base = process.platform === "darwin"
+    ? join(homedir(), "Library", "Application Support")
+    : process.platform === "win32" ? process.env.LOCALAPPDATA : undefined;
+  if (!base || !isAbsolute(base)) throw new Error("Unsupported platform or missing user data directory.");
+  const directory = join(base, "Timeline Studio");
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const info = await lstat(directory);
+  if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("Unsafe Timeline Studio data directory.");
+  if (process.platform === "darwin") {
+    if (info.uid !== process.getuid?.()) throw new Error("Timeline Studio data directory belongs to another user.");
+    await chmod(directory, 0o700);
+  } else {
+    const systemRoot = process.env.SystemRoot;
+    if (!systemRoot || !isAbsolute(systemRoot)) throw new Error("Windows system directory is unavailable.");
+    const account = process.env.USERDOMAIN
+      ? `${process.env.USERDOMAIN}\\${userInfo().username}` : userInfo().username;
+    await execute(join(systemRoot, "System32", "icacls.exe"), [directory,
+      "/inheritance:r", "/grant:r", `${account}:(OI)(CI)F`], { windowsHide: true, timeout: 10_000 });
+  }
+  return directory;
+}
+
+export async function openBrowser(url: string): Promise<void> {
+  if (process.platform === "darwin") {
+    await execute("/usr/bin/open", ["-b", "com.google.Chrome", url], { timeout: 10_000 });
+    return;
+  }
+  if (process.platform !== "win32") throw new Error("This platform is not supported.");
+  const locations = [process.env.LOCALAPPDATA, process.env.ProgramFiles, process.env["ProgramFiles(x86)"]];
+  for (const base of locations) {
+    if (!base || !isAbsolute(base)) continue;
+    const executable = join(base, "Google", "Chrome", "Application", "chrome.exe");
+    try { await access(executable, constants.F_OK); } catch { continue; }
+    // Chromium hands off to its existing process. Never route the URL through cmd.exe.
+    const { spawn } = await import("node:child_process");
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(executable, [url], { detached: true, stdio: "ignore", windowsHide: false });
+      child.once("error", () => reject(new Error("Chrome could not be opened.")));
+      child.once("spawn", () => { child.unref(); resolve(); });
+    });
+    return;
+  }
+  throw new Error("Google Chrome was not found. Install it before reopening Timeline Studio.");
+}

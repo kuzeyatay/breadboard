@@ -23,3 +23,15 @@
 @container (max-width: 310px) {
   .row { gap: 7px; padding-inline: 6px; }
 }
+
+/* The version a multi-version block shows; it opens the list of the others. */
+.versionChip { display: inline-flex; align-items: center; gap: 2px; height: 20px; padding: 0 5px 0 6px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--paper-raised); color: var(--ink-heading); font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; transition: border-color 120ms, transform 120ms; }
+.versionChip:hover { border-color: var(--botanical); }
+.versionChip:active { transform: scale(0.96); }
+.versionChip:focus-visible { outline: 2px solid var(--botanical); outline-offset: 1px; }
+.versionMenu { display: flex; width: max-content; min-width: 190px; max-width: min(320px, calc(100vw - 16px)); max-height: 260px; flex-direction: column; overflow-y: auto; }
+.versionMenu button { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 6px 8px; border-radius: 6px; color: var(--ink-heading); font-size: 12.5px; text-align: left; }
+.versionMenu button:hover, .versionMenu button:focus-visible { background: var(--paper-strong); outline: none; }
+.versionMenu button[aria-current] { font-weight: 600; }
+.versionMenu small { color: var(--ink-muted); font-size: 11px; }
+.versionMenu span, .versionMenu small { white-space: nowrap; }

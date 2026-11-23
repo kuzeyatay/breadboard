@@ -1,0 +1,1349 @@
+import { isMaskTransition, maskTransitionAppearance } from "../lib/maskTransitions.js";
+import { TimelineEffectPreview } from "./TimelineEffectPreview.jsx";
+import { ProxySourceAudio } from "./ProxySourceAudio.jsx";
+import { cancelVideoProxy } from "../lib/videoProxy.js";
+import { useVideoProxyController, useVideoProxySource } from "../hooks/useVideoProxy.js";
+import { cancelLatestVideoFrameRequest, requestLatestVideoFrame } from "../lib/videoFrameSync.js";
+import { useRelightCompare } from "../lib/videoRelighting.js";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import {
+  CaretDown,
+  ArrowDown,
+  ArrowUp,
+  CloudArrowUp,
+  FrameCorners,
+  Pause,
+  Play,
+  Resize,
+  SkipBack,
+  SkipForward,
+  X,
+} from "@phosphor-icons/react";
+
+import { getAudioSegmentPreviewVolume, requestTimelineMediaPlay, setTimelineAudioGain } from "../lib/editorRuntime.js";
+import { formatTime } from "../lib/timeline.js";
+import { getTaperedMaskPoints, getVisualMaskGeometry, getVisualMaskSvgDataUrl, getVisualSourceTime, getVisualPlaybackRateAtTime, resolveVisualTransform, snapVisualScaleToFrameEdges } from "../lib/visualEffects.js";
+import { resolveVisualClipAnimation } from "../lib/visualClipAnimations.js";
+import { getStickerBaseSize } from "../lib/stickerGeometry.js";
+import { resolveCaptionStyleForSegment } from "../lib/captionFonts.js";
+import { resolveCaptionSizeForSegment } from "../lib/captionStyles.js";
+import { resolveCaptionSegmentPlacement } from "../lib/captionLayout.js";
+import { CaptionOverlay } from "./CaptionOverlay.jsx";
+import { IconButton } from "./ui.jsx";
+import { normalizeSplitScreenRect } from "../lib/previewAlignment.js";
+import { PreviewContextMenu } from "./PreviewContextMenu.jsx";
+import { hasTemplateCardCorners, templateCardCssTransform } from "../lib/templateCardProjection.js";
+import { getVisualOverlayPixelBox, resolveVisualOverlayTransform, snapVisualOverlayTransform } from "../lib/visualOverlayTimeline.js";
+import { getAnchoredResize } from "../lib/anchoredResize.js";
+import { getVisualFitRect } from "../lib/visualGeometry.js";
+import { getOverlayToolbarPosition } from "../lib/overlayToolbarPlacement.js";
+import { FILTER_OPTIONS, RATIO_OPTIONS } from "../config/editor.js";
+import { getVectorDesignAppearance, getVectorRenderSource } from "../lib/vectorDesign.js";
+import { hasSubjectEffect, normalizeSubjectEffect } from "../lib/subjectEffects.js";
+import { normalizeClickRippleEffect, resolveClickRippleState } from "../lib/clickRippleEffect.js";
+import { SubjectMaterialFilterDefs } from "./SubjectMaterialFilter.jsx";
+import { loadPreviewDepthFrame, drawCinematicDepthFrame, normalizeCinematicDepth } from "../lib/depthOfField.js";
+import { drawPhotoParallaxFrame, normalizePhotoParallax } from "../lib/photoParallax.js";
+import { composeColorGradeFilter, resolveColorGrade } from "../lib/colorGrade.js";
+
+function getSharpMaskClipPath(mask, frame) {
+  if (!mask.type || mask.type === "none") return undefined;
+  const geometry = getVisualMaskGeometry(mask, frame);
+  const { centerX, centerY, width, height, radius, cornerRadius } = geometry;
+  const taper = getTaperedMaskPoints(mask, geometry);
+  if (taper) return `polygon(${taper.map(([x, y]) => `${x}px ${y}px`).join(",")})`;
+  if (mask.type === "circle") return `circle(${radius}px at ${centerX}px ${centerY}px)`;
+  const top = centerY - height / 2;
+  const right = frame.width - centerX - width / 2;
+  const bottom = frame.height - centerY - height / 2;
+  const left = centerX - width / 2;
+  return `inset(${top}px ${right}px ${bottom}px ${left}px round ${cornerRadius}px)`;
+}
+
+function TimelineVisualHighlight({ id, style, mask, bounds, splitCell }) {
+  let outline;
+  if (splitCell) {
+    const { x, y, width, height } = splitCell;
+    style = { left: `${x * 100}%`, top: `${y * 100}%`, width: `${width * 100}%`, height: `${height * 100}%` };
+  } else if (mask?.type && mask.type !== "none") {
+    const { centerX, centerY, width, height, cornerRadius } = getVisualMaskGeometry(mask, bounds);
+    outline = { left: centerX - width / 2, top: centerY - height / 2, width, height, borderRadius: cornerRadius };
+  }
+  return <div className="preview-timeline-highlight" data-highlighted-clip={id} style={style} aria-hidden="true">
+    <span style={outline} />
+  </div>;
+}
+
+function ClickRippleOverlay({ effect: value, time }) {
+  const effect = normalizeClickRippleEffect(value);
+  if (!effect.enabled) return null;
+  const state = resolveClickRippleState(effect, time);
+  const revealRadius = effect.radius + (100 - effect.radius) * state.revealProgress;
+  const ringRadius = effect.radius + (100 - effect.radius) * state.rippleProgress;
+  const grayscale = effect.colorAmount;
+  const mask = `radial-gradient(circle farthest-corner at ${state.revealX}% ${state.revealY}%, transparent 0 ${revealRadius}%, #000 ${Math.min(103, revealRadius + 2.5)}%)`;
+  const style = {
+    "--click-x": `${state.hitX}%`,
+    "--click-y": `${state.hitY}%`,
+    "--click-cursor-x": `${state.x}%`,
+    "--click-cursor-y": `${state.y}%`,
+    "--click-radius": `${ringRadius}%`,
+    "--click-hit-radius": `${effect.radius}%`,
+    "--click-ring-opacity": state.ringOpacity,
+    "--click-press": state.press * state.hitScale,
+    "--click-hit-opacity": state.hitOpacity,
+    "--click-glow": state.effect.glow,
+    "--click-color": state.effect.color,
+  };
+  return (
+    <div className="click-ripple-preview" style={style} aria-hidden="true">
+      {grayscale > 0.002 ? <span className="click-ripple-desaturate" style={{ backdropFilter: `grayscale(${grayscale})`, WebkitBackdropFilter: `grayscale(${grayscale})`, maskImage: mask, WebkitMaskImage: mask }} /> : null}
+      <span className="click-ripple-water-wave" style={{ "--click-wave-radius": `${ringRadius}%`, "--click-wave-opacity": state.ringOpacity }} />
+      <span className="click-ripple-hit-circle" />
+    </div>
+  );
+}
+
+// Keep the same native element from the initial seek through the cut.
+function PreparedPreviewVideo({ activeRef, prepareTime, src, onLoadedMetadata, ...props }) {
+  const elementRef = useRef(null);
+  const attach = useCallback((video) => {
+    elementRef.current = video;
+    if (activeRef) activeRef.current = video;
+  }, [activeRef]);
+  useLayoutEffect(() => {
+    const video = elementRef.current;
+    return () => {
+      video.pause();
+      cancelLatestVideoFrameRequest(video);
+      // Release a retired decoder after the node is removed. Strict Mode can
+      // also clean up effects while keeping the element mounted.
+      queueMicrotask(() => {
+        if (video.isConnected) return;
+        video.removeAttribute("src");
+        video.load();
+      });
+    };
+  }, []);
+  useLayoutEffect(() => {
+    if (prepareTime == null) return;
+    const video = elementRef.current;
+    video.pause();
+    cancelLatestVideoFrameRequest(video);
+    video.__timelinePreparedTime = undefined;
+    const prepare = () => {
+      if (video.readyState < 1 || !Number.isFinite(video.duration)) return;
+      const time = Math.min(prepareTime, Math.max(0, video.duration - 0.001));
+      video.__timelinePreparedTime = time;
+      if (Math.abs(video.currentTime - time) > 0.002) video.currentTime = time;
+    };
+    prepare();
+    video.addEventListener("loadedmetadata", prepare);
+    return () => video.removeEventListener("loadedmetadata", prepare);
+  }, [prepareTime, src]);
+  return <video {...props} ref={attach} src={src} onLoadedMetadata={onLoadedMetadata} />;
+}
+
+function VisualOverlayMedia({ overlay, src, style, isPlaying, localTime, timelineScrubbingRef, standby = false }) {
+  const playbackSrc = useVideoProxySource(overlay, src, isPlaying);
+  const videoRef = useRef(null);
+  const imageRef = useRef(null);
+  const canvasRef = useRef(null);
+  const comparing = useRelightCompare(overlay.id);
+  const depthEffect = useMemo(() => normalizeCinematicDepth({ ...overlay.cinematicDepth, enabled: comparing && overlay.cinematicDepth?.output === "relight" ? false : overlay.cinematicDepth?.enabled }), [overlay.cinematicDepth, comparing]);
+  const parallaxEffect = useMemo(() => normalizePhotoParallax(overlay.photoParallax), [overlay.photoParallax]);
+  const depthUrl = overlay.depthAnalysis?.depthUrl || "";
+  const depthActive = depthEffect.enabled && Boolean(depthUrl);
+  const parallaxActive = overlay.type === "image" && parallaxEffect.enabled && Boolean(depthUrl);
+  const depthRenderActive = parallaxActive || depthActive;
+  const [decodedFrameRevision, setDecodedFrameRevision] = useState(0);
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || standby || overlay.type !== "video") return;
+    const sync = () => {
+      const sourceTime = getVisualSourceTime(overlay, localTime);
+      const rate = getVisualPlaybackRateAtTime(overlay, localTime);
+      if (video.playbackRate !== rate) video.playbackRate = rate;
+      const tolerance = isPlaying ? Math.max(0.1, rate * 0.12) : 0.002;
+      // Do not restart an unfinished decode each time the timeline advances.
+      if (Number.isFinite(video.duration) && Math.abs(video.currentTime - sourceTime) > tolerance
+        && (!video.seeking || !isPlaying)) {
+        requestLatestVideoFrame(video, Math.min(sourceTime, Math.max(0, video.duration - 0.001)), {
+          scrubbing: timelineScrubbingRef.current,
+        });
+      }
+      setTimelineAudioGain(video, getAudioSegmentPreviewVolume({ ...overlay, start: 0 }, localTime), overlay.spatialEffect, overlay.spatialAmount);
+      if (isPlaying && video.paused) requestTimelineMediaPlay(video);
+      else if (!isPlaying && !video.paused) video.pause();
+    };
+    video.addEventListener("loadedmetadata", sync);
+    sync();
+    return () => video.removeEventListener("loadedmetadata", sync);
+  }, [isPlaying, localTime, overlay, src, playbackSrc, standby, timelineScrubbingRef]);
+  useEffect(() => {
+    if (!depthRenderActive || !canvasRef.current) return undefined;
+    let canceled = false;
+    loadPreviewDepthFrame({ depthUrl, nextDepthUrl: overlay.depthAnalysis?.nextDepthUrl, depthMix: overlay.depthAnalysis?.depthMix }).then((depthFrame) => {
+      const depthImage = depthFrame.depthVisual;
+      if (canceled) return;
+      const canvas = canvasRef.current;
+      const source = overlay.type === "video" ? videoRef.current : imageRef.current;
+      if (!canvas || !source || source.seeking) return;
+      const rect = canvas.getBoundingClientRect();
+      const width = Math.max(2, Math.round(rect.width * Math.max(1, window.devicePixelRatio || 1)));
+      const height = Math.max(2, Math.round(rect.height * Math.max(1, window.devicePixelRatio || 1)));
+      if (canvas.width !== width) canvas.width = width;
+      if (canvas.height !== height) canvas.height = height;
+      const context = canvas.getContext("2d", { alpha: true });
+      if (parallaxActive && !(depthEffect.enabled && depthEffect.output !== "cinematic")) drawPhotoParallaxFrame(context, source, canvas, { effect: parallaxEffect, depthVisual: depthImage, fitMode: "contain", filter: style?.filter, time: localTime });
+      else drawCinematicDepthFrame(context, source, canvas, { effect: depthEffect, ...depthFrame, depthVisual: depthImage, fitMode: "contain", filter: style?.filter });
+    }).catch(() => {});
+    return () => { canceled = true; };
+  }, [depthEffect, depthRenderActive, depthUrl, overlay.depthAnalysis?.nextDepthUrl, overlay.depthAnalysis?.depthMix, localTime, overlay.type, parallaxActive, parallaxEffect, style?.filter, decodedFrameRevision]);
+  return <>
+    {overlay.type === "video"
+      ? <PreparedPreviewVideo activeRef={standby ? null : videoRef} prepareTime={standby ? getVisualSourceTime(overlay, 0) : null}
+          onError={() => { if (playbackSrc !== src) cancelVideoProxy(src); }}
+          onSeeked={depthRenderActive ? () => setDecodedFrameRevision((revision) => revision + 1) : undefined}
+          onLoadedData={depthRenderActive ? () => setDecodedFrameRevision((revision) => revision + 1) : undefined}
+          src={playbackSrc} crossOrigin="anonymous" muted={standby || playbackSrc !== src || overlay.muted === true}
+          playsInline preload={isPlaying || standby ? "auto" : "metadata"}
+          style={{ ...style, opacity: depthRenderActive ? 0 : style?.opacity }} />
+      : <img ref={imageRef} src={src} alt="" crossOrigin="anonymous" draggable={false} style={{ ...style, opacity: depthRenderActive ? 0 : style?.opacity }} />}
+    {!standby && overlay.type === "video" && playbackSrc !== src ? <ProxySourceAudio source={src} segment={overlay} videoRef={videoRef} localTime={localTime} isPlaying={isPlaying} muted={overlay.muted === true} /> : null}
+    {depthRenderActive ? <canvas ref={canvasRef} className="cinematic-depth-preview-canvas photo-parallax-preview-canvas" /> : null}
+  </>;
+}
+
+export function PreviewStage({
+  effectClips = [], effectVision = null, timelineMarkers = [],
+  timelineScrubbingRef,
+  previewPlaybackSrc,
+  proxyAssets = [],
+  proxyBusy = false,
+  t,
+  previewShellRef,
+  previewCanvasRef,
+  previewVideoRef,
+  onPreviewVideoTimeUpdate,
+  previewVisualSrc,
+  previewVisualSegment,
+  primaryPreviewKey,
+  nextPreviewVideo,
+  nextPreviewKey,
+  overlayPreviewQueue = [],
+  previewVisualRenderSrc,
+  previewVisionMaskUrl = "",
+  previewVisualType,
+  previewVisualMuted = true,
+  previewTransition = null,
+  previewRatio,
+  previewFrameStyle,
+  previewFrameSize,
+  trackVisibility,
+  fileInputRef,
+  selectedFilter,
+  fitMode,
+  ratioId,
+  setRatioId,
+  visualObjectFit,
+  visualObjectPosition,
+  visionOverlayBoxes = [],
+  showVisionOverlays = false,
+  backgroundRemoved = false,
+  smartCropActive = false,
+  smartFramePresentation = "crop",
+  smartFrameBackgroundPosition = "50% 50%",
+  captionAvoidanceActive = false,
+  setFitMode,
+  captionsEnabled,
+  currentCaption,
+  currentCaptions = null,
+  captionSize,
+  captionStyle,
+  captionPlacement,
+  startCaptionDrag,
+  setActiveTool,
+  selectedSticker,
+  stickers = [],
+  selectedStickerId = "",
+  stickerEditable = false,
+  onSelectSticker,
+  onUpdateSticker,
+  isPlaying,
+  canPreview,
+  handlePlayToggle,
+  estimatedDuration,
+  currentTime,
+  seekTo,
+  notify,
+  visualEffects,
+  subjectEffect,
+  subjectCutoutUrl = "",
+  cinematicDepth,
+  photoParallax,
+  depthAnalysis = null,
+  visualLocalTime = 0,
+  visualMaskEditable = false,
+  onUpdateVisualMask,
+  timelineVisualSelected = false,
+  visualTransformEditable = false,
+  onSelectVisual,
+  onDeselectVisuals,
+  onUpdateVisualTransform,
+  getDraggedAsset,
+  applyAssetToTrack,
+  addVisualOverlay,
+  visualOverlays = [],
+  timelineSelectedOverlayId = "",
+  selectedVisualOverlayId = "",
+  onSelectVisualOverlay,
+  onUpdateVisualOverlay,
+  visualOverlayMaskEditable = false,
+  onUpdateVisualOverlayMask,
+  onReorderVisualOverlay,
+  alignmentMainRange,
+  alignmentPrimaryRange,
+  alignmentLocks = {},
+  alignmentReference,
+  onPreviewAlignment,
+}) {
+  const [contextMenu, setContextMenu] = useState(null);
+  const [overlaySnapGuides, setOverlaySnapGuides] = useState([]);
+  const proxy = useVideoProxyController(proxyAssets, proxyBusy);
+  const transitionPlaybackSrc = useVideoProxySource(previewTransition?.next, previewTransition?.next?.src || "", isPlaying);
+  const playbackSrc = previewPlaybackSrc || previewVisualSrc;
+  const nextPlaybackSrc = useVideoProxySource(nextPreviewVideo, nextPreviewVideo?.src || "", isPlaying);
+  const standbyPlaybackSrc = nextPreviewVideo?.src === previewVisualSrc ? playbackSrc : nextPlaybackSrc;
+  const scrubbingTimeline = timelineScrubbingRef.current;
+  const previewPlayers = [];
+  if (previewVisualType === "video") previewPlayers.push({ key: primaryPreviewKey, src: playbackSrc, standby: false });
+  if (nextPreviewVideo && standbyPlaybackSrc) previewPlayers.push({ key: nextPreviewKey, src: standbyPlaybackSrc, standby: true });
+  previewPlayers.sort((a, b) => (a.key ?? 0) - (b.key ?? 0));
+  // Limit the number of idle decoders even for a project with many overlays.
+  const upcomingOverlays = [];
+  const overlayDecoderSlots = scrubbingTimeline ? 0 : 3 - visualOverlays.filter((overlay) => overlay.type === "video").length;
+  for (const overlay of overlayPreviewQueue) {
+    if (overlay.start <= currentTime) continue;
+    if (overlay.start - currentTime > 0.85 || upcomingOverlays.length >= overlayDecoderSlots) break;
+    upcomingOverlays.push(overlay);
+  }
+  const standbyOverlays = new Set(upcomingOverlays.map(({ id }) => id));
+  const previewOverlays = [...visualOverlays, ...upcomingOverlays].sort((a, b) => (a.layer || 1) - (b.layer || 1));
+
+  const previewImageRef = useRef(null);
+  const smartBackgroundVideoRef = useRef(null);
+  const depthCanvasRef = useRef(null);
+  const lastReportedVideoTimeRef = useRef(-Infinity);
+  const latestPlaybackRef = useRef({ isPlaying, trackVisibility });
+  latestPlaybackRef.current = { isPlaying, trackVisibility };
+  const [decodedFrameRevision, setDecodedFrameRevision] = useState(0);
+  const [isFocusPreviewOpen, setIsFocusPreviewOpen] = useState(false);
+  useEffect(() => {
+    const handlePreviewCommand = ({ detail }) => {
+      if (detail === "fullscreen" && window.matchMedia("(min-width: 1280px)").matches) setIsFocusPreviewOpen(value => !value);
+    };
+    window.addEventListener("editor-preview-command", handlePreviewCommand);
+    return () => window.removeEventListener("editor-preview-command", handlePreviewCommand);
+  }, []);
+  const [focusPreviewFrameSize, setFocusPreviewFrameSize] = useState({ width: 0, height: 0 });
+  const [previewRatioWidth, previewRatioHeight] = String(previewRatio).split("/").map((value) => Number(value.trim()));
+  const previewRatioValue = previewRatioWidth > 0 && previewRatioHeight > 0 ? previewRatioWidth / previewRatioHeight : 16 / 9;
+  const focusPreviewOrientation = previewRatioValue > 1.1 ? "landscape" : previewRatioValue < 0.9 ? "portrait" : "square";
+  const visibleStickers = stickers;
+  const hasStickerOverlay = visibleStickers.some((sticker) => sticker?.src || sticker?.text);
+  const hasPreviewContent = Boolean(previewVisualSrc || hasStickerOverlay || visualOverlays.length);
+  const baseRenderedVisualSrc = previewVisualRenderSrc || previewVisualSrc;
+  const primarySplitCell = normalizeSplitScreenRect(previewVisualSegment?.splitScreenRect);
+  const primarySplitStyle = primarySplitCell ? { clipPath: `inset(${primarySplitCell.y * 100}% ${(1 - primarySplitCell.x - primarySplitCell.width) * 100}% ${(1 - primarySplitCell.y - primarySplitCell.height) * 100}% ${primarySplitCell.x * 100}%)` } : undefined;
+  const activeObjectFit = primarySplitCell ? "contain" : visualObjectFit || fitMode;
+  const activeObjectPosition = visualObjectPosition || "50% 50%";
+  const smartContainActive = smartCropActive && smartFramePresentation === "safe-contain";
+
+  const syncSmartBackgroundVideo = (sourceVideo) => {
+    const backgroundVideo = smartBackgroundVideoRef.current;
+    if (!backgroundVideo || !sourceVideo) return;
+    if (Math.abs(backgroundVideo.currentTime - sourceVideo.currentTime) > 0.04) {
+      backgroundVideo.currentTime = sourceVideo.currentTime;
+    }
+    if (sourceVideo.paused) backgroundVideo.pause();
+    else void backgroundVideo.play().catch(() => {});
+  };
+  useLayoutEffect(() => {
+    if (smartContainActive) syncSmartBackgroundVideo(previewVideoRef.current);
+  }, [smartContainActive, primaryPreviewKey, playbackSrc, previewVideoRef]);
+  const visualTransform = resolveVisualTransform(visualEffects?.keyframes, visualLocalTime, visualEffects?.baseTransform);
+  const visualAnimation = resolveVisualClipAnimation(visualEffects?.animation, visualLocalTime, visualEffects?.duration);
+  const visualMask = visualEffects?.mask ?? {};
+  const resolvedColorGrade = useMemo(
+    () => resolveColorGrade(visualEffects?.keyframes, visualLocalTime, visualEffects?.colorGrade),
+    [visualEffects?.colorGrade, visualEffects?.keyframes, visualLocalTime],
+  );
+  const selectedFilterCss = useMemo(
+    () => composeColorGradeFilter(selectedFilter.css, resolvedColorGrade),
+    [resolvedColorGrade, selectedFilter.css],
+  );
+  const normalizedSubjectEffect = normalizeSubjectEffect(subjectEffect);
+  const comparing = useRelightCompare(visualEffects?.id);
+  const normalizedCinematicDepth = useMemo(() => normalizeCinematicDepth({ ...cinematicDepth, enabled: comparing && cinematicDepth?.output === "relight" ? false : cinematicDepth?.enabled }), [cinematicDepth, comparing]);
+  const cinematicDepthActive = normalizedCinematicDepth.enabled && Boolean(depthAnalysis?.depthUrl);
+  const normalizedPhotoParallax = useMemo(() => normalizePhotoParallax(photoParallax), [photoParallax]);
+  const photoParallaxActive = previewVisualType === "image" && normalizedPhotoParallax.enabled && Boolean(depthAnalysis?.depthUrl);
+  const depthRenderActive = photoParallaxActive || cinematicDepthActive;
+  const subjectEffectActive = hasSubjectEffect(normalizedSubjectEffect) && Boolean(subjectCutoutUrl);
+  const replacesBackground = subjectEffectActive && (
+    normalizedSubjectEffect.background.visible === false
+    || normalizedSubjectEffect.background.mode !== "original"
+  );
+  const outline = normalizedSubjectEffect.outline;
+  const outlineFilter = outline.enabled ? "url(#subject-outline-filter)" : "none";
+  const enhancement = visualEffects?.enhancement ?? null;
+  const showRemasterPreview = Boolean(
+    enhancement?.enabled !== false && enhancement?.previewUrl &&
+    (previewVisualType === "image" || (!isPlaying && Math.abs((enhancement.localTime ?? 0) - visualLocalTime) <= 0.08)),
+  );
+  const maskCenterX = Number.isFinite(visualMask.centerX) ? visualMask.centerX : 50;
+  const maskCenterY = Number.isFinite(visualMask.centerY) ? visualMask.centerY : 50;
+  const activePreviewFrameSize = isFocusPreviewOpen && focusPreviewFrameSize.width > 0 ? focusPreviewFrameSize : previewFrameSize;
+  const activePreviewFrameStyle = isFocusPreviewOpen && focusPreviewFrameSize.width > 0
+    ? { ...previewFrameStyle, width: `${focusPreviewFrameSize.width}px`, height: `${focusPreviewFrameSize.height}px` }
+    : previewFrameStyle;
+  const frameWidth = Math.max(1, activePreviewFrameSize.width || 1);
+  const frameHeight = Math.max(1, activePreviewFrameSize.height || 1);
+  const previewPixelRatio = typeof window === "undefined" ? 1 : Math.max(1, window.devicePixelRatio || 1);
+  const renderedVisualSrc = visualEffects?.kind === "vector" || visualEffects?.vectorBody
+    ? getVectorRenderSource(visualEffects, {
+        targetWidth: frameWidth,
+        targetHeight: frameHeight,
+        pixelRatio: previewPixelRatio,
+        scale: Math.max(1, visualTransform.scale * visualAnimation.scale),
+      })
+    : baseRenderedVisualSrc;
+  const frameMinDimension = Math.min(frameWidth, frameHeight);
+  const stickerBaseSize = getStickerBaseSize({ width: frameWidth, height: frameHeight });
+  const circleSize = Number.isFinite(visualMask.size) ? visualMask.size : 72;
+  const maskWidth = visualMask.type === "circle" ? (circleSize * frameMinDimension) / frameWidth : Number.isFinite(visualMask.width) ? visualMask.width : 80;
+  const maskHeight = visualMask.type === "circle" ? (circleSize * frameMinDimension) / frameHeight : Number.isFinite(visualMask.height) ? visualMask.height : 80;
+  const shapeMaskUrl = getVisualMaskSvgDataUrl(visualMask, { width: frameWidth, height: frameHeight });
+  const roundedRadius = Math.min(maskWidth / 100 * frameWidth, maskHeight / 100 * frameHeight) * (Number.isFinite(visualMask.cornerRadius) ? visualMask.cornerRadius : 12) / 100;
+  const visualTransformStyle = {
+    transform: `translate(${visualTransform.x + visualAnimation.x}%, ${visualTransform.y + visualAnimation.y}%) scale(${visualTransform.scale * visualAnimation.scale}) rotate(${visualTransform.rotation}deg)`,
+    opacity: visualTransform.opacity * visualAnimation.opacity,
+  };
+  const visualContentBox = activeObjectFit === "contain"
+    ? getVisualFitRect(
+        { width: visualEffects?.width, height: visualEffects?.height },
+        { width: frameWidth, height: frameHeight },
+        "contain",
+      )
+    : { x: 0, y: 0, width: frameWidth, height: frameHeight };
+  const hasVisualContentBox = visualContentBox.width > 0 && visualContentBox.height > 0;
+  const transformBox = hasVisualContentBox
+    ? visualContentBox
+    : { x: 0, y: 0, width: frameWidth, height: frameHeight };
+  const transformCenterX = transformBox.x + transformBox.width / 2 + (visualTransform.x + visualAnimation.x) / 100 * frameWidth;
+  const transformCenterY = transformBox.y + transformBox.height / 2 + (visualTransform.y + visualAnimation.y) / 100 * frameHeight;
+  const transformScale = visualTransform.scale * visualAnimation.scale;
+  const visualTransformBoxStyle = {
+    left: `${transformCenterX}px`,
+    top: `${transformCenterY}px`,
+    width: `${transformBox.width}px`,
+    height: `${transformBox.height}px`,
+    transform: `translate(-50%, -50%) scale(${transformScale}) rotate(${visualTransform.rotation}deg)`,
+    opacity: visualTransform.opacity * visualAnimation.opacity,
+  };
+  const primaryFillsFrame = !visualTransform.rotation
+    && transformBox.width * transformScale / 2 >= Math.max(transformCenterX, frameWidth - transformCenterX)
+    && transformBox.height * transformScale / 2 >= Math.max(transformCenterY, frameHeight - transformCenterY);
+  const visualMaskStyle = {
+    clipPath: shapeMaskUrl ? undefined : getSharpMaskClipPath(visualMask, { width: frameWidth, height: frameHeight }),
+    WebkitMaskImage: shapeMaskUrl ? `url("${shapeMaskUrl}")` : undefined,
+    maskImage: shapeMaskUrl ? `url("${shapeMaskUrl}")` : undefined,
+    WebkitMaskSize: shapeMaskUrl ? "100% 100%" : undefined,
+    maskSize: shapeMaskUrl ? "100% 100%" : undefined,
+    WebkitMaskRepeat: shapeMaskUrl ? "no-repeat" : undefined,
+    maskRepeat: shapeMaskUrl ? "no-repeat" : undefined,
+  };
+  useEffect(() => {
+    if (!depthRenderActive || !depthCanvasRef.current) return undefined;
+    let canceled = false;
+    loadPreviewDepthFrame({ depthUrl: depthAnalysis?.depthUrl, nextDepthUrl: depthAnalysis?.nextDepthUrl, depthMix: depthAnalysis?.depthMix }).then((depthFrame) => {
+      const depthImage = depthFrame.depthVisual;
+      if (canceled) return;
+      const canvas = depthCanvasRef.current;
+      const source = previewVisualType === "video" ? previewVideoRef.current : previewImageRef.current;
+      if (!canvas || !source || source.seeking) return;
+      const width = Math.max(2, Math.round(frameWidth * previewPixelRatio));
+      const height = Math.max(2, Math.round(frameHeight * previewPixelRatio));
+      if (canvas.width !== width) canvas.width = width;
+      if (canvas.height !== height) canvas.height = height;
+      const context = canvas.getContext("2d", { alpha: true });
+      if (photoParallaxActive && !(normalizedCinematicDepth.enabled && normalizedCinematicDepth.output !== "cinematic")) drawPhotoParallaxFrame(context, source, canvas, {
+        effect: normalizedPhotoParallax,
+        depthVisual: depthImage,
+        fitMode: activeObjectFit,
+        filter: selectedFilterCss,
+        time: visualLocalTime,
+      });
+      else drawCinematicDepthFrame(context, source, canvas, {
+        effect: normalizedCinematicDepth,
+        ...depthFrame,
+        depthVisual: depthImage,
+        fitMode: activeObjectFit,
+        filter: selectedFilterCss,
+      });
+    }).catch(() => {});
+    return () => { canceled = true; };
+  }, [activeObjectFit, depthAnalysis?.depthUrl, depthAnalysis?.nextDepthUrl, depthAnalysis?.depthMix, depthRenderActive, frameHeight, frameWidth, normalizedCinematicDepth, normalizedPhotoParallax, photoParallaxActive, previewPixelRatio, previewVideoRef, previewVisualType, selectedFilterCss, visualLocalTime, decodedFrameRevision]);
+  const startMaskEdit = (event, mode) => {
+    const frame = previewCanvasRef.current;
+    if (!frame || !onUpdateVisualMask) return;
+    event.preventDefault(); event.stopPropagation();
+    const rect = frame.getBoundingClientRect();
+    const startX = event.clientX; const startY = event.clientY;
+    const initial = { centerX: maskCenterX, centerY: maskCenterY, width: maskWidth, height: maskHeight, size: circleSize };
+    const move = (moveEvent) => {
+      const dx = ((moveEvent.clientX - startX) / Math.max(1, rect.width)) * 100;
+      const dy = ((moveEvent.clientY - startY) / Math.max(1, rect.height)) * 100;
+      if (mode === "move") onUpdateVisualMask({ ...visualMask, centerX: Math.max(initial.width / 2, Math.min(100 - initial.width / 2, initial.centerX + dx)), centerY: Math.max(initial.height / 2, Math.min(100 - initial.height / 2, initial.centerY + dy)) });
+      else if (visualMask.type === "circle") {
+        const deltaPixels = Math.max(moveEvent.clientX - startX, moveEvent.clientY - startY);
+        const maxSizePixels = 2 * Math.min(initial.centerX / 100 * frameWidth, (100 - initial.centerX) / 100 * frameWidth, initial.centerY / 100 * frameHeight, (100 - initial.centerY) / 100 * frameHeight);
+        onUpdateVisualMask({ ...visualMask, size: Math.max(8, Math.min(maxSizePixels / frameMinDimension * 100, initial.size + deltaPixels / frameMinDimension * 100)) });
+      } else onUpdateVisualMask({ ...visualMask, width: Math.max(8, Math.min(2 * Math.min(initial.centerX, 100 - initial.centerX), initial.width + dx * 2)), height: Math.max(8, Math.min(2 * Math.min(initial.centerY, 100 - initial.centerY), initial.height + dy * 2)) });
+    };
+    const end = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", end); };
+    window.addEventListener("pointermove", move); window.addEventListener("pointerup", end, { once: true });
+  };
+  const startStickerDrag = (event, selectedSticker) => {
+    if (!stickerEditable || !onUpdateSticker || !selectedSticker) return;
+    const frame = previewCanvasRef.current;
+    if (!frame) return;
+    event.preventDefault(); event.stopPropagation();
+    const rect = frame.getBoundingClientRect();
+    const startX = event.clientX; const startY = event.clientY;
+    const initialX = Number.isFinite(selectedSticker.x) ? selectedSticker.x : 82;
+    const initialY = Number.isFinite(selectedSticker.y) ? selectedSticker.y : 20;
+    onSelectSticker?.(selectedSticker.id);
+    const round = (value) => Math.round(value * 100) / 100;
+    const move = (moveEvent) => onUpdateSticker(selectedSticker.id, {
+      x: round(Math.max(4, Math.min(96, initialX + ((moveEvent.clientX - startX) / Math.max(1, rect.width)) * 100))),
+      y: round(Math.max(4, Math.min(96, initialY + ((moveEvent.clientY - startY) / Math.max(1, rect.height)) * 100))),
+    });
+    const end = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", end); };
+    window.addEventListener("pointermove", move); window.addEventListener("pointerup", end, { once: true });
+  };
+  const startStickerTransform = (event, mode, selectedSticker) => {
+    if (!stickerEditable || !onUpdateSticker || !selectedSticker) return;
+    const sticker = event.currentTarget.closest(".sticker-transform-box");
+    if (!sticker) return;
+    event.preventDefault(); event.stopPropagation();
+    const stickerRect = sticker.getBoundingClientRect();
+    const centerX = stickerRect.left + stickerRect.width / 2;
+    const centerY = stickerRect.top + stickerRect.height / 2;
+    const startX = event.clientX; const startY = event.clientY;
+    const initialScale = Number.isFinite(selectedSticker.scale) ? selectedSticker.scale : 1;
+    const initialRotation = Number.isFinite(selectedSticker.rotation) ? selectedSticker.rotation : 0;
+    const initialAngle = Math.atan2(startY - centerY, startX - centerX) * 180 / Math.PI;
+    const round = (value) => Math.round(value * 100) / 100;
+    const move = (moveEvent) => {
+      if (mode === "scale") {
+        const delta = ((moveEvent.clientX - startX) + (moveEvent.clientY - startY)) / Math.max(60, stickerRect.width + stickerRect.height);
+        onUpdateSticker(selectedSticker.id, { scale: round(Math.max(0.2, Math.min(3, initialScale + delta * 2))) });
+      } else {
+        const angle = Math.atan2(moveEvent.clientY - centerY, moveEvent.clientX - centerX) * 180 / Math.PI;
+        let rotation = initialRotation + angle - initialAngle;
+        while (rotation > 180) rotation -= 360;
+        while (rotation < -180) rotation += 360;
+        onUpdateSticker(selectedSticker.id, { rotation: round(rotation) });
+      }
+    };
+    const end = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", end); };
+    window.addEventListener("pointermove", move); window.addEventListener("pointerup", end, { once: true });
+  };
+  const startVisualTransform = (event, mode) => {
+    if (event.button !== 0) return;
+    if (!visualTransformEditable || !onUpdateVisualTransform) return;
+    const frame = previewCanvasRef.current;
+    if (!frame) return;
+    event.preventDefault(); event.stopPropagation();
+    onSelectVisual?.();
+    const rect = frame.getBoundingClientRect();
+    const startX = event.clientX; const startY = event.clientY;
+    const initial = { ...visualTransform };
+    const centerX = rect.left + rect.width * (0.5 + initial.x / 100);
+    const centerY = rect.top + rect.height * (0.5 + initial.y / 100);
+    const startAngle = Math.atan2(startY - centerY, startX - centerX) * 180 / Math.PI;
+    const round = (value) => Math.round(value * 100) / 100;
+    const move = (moveEvent) => {
+      if (mode === "move") onUpdateVisualTransform({
+        ...initial,
+        x: round(initial.x + (moveEvent.clientX - startX) / Math.max(1, rect.width) * 100),
+        y: round(initial.y + (moveEvent.clientY - startY) / Math.max(1, rect.height) * 100),
+      });
+      if (mode.startsWith("scale-")) {
+        const handle = mode.slice(6);
+        let candidate = getAnchoredResize({ handle, pointer: { x: moveEvent.clientX, y: moveEvent.clientY }, frame: rect, box: { width: transformBox.width, height: transformBox.height }, transform: initial });
+        candidate = { ...candidate, scale: Math.max(0.1, Math.min(4, candidate.scale)) };
+        const snapped = snapVisualScaleToFrameEdges(candidate, { width: rect.width, height: rect.height }, 8, transformBox);
+        candidate = getAnchoredResize({ handle, pointer: { x: moveEvent.clientX, y: moveEvent.clientY }, frame: rect, box: { width: transformBox.width, height: transformBox.height }, transform: initial, scale: snapped.transform.scale });
+        setOverlaySnapGuides(snapped.guides);
+        onUpdateVisualTransform({ ...candidate, x: round(candidate.x), y: round(candidate.y), scale: round(candidate.scale) });
+      }
+      if (mode === "rotate") {
+        const angle = Math.atan2(moveEvent.clientY - centerY, moveEvent.clientX - centerX) * 180 / Math.PI;
+        onUpdateVisualTransform({ ...initial, rotation: round(initial.rotation + angle - startAngle) });
+      }
+    };
+    const end = () => { setOverlaySnapGuides([]); window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", end); };
+    window.addEventListener("pointermove", move); window.addEventListener("pointerup", end, { once: true });
+  };
+  const startOverlayTransform = (event, mode, overlay) => {
+    if (event.button !== 0) return;
+    if (!overlay || !onUpdateVisualOverlay) return;
+    const frame = previewCanvasRef.current;
+    if (!frame) return;
+    event.preventDefault(); event.stopPropagation();
+    onSelectVisualOverlay?.(overlay.id);
+    const rect = frame.getBoundingClientRect();
+    const localTime = Math.max(0, currentTime - (overlay.start || 0));
+    const initial = resolveVisualOverlayTransform(overlay, localTime);
+    const startX = event.clientX; const startY = event.clientY;
+    const centerX = rect.left + rect.width * (0.5 + initial.x / 100);
+    const centerY = rect.top + rect.height * (0.5 + initial.y / 100);
+    const startAngle = Math.atan2(startY - centerY, startX - centerX) * 180 / Math.PI;
+    const round = (value) => Math.round(value * 100) / 100;
+    const move = (moveEvent) => {
+      if (mode === "move") {
+        const candidate = { ...initial, x: round(initial.x + (moveEvent.clientX - startX) / Math.max(1, rect.width) * 100), y: round(initial.y + (moveEvent.clientY - startY) / Math.max(1, rect.height) * 100) };
+        const snapped = snapVisualOverlayTransform(candidate);
+        setOverlaySnapGuides(snapped.guides);
+        onUpdateVisualOverlay(overlay.id, snapped.transform);
+      }
+      if (mode.startsWith("scale")) {
+        const handle = mode.slice(6);
+        const box = getVisualOverlayPixelBox(overlay, activePreviewFrameSize);
+        let candidate = getAnchoredResize({ handle, pointer: { x: moveEvent.clientX, y: moveEvent.clientY }, frame: rect, box, transform: initial });
+        const clampedScale = Math.max(0.08, Math.min(4, candidate.scale));
+        candidate = getAnchoredResize({ handle, pointer: { x: moveEvent.clientX, y: moveEvent.clientY }, frame: rect, box, transform: initial, scale: clampedScale });
+        onUpdateVisualOverlay(overlay.id, { ...candidate, x: round(candidate.x), y: round(candidate.y), scale: round(candidate.scale) });
+      }
+      if (mode === "rotate") {
+        const angle = Math.atan2(moveEvent.clientY - centerY, moveEvent.clientX - centerX) * 180 / Math.PI;
+        onUpdateVisualOverlay(overlay.id, { ...initial, rotation: round(initial.rotation + angle - startAngle) });
+      }
+    };
+    const end = () => { setOverlaySnapGuides([]); window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", end); };
+    window.addEventListener("pointermove", move); window.addEventListener("pointerup", end, { once: true });
+  };
+  const startOverlayMaskEdit = (event, mode, overlay) => {
+    if (!overlay || !onUpdateVisualOverlayMask) return;
+    const layer = event.currentTarget.closest(".visual-overlay-layer");
+    if (!layer) return;
+    event.preventDefault(); event.stopPropagation();
+    const mask = overlay.mask ?? {};
+    const centerX = Number.isFinite(mask.centerX) ? mask.centerX : 50;
+    const centerY = Number.isFinite(mask.centerY) ? mask.centerY : 50;
+    const isCircle = mask.type === "circle";
+    const width = isCircle ? (Number.isFinite(mask.size) ? mask.size : 72) : (Number.isFinite(mask.width) ? mask.width : 80);
+    const height = isCircle ? width : (Number.isFinite(mask.height) ? mask.height : 80);
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const radians = -(Number(overlay.baseTransform?.rotation) || 0) * Math.PI / 180;
+    const move = (moveEvent) => {
+      const clientDx = moveEvent.clientX - startX;
+      const clientDy = moveEvent.clientY - startY;
+      const localDx = clientDx * Math.cos(radians) - clientDy * Math.sin(radians);
+      const localDy = clientDx * Math.sin(radians) + clientDy * Math.cos(radians);
+      const dx = localDx / Math.max(1, layer.offsetWidth) * 100;
+      const dy = localDy / Math.max(1, layer.offsetHeight) * 100;
+      if (mode === "move") {
+        onUpdateVisualOverlayMask({
+          ...mask,
+          centerX: Math.max(width / 2, Math.min(100 - width / 2, centerX + dx)),
+          centerY: Math.max(height / 2, Math.min(100 - height / 2, centerY + dy)),
+        });
+      } else if (isCircle) {
+        onUpdateVisualOverlayMask({ ...mask, size: Math.max(8, Math.min(100, width + Math.max(dx, dy) * 2)) });
+      } else {
+        onUpdateVisualOverlayMask({
+          ...mask,
+          width: Math.max(8, Math.min(100, width + dx * 2)),
+          height: Math.max(8, Math.min(100, height + dy * 2)),
+        });
+      }
+    };
+    const end = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", end);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", end, { once: true });
+  };
+
+  useEffect(() => {
+    const video = previewVideoRef.current;
+    if (
+      previewVisualType !== "video" ||
+      !video ||
+      typeof video.requestVideoFrameCallback !== "function"
+    ) {
+      return undefined;
+    }
+
+    let callbackId = 0;
+    const handleVideoFrame = (_now, metadata) => {
+      const mediaTime = Number.isFinite(metadata?.mediaTime) ? metadata.mediaTime : video.currentTime;
+      if (!video.__timelineFramePending && !video.seeking && Math.abs(mediaTime - lastReportedVideoTimeRef.current) >= 1 / 12) {
+        setDecodedFrameRevision((revision) => revision + 1);
+        lastReportedVideoTimeRef.current = mediaTime;
+        onPreviewVideoTimeUpdate?.(mediaTime);
+      }
+      callbackId = video.requestVideoFrameCallback(handleVideoFrame);
+    };
+    callbackId = video.requestVideoFrameCallback(handleVideoFrame);
+    return () => video.cancelVideoFrameCallback?.(callbackId);
+  }, [
+    onPreviewVideoTimeUpdate,
+    previewVideoRef,
+    playbackSrc,
+    primaryPreviewKey,
+    previewVisualType,
+    isFocusPreviewOpen,
+  ]);
+
+  useEffect(() => {
+    if (!isFocusPreviewOpen) return undefined;
+    const shell = previewShellRef.current;
+    if (!shell) return undefined;
+    const updateFocusFrameSize = () => {
+      const style = getComputedStyle(shell);
+      const availableWidth = Math.max(1, shell.clientWidth - parseFloat(style.paddingLeft || 0) - parseFloat(style.paddingRight || 0));
+      const availableHeight = Math.max(1, shell.clientHeight - parseFloat(style.paddingTop || 0) - parseFloat(style.paddingBottom || 0));
+      const [ratioWidth, ratioHeight] = String(previewRatio).split("/").map((value) => Number(value.trim()));
+      const ratio = Math.max(0.01, ratioWidth > 0 && ratioHeight > 0 ? ratioWidth / ratioHeight : 16 / 9);
+      const width = Math.max(1, Math.floor(Math.min(availableWidth, availableHeight * ratio)));
+      const height = Math.max(1, Math.floor(width / ratio));
+      setFocusPreviewFrameSize((current) => current.width === width && current.height === height ? current : { width, height });
+    };
+    updateFocusFrameSize();
+    const observer = window.ResizeObserver ? new ResizeObserver(updateFocusFrameSize) : null;
+    observer?.observe(shell);
+    window.addEventListener("resize", updateFocusFrameSize);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", updateFocusFrameSize);
+    };
+  }, [isFocusPreviewOpen, previewRatio, previewShellRef]);
+
+  useEffect(() => {
+    if (!isFocusPreviewOpen) return undefined;
+    const handleKeyDown = (event) => {
+      if (event.key === "Escape") setIsFocusPreviewOpen(false);
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isFocusPreviewOpen]);
+
+  useEffect(() => { setContextMenu(null); }, [currentTime, previewVisualSegment?.id, isFocusPreviewOpen]);
+  const selectPrimaryVisual = (event) => {
+    if (event.button !== 0) return;
+    event.stopPropagation();
+    if (visualTransformEditable) startVisualTransform(event, "move");
+    else onSelectVisual?.();
+  };
+  const openContextMenu = event => {
+    let hit = event.target.closest?.("[data-preview-clip-id]");
+    // The main picture's selection frame can cover an overlay. Resolve the
+    // visible overlay beneath that frame before opening its clip menu.
+    if (event.type === "contextmenu" && hit) {
+      const visibleHits = document.elementsFromPoint(event.clientX, event.clientY)
+        .map(element => element.closest?.("[data-preview-clip-id]"))
+        .filter(element => element && !element.classList.contains("visual-overlay-controls")
+          && !element.classList.contains("visual-transform-box"));
+      const overlayHit = visibleHits.find(element => element.dataset.previewTrack === "overlay");
+      hit = overlayHit || visibleHits[0] || hit;
+    }
+    if (!hit || !onPreviewAlignment) return;
+    const track = hit.dataset.previewTrack;
+    const segment = track === "overlay" ? visualOverlays.find(item => item.id === hit.dataset.previewClipId) : previewVisualSegment;
+    if (!segment) return;
+    event.preventDefault(); event.stopPropagation();
+    if (isPlaying) handlePlayToggle();
+    if (track === "overlay") onSelectVisualOverlay?.(segment.id); else onSelectVisual?.();
+    const rect = hit.getBoundingClientRect();
+    const frame = { width: frameWidth, height: frameHeight };
+    const contained = track === "overlay" ? getVisualOverlayPixelBox(segment, frame) : transformBox;
+    setContextMenu({ track, segment, time: currentTime, frame,
+      box: { x: track === "overlay" ? (frameWidth - contained.width) / 2 : contained.x,
+        y: track === "overlay" ? (frameHeight - contained.height) / 2 : contained.y, width: contained.width, height: contained.height },
+      x: Number.isFinite(event.clientX) ? event.clientX : rect.left + rect.width / 2,
+      y: Number.isFinite(event.clientY) ? event.clientY : rect.top + rect.height / 2 });
+  };
+  const geometricTransition = isMaskTransition(previewTransition?.id)
+    ? maskTransitionAppearance(previewTransition.id, previewTransition.progress, frameWidth, frameHeight) : null;
+
+  const transitionLayer = previewTransition?.next?.src && trackVisibility.image ? (
+    <div className={`preview-transition-layer type-${previewTransition.id}${geometricTransition ? " preview-mask-transition-front" : ""}`} style={{ "--transition-progress": previewTransition.progress, ...(geometricTransition ? { opacity: 1 } : {}) }}>
+      {previewTransition.next.type === "video" ? (
+        <video key={geometricTransition ? previewTransition.next.id : undefined}
+          onLoadedMetadata={geometricTransition ? ({ currentTarget: video }) => {
+            video.style.visibility = "hidden";
+            const time = Math.min(Math.max(0, video.duration - 0.001), getVisualSourceTime(previewTransition.next, 0));
+            if (Math.abs(video.currentTime - time) > 0.002) video.currentTime = time;
+          } : undefined}
+          onLoadedData={geometricTransition ? ({ currentTarget: video }) => { if (!video.seeking) video.style.visibility = ""; } : undefined}
+          onSeeked={geometricTransition ? ({ currentTarget: video }) => { video.style.visibility = ""; } : undefined}
+          onError={() => { if (transitionPlaybackSrc !== previewTransition.next.src) proxy.cancel(previewTransition.next.src); }}
+          src={transitionPlaybackSrc} crossOrigin="anonymous" muted playsInline autoPlay={!geometricTransition} preload="auto"
+          style={{ objectFit: geometricTransition ? previewTransition.next.fitMode || activeObjectFit : activeObjectFit, objectPosition: activeObjectPosition, maskImage: geometricTransition?.maskImage, maskSize: "100% 100%" }} />
+      ) : (
+        <img src={previewTransition.next.src} alt="" crossOrigin="anonymous" style={{ objectFit: geometricTransition ? previewTransition.next.fitMode || activeObjectFit : activeObjectFit, objectPosition: activeObjectPosition, maskImage: geometricTransition?.maskImage, maskSize: "100% 100%" }} />
+      )}
+      {previewTransition.id === "flash" ? <i /> : null}
+      {geometricTransition?.edgeImage ? <span className="preview-mask-transition-edge" style={{ backgroundImage: geometricTransition.edgeImage }} /> : null}
+    </div>
+  ) : null;
+
+  const previewStage = (
+    <section
+      className={`preview-stage ${isFocusPreviewOpen ? `is-focus-preview is-focus-${focusPreviewOrientation}` : ""}`}
+      style={isFocusPreviewOpen ? { "--focus-preview-ratio": previewRatioValue } : undefined}
+      role={isFocusPreviewOpen ? "dialog" : undefined}
+      aria-modal={isFocusPreviewOpen ? "true" : undefined}
+      aria-label={isFocusPreviewOpen ? t("focusPreviewTitle", "大画布编辑") : undefined}
+    >
+      <SubjectMaterialFilterDefs effect={normalizedSubjectEffect} />
+      {isFocusPreviewOpen ? <header className="focus-preview-header">
+        <div><strong>{t("focusPreviewTitle", "大画布编辑")}</strong><span>{t("focusPreviewHint", "点击画面元素进行移动、缩放和旋转")}</span></div>
+        <button
+          className="focus-preview-close"
+          type="button"
+          aria-label={t("closeFocusPreview", "关闭大画布预览")}
+          title={t("closeFocusPreview", "关闭大画布预览")}
+          onPointerDown={(event) => {
+            event.stopPropagation();
+          }}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            setIsFocusPreviewOpen(false);
+          }}
+        >
+          <X size={22} />
+        </button>
+      </header> : null}
+      <div
+        ref={previewShellRef}
+        className={`preview-canvas fit-${fitMode} ${hasPreviewContent ? "" : "is-empty"} ${
+          previewVisualSrc && !trackVisibility.image ? "is-image-hidden" : ""
+        }`}
+        style={{ "--preview-ratio": previewRatio }}
+        data-asset-drop-track={previewVisualSrc ? "overlay" : "image"}
+        onPointerDown={(event) => {
+          if (event.target === event.currentTarget) onDeselectVisuals?.();
+        }}
+        onDragOver={(event) => {
+          const asset = getDraggedAsset?.(event);
+          if (asset?.type === "image" || asset?.type === "video") event.preventDefault();
+        }}
+        onDrop={(event) => {
+          const asset = getDraggedAsset?.(event);
+          if (asset?.type !== "image" && asset?.type !== "video") return;
+          event.preventDefault(); event.stopPropagation();
+          if (previewVisualSrc) addVisualOverlay?.(asset);
+          else void applyAssetToTrack?.(asset, "image");
+        }}
+      >
+        {!hasPreviewContent ? (
+          <button className="preview-empty" type="button" onClick={() => fileInputRef.current?.click()}>
+            <CloudArrowUp size={38} />
+            <strong>{t("previewEmptyTitle")}</strong>
+            <span>{t("previewEmptySubtitle")}</span>
+          </button>
+        ) : (
+          <div
+            ref={previewCanvasRef}
+            className={`preview-frame ${previewVisualSrc && !trackVisibility.image ? "is-image-hidden" : ""} ${
+              backgroundRemoved ? "has-background-removed" : ""
+            } ${smartCropActive ? "has-smart-crop" : ""}`}
+            data-hidden-label={t("imageHidden")}
+            onContextMenu={openContextMenu}
+            onKeyDown={event => { if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) openContextMenu(event); }}
+            style={activePreviewFrameStyle}
+            onPointerDown={(event) => {
+              if (event.target === event.currentTarget) onDeselectVisuals?.();
+            }}
+          >
+            <div className="caption-canvas-guide is-vertical" aria-hidden="true" />
+            <div className="caption-canvas-guide is-horizontal" aria-hidden="true" />
+            <div className="primary-split-viewport" style={primarySplitStyle}>
+            {renderedVisualSrc && trackVisibility.image && subjectEffectActive ? (
+              <div className={`subject-effect-preview is-background-${normalizedSubjectEffect.background.mode}`} data-preview-track="image" data-preview-clip-id={previewVisualSegment?.id} aria-hidden="true"
+                onPointerDown={replacesBackground ? selectPrimaryVisual : undefined}>
+                {replacesBackground ? <div
+                  className="subject-effect-background"
+                  style={normalizedSubjectEffect.background.visible === false
+                    ? { background: "#0b1116" }
+                    : normalizedSubjectEffect.background.mode === "color"
+                    ? { background: normalizedSubjectEffect.background.color, opacity: normalizedSubjectEffect.background.opacity }
+                    : undefined}
+                >
+                  {normalizedSubjectEffect.background.visible !== false && normalizedSubjectEffect.background.mode === "blur" ? (
+                    previewVisualType === "video"
+                      ? <video src={playbackSrc} muted playsInline autoPlay={isPlaying} style={{ objectFit: "cover", filter: `blur(${normalizedSubjectEffect.background.blur}px) brightness(${1 - normalizedSubjectEffect.background.darken})`, transform: "scale(1.1)" }} />
+                      : <img src={previewVisualSrc} alt="" style={{ objectFit: "cover", filter: `blur(${normalizedSubjectEffect.background.blur}px) brightness(${1 - normalizedSubjectEffect.background.darken})`, transform: "scale(1.1)" }} />
+                  ) : null}
+                </div> : null}
+                <img
+                  className="subject-effect-cutout"
+                  src={subjectCutoutUrl}
+                  alt=""
+                  style={{
+                    ...visualTransformStyle,
+                    objectFit: activeObjectFit,
+                    objectPosition: activeObjectPosition,
+                    filter: `${selectedFilterCss === "none" ? "" : selectedFilterCss} ${outlineFilter}`.trim() || "none",
+                  }}
+                />
+              </div>
+            ) : null}
+            {renderedVisualSrc && trackVisibility.image ? (
+              <div
+                className={`visual-media-layer ${visualTransformEditable ? "is-transform-editable" : ""} ${replacesBackground ? "is-subject-sync-source" : ""}`}
+                data-preview-track="image" data-preview-clip-id={previewVisualSegment?.id}
+                tabIndex={0} aria-haspopup="menu" aria-label={previewVisualSegment?.name || t("previewMenuTitle")}
+                style={visualMaskStyle}
+                aria-hidden={replacesBackground ? "true" : undefined}
+                onPointerDown={replacesBackground ? undefined : selectPrimaryVisual}
+              >
+                {smartContainActive && previewVisualType === "image" ? <img
+                  className="smart-frame-fill-background"
+                  src={renderedVisualSrc}
+                  alt=""
+                  crossOrigin="anonymous"
+                  style={{ objectPosition: smartFrameBackgroundPosition }}
+                /> : null}
+                {smartContainActive && previewVisualType === "video" ? <video
+                  ref={smartBackgroundVideoRef}
+                  className="smart-frame-fill-background"
+                  src={playbackSrc}
+                  crossOrigin="anonymous"
+                  muted
+                  playsInline
+                  preload="metadata"
+                  aria-hidden="true"
+                  style={{ objectPosition: smartFrameBackgroundPosition }}
+                /> : null}
+                {previewVisualType === "image" ? <img
+                  ref={previewImageRef}
+                  src={renderedVisualSrc}
+                  alt={t("currentMediaAlt")}
+                  crossOrigin="anonymous"
+                  style={{ ...visualTransformStyle, opacity: depthRenderActive ? 0 : visualTransformStyle.opacity, filter: selectedFilterCss, objectFit: activeObjectFit, objectPosition: activeObjectPosition, background: smartContainActive ? "transparent" : undefined }}
+                /> : null}
+                {previewPlayers.map(({ key, src, standby }) => <PreparedPreviewVideo
+                  key={`${key ?? "primary"}:${src}`}
+                  activeRef={standby ? null : previewVideoRef}
+                  prepareTime={standby && !scrubbingTimeline ? getVisualSourceTime(nextPreviewVideo, 0) : null}
+                  className={standby ? "preview-warm-video" : "preview-video"}
+                  aria-hidden={standby ? true : undefined}
+                  onError={() => {
+                    const original = standby ? nextPreviewVideo.src : previewVisualSrc;
+                    if (src !== original) proxy.cancel(original);
+                  }}
+                  src={src}
+                  crossOrigin="anonymous"
+                  muted={standby || src !== previewVisualSrc || previewVisualMuted}
+                  playsInline
+                  preload="auto"
+                  onLoadedMetadata={standby ? undefined : (event) => {
+                    // Entering/leaving the focus portal mounts a new media element.
+                    // Restore its source clock and playback even when src/isPlaying
+                    // have not changed, so parent synchronization effects stay valid.
+                    const video = event.currentTarget;
+                    const sourceTime = getVisualSourceTime(previewVisualSegment, visualLocalTime);
+                    const maxTime = Number.isFinite(video.duration)
+                      ? Math.max(0, video.duration - 0.001) : sourceTime;
+                    video.__timelineFramePending = true;
+                    video.pause();
+                    video.playbackRate = getVisualPlaybackRateAtTime(previewVisualSegment, visualLocalTime);
+                    if ("preservesPitch" in video) video.preservesPitch = true;
+                    setTimelineAudioGain(video, getAudioSegmentPreviewVolume({ ...previewVisualSegment, start: 0 }, visualLocalTime), previewVisualSegment?.spatialEffect, previewVisualSegment?.spatialAmount);
+                    syncSmartBackgroundVideo(video);
+                    requestLatestVideoFrame(video, Math.max(0, Math.min(sourceTime, maxTime)), {
+                      immediate: true,
+                      onDecoded: () => {
+                        if (previewVideoRef.current === video) video.__timelineFramePending = false;
+                      },
+                      onPresented: mediaTime => {
+                        if (previewVideoRef.current !== video) return;
+                        video.__timelineFramePending = false;
+                        onPreviewVideoTimeUpdate?.(mediaTime);
+                        if (latestPlaybackRef.current.isPlaying && latestPlaybackRef.current.trackVisibility.image !== false) requestTimelineMediaPlay(video);
+                      },
+                    });
+                  }}
+                  onTimeUpdate={standby ? undefined : (event) => {
+                    syncSmartBackgroundVideo(event.currentTarget);
+                    if (!event.currentTarget.seeking && !event.currentTarget.__timelineFramePending) onPreviewVideoTimeUpdate?.(event.currentTarget.currentTime);
+                  }}
+                  onSeeked={standby ? undefined : (event) => {
+                    setDecodedFrameRevision((revision) => revision + 1);
+                    syncSmartBackgroundVideo(event.currentTarget);
+                    // Native seek completion is sufficient to resume decoding,
+                    // including low-frame-rate sources whose causal PTS can be
+                    // farther from the requested clock. PTS publication still
+                    // comes from the frame observer while entering a clip.
+                    if (!event.currentTarget.__timelineFramePending) {
+                      lastReportedVideoTimeRef.current = event.currentTarget.currentTime;
+                      onPreviewVideoTimeUpdate?.(event.currentTarget.currentTime);
+                    }
+                    event.currentTarget.__timelineFramePending = false;
+                    if (latestPlaybackRef.current.isPlaying && latestPlaybackRef.current.trackVisibility.image !== false) requestTimelineMediaPlay(event.currentTarget);
+                  }}
+                  style={standby ? { visibility: "hidden", pointerEvents: "none" } : {
+                    ...visualTransformStyle, opacity: depthRenderActive ? 0 : visualTransformStyle.opacity, filter: selectedFilterCss, objectFit: activeObjectFit, objectPosition: activeObjectPosition, background: smartContainActive ? "transparent" : undefined,
+                    zIndex: smartContainActive ? 1 : undefined,
+                    WebkitMaskImage: previewVisionMaskUrl ? `url("${previewVisionMaskUrl}")` : undefined,
+                    maskImage: previewVisionMaskUrl ? `url("${previewVisionMaskUrl}")` : undefined,
+                    WebkitMaskSize: previewVisionMaskUrl ? activeObjectFit : undefined,
+                    maskSize: previewVisionMaskUrl ? activeObjectFit : undefined,
+                    WebkitMaskPosition: previewVisionMaskUrl ? activeObjectPosition : undefined,
+                    maskPosition: previewVisionMaskUrl ? activeObjectPosition : undefined,
+                    WebkitMaskRepeat: previewVisionMaskUrl ? "no-repeat" : undefined,
+                    maskRepeat: previewVisionMaskUrl ? "no-repeat" : undefined,
+                  }}
+                />)}
+                {depthRenderActive ? <canvas ref={depthCanvasRef} className="cinematic-depth-preview-canvas photo-parallax-preview-canvas" style={visualTransformStyle} /> : null}
+                {showRemasterPreview ? <img
+                  className="remaster-preview-frame"
+                  src={enhancement.previewUrl}
+                  alt={t("remasterPreviewAlt")}
+                  style={{ ...visualTransformStyle, filter: selectedFilterCss, objectFit: activeObjectFit, objectPosition: activeObjectPosition }}
+                /> : null}
+              </div>
+            ) : null}
+            {previewVisualType === "video" && playbackSrc !== previewVisualSrc && trackVisibility.image ? <ProxySourceAudio source={previewVisualSrc} segment={previewVisualSegment} videoRef={previewVideoRef} localTime={visualLocalTime} isPlaying={isPlaying} muted={previewVisualMuted} /> : null}
+            {effectClips.length > 0 && renderedVisualSrc && trackVisibility.image ? <TimelineEffectPreview isPlaying={isPlaying} timelineScrubbingRef={timelineScrubbingRef} markers={timelineMarkers} overlays={visualOverlays} clips={effectClips} time={currentTime} localTime={visualLocalTime} videoRef={previewVideoRef} imageRef={previewImageRef} type={previewVisualType} effects={visualEffects} fitMode={fitMode} filter={selectedFilter.css} vision={effectVision} depthRef={depthCanvasRef} shellRef={previewShellRef} transition={previewTransition} /> : null}
+            {renderedVisualSrc && trackVisibility.image ? <ClickRippleOverlay effect={visualEffects?.clickRipple} time={visualLocalTime} /> : null}
+            {renderedVisualSrc && trackVisibility.image && visualTransformEditable && !visualMaskEditable ? (
+              <div className="visual-transform-box" data-preview-track="image" data-preview-clip-id={previewVisualSegment?.id} style={visualTransformBoxStyle} onPointerDown={(event) => startVisualTransform(event, "move")}>
+                <button className="visual-transform-rotate" type="button" aria-label={t("visualRotation", "旋转")} onPointerDown={(event) => startVisualTransform(event, "rotate")} />
+                {['nw', 'ne', 'sw', 'se'].map((corner) => <button key={corner} className={`visual-transform-handle is-${corner}`} type="button" aria-label={t("visualScale", "缩放")} onPointerDown={(event) => startVisualTransform(event, `scale-${corner}`)} />)}
+              </div>
+            ) : null}
+            {!geometricTransition ? transitionLayer : null}
+            </div>
+            {renderedVisualSrc && trackVisibility.image && timelineVisualSelected && !isPlaying && !visualTransformEditable && !visualMaskEditable ? (
+              <TimelineVisualHighlight id={previewVisualSegment.id}
+                style={primaryFillsFrame || (visualMask?.type && visualMask.type !== "none") ? { inset: 0 } : visualTransformBoxStyle}
+                bounds={{ width: frameWidth, height: frameHeight }} mask={visualMask} splitCell={primarySplitCell} />
+            ) : null}
+            {previewOverlays.map((overlay) => {
+              const standby = standbyOverlays.has(overlay.id);
+              const localTime = Math.max(0, currentTime - (overlay.start || 0));
+              const transform = resolveVisualOverlayTransform(overlay, localTime);
+              const animation = resolveVisualClipAnimation(overlay.animation, localTime, overlay.duration);
+              const animatedTransform = {
+                ...transform,
+                x: transform.x + animation.x,
+                y: transform.y + animation.y,
+                scale: transform.scale * animation.scale,
+                opacity: transform.opacity * animation.opacity,
+              };
+              const vectorAppearance = getVectorDesignAppearance(overlay.vectorDesign);
+              const isVector = overlay.kind === "vector" || Boolean(overlay.vectorBody);
+              const containBox = getVisualOverlayPixelBox(overlay, activePreviewFrameSize);
+              const overlayFilter = FILTER_OPTIONS.find((option) => option.id === overlay.filterId)?.css || "none";
+              const overlaySubjectEffect = normalizeSubjectEffect(overlay.subjectEffect);
+              const overlayCutoutUrl = overlay.visionAnalysis?.cutoutUrl || "";
+              const overlaySubjectActive = hasSubjectEffect(overlaySubjectEffect) && Boolean(overlayCutoutUrl);
+              const overlaySubjectFilterId = `overlay-subject-${String(overlay.id).replace(/[^a-z0-9_-]/gi, "-")}`;
+              const showOverlayOriginal = !overlaySubjectActive || (
+                overlaySubjectEffect.background.visible !== false
+                && overlaySubjectEffect.background.mode === "original"
+              );
+              const overlayMask = overlay.mask ?? { type: "none" };
+              const hasOverlayMask = overlayMask.type && overlayMask.type !== "none";
+              const projected = hasTemplateCardCorners(overlay.templateCardCorners) ? overlay.templateCardCorners : null;
+              const overlayBox = {
+                width: containBox.width * (projected ? 1 : animatedTransform.scale),
+                height: containBox.height * (projected ? 1 : animatedTransform.scale),
+              };
+              const overlayMaskUrl = hasOverlayMask ? getVisualMaskSvgDataUrl(overlayMask, overlayBox) : "";
+              const style = {
+                left: `${50 + animatedTransform.x}%`,
+                top: `${50 + animatedTransform.y}%`,
+                width: `${overlayBox.width}px`,
+                height: `${overlayBox.height}px`,
+                clipPath: overlayMaskUrl ? undefined : getSharpMaskClipPath(overlayMask, overlayBox),
+                transform: projected
+                  ? `rotate(${animatedTransform.rotation}deg) ${templateCardCssTransform(projected, activePreviewFrameSize, overlayBox, animatedTransform.scale)}`
+                  : `translate(-50%, -50%) rotate(${animatedTransform.rotation}deg)`,
+                transformOrigin: projected ? "0 0" : undefined,
+                opacity: animatedTransform.opacity * (isVector ? vectorAppearance.opacity : 1),
+                mixBlendMode: isVector ? vectorAppearance.cssBlendMode : undefined,
+                WebkitMaskImage: overlayMaskUrl ? `url("${overlayMaskUrl}")` : undefined,
+                maskImage: overlayMaskUrl ? `url("${overlayMaskUrl}")` : undefined,
+                WebkitMaskSize: overlayMaskUrl ? "100% 100%" : undefined,
+                maskSize: overlayMaskUrl ? "100% 100%" : undefined,
+                WebkitMaskRepeat: overlayMaskUrl ? "no-repeat" : undefined,
+                maskRepeat: overlayMaskUrl ? "no-repeat" : undefined,
+              };
+              const mediaStyle = { filter: isVector ? vectorAppearance.filter : overlayFilter, objectFit: projected ? "cover" : undefined };
+              const cutoutFilter = `${overlayFilter === "none" ? "" : overlayFilter} url(#${overlaySubjectFilterId})`.trim();
+              const overlayRenderSrc = isVector
+                ? getVectorRenderSource(overlay, {
+                    targetWidth: containBox.width * animatedTransform.scale,
+                    targetHeight: containBox.height * animatedTransform.scale,
+                    pixelRatio: previewPixelRatio,
+                    scale: 1,
+                  })
+                : overlay.src;
+              const selected = overlay.id === selectedVisualOverlayId;
+              const overlayCenterX = frameWidth * (0.5 + animatedTransform.x / 100);
+              const overlayCenterY = frameHeight * (0.5 + animatedTransform.y / 100);
+              const overlayToolbar = getOverlayToolbarPosition({
+                frameWidth,
+                frameHeight,
+                centerX: overlayCenterX,
+                centerY: overlayCenterY,
+                width: containBox.width * animatedTransform.scale,
+                height: containBox.height * animatedTransform.scale,
+                rotation: animatedTransform.rotation,
+              });
+              const splitCell = normalizeSplitScreenRect(overlay.splitScreenRect);
+              const splitClip = splitCell ? { clipPath: `inset(${splitCell.y * 100}% ${(1 - splitCell.x - splitCell.width) * 100}% ${(1 - splitCell.y - splitCell.height) * 100}% ${splitCell.x * 100}%)` } : undefined;
+              return <Fragment key={overlay.id}>
+                <div className="visual-overlay-viewport" style={standby ? { visibility: "hidden", pointerEvents: "none" } : splitClip} aria-hidden={standby ? true : undefined}>
+                <div className="visual-overlay-layer" data-composition-overlay={standby ? undefined : overlay.id}
+                  data-preview-track={standby ? undefined : "overlay"} data-preview-clip-id={standby ? undefined : overlay.id}
+                  tabIndex={standby ? -1 : 0} aria-haspopup={standby ? undefined : "menu"}
+                  aria-label={overlay.name || t("previewMenuTitle")} style={standby ? undefined : style}
+                  onPointerDown={standby ? undefined : (event) => startOverlayTransform(event, "move", overlay)}>
+                  {overlaySubjectActive ? <SubjectMaterialFilterDefs effect={overlaySubjectEffect} filterId={overlaySubjectFilterId} /> : null}
+                  {overlaySubjectActive
+                    && overlaySubjectEffect.background.visible !== false
+                    && overlaySubjectEffect.background.mode === "color"
+                    ? <span
+                        className="visual-overlay-subject-background"
+                        style={{
+                          background: overlaySubjectEffect.background.color,
+                          opacity: overlaySubjectEffect.background.opacity,
+                        }}
+                      />
+                    : null}
+                  {showOverlayOriginal ? <VisualOverlayMedia overlay={overlay} src={overlayRenderSrc} style={mediaStyle} isPlaying={isPlaying} localTime={localTime} timelineScrubbingRef={timelineScrubbingRef} standby={standby} /> : null}
+                  {overlaySubjectActive
+                    && overlaySubjectEffect.background.visible !== false
+                    && overlaySubjectEffect.background.mode === "blur"
+                    ? <span className="visual-overlay-subject-background">
+                        <VisualOverlayMedia
+                          overlay={overlay}
+                          src={overlayRenderSrc}
+                          style={{
+                            filter: `blur(${overlaySubjectEffect.background.blur}px) brightness(${1 - overlaySubjectEffect.background.darken})`,
+                            opacity: overlaySubjectEffect.background.opacity,
+                            transform: "scale(1.08)",
+                          }}
+                          isPlaying={isPlaying}
+                          localTime={localTime}
+                          timelineScrubbingRef={timelineScrubbingRef}
+                        />
+                      </span>
+                    : null}
+                  {overlaySubjectActive ? <img
+                    className="visual-overlay-subject-cutout"
+                    src={overlayCutoutUrl}
+                    alt=""
+                    style={{ filter: cutoutFilter }}
+                  /> : null}
+                  <ClickRippleOverlay effect={overlay.clickRipple} time={localTime} />
+                </div>
+                </div>
+                {!selected && !isPlaying && !standby && overlay.id === timelineSelectedOverlayId ? (
+                  <TimelineVisualHighlight id={overlay.id} bounds={overlayBox} mask={overlayMask} splitCell={splitCell}
+                    style={{ left: style.left, top: style.top, width: style.width, height: style.height, transform: style.transform, transformOrigin: style.transformOrigin }} />
+                ) : null}
+                {selected && !isPlaying && !standby ? <div
+                  className="visual-overlay-layer visual-overlay-controls is-selected"
+                  data-preview-track="overlay" data-preview-clip-id={overlay.id}
+                  style={{ left: style.left, top: style.top, width: style.width, height: style.height, transform: style.transform, transformOrigin: style.transformOrigin }}
+                >
+                  {selected && !isPlaying && hasOverlayMask && visualOverlayMaskEditable ? <div
+                    className={`visual-mask-editor is-${overlayMask.type}`}
+                    style={{
+                      left: `${(Number.isFinite(overlayMask.centerX) ? overlayMask.centerX : 50) - (overlayMask.type === "circle" ? (Number.isFinite(overlayMask.size) ? overlayMask.size : 72) : (Number.isFinite(overlayMask.width) ? overlayMask.width : 80)) / 2}%`,
+                      top: `${(Number.isFinite(overlayMask.centerY) ? overlayMask.centerY : 50) - (overlayMask.type === "circle" ? (Number.isFinite(overlayMask.size) ? overlayMask.size : 72) : (Number.isFinite(overlayMask.height) ? overlayMask.height : 80)) / 2}%`,
+                      width: `${overlayMask.type === "circle" ? (Number.isFinite(overlayMask.size) ? overlayMask.size : 72) : (Number.isFinite(overlayMask.width) ? overlayMask.width : 80)}%`,
+                      height: `${overlayMask.type === "circle" ? (Number.isFinite(overlayMask.size) ? overlayMask.size : 72) : (Number.isFinite(overlayMask.height) ? overlayMask.height : 80)}%`,
+                    }}
+                    onPointerDown={(event) => startOverlayMaskEdit(event, "move", overlay)}
+                  ><span>{t("visualMask")}</span><button type="button" aria-label={t("visualMaskResize")} onPointerDown={(event) => startOverlayMaskEdit(event, "resize", overlay)} /></div> : null}
+                  {selected && !isPlaying && !visualOverlayMaskEditable ? <>
+                    <button className="visual-transform-rotate" type="button" aria-label={t("visualRotation", "旋转")} onPointerDown={(event) => startOverlayTransform(event, "rotate", overlay)} />
+                    {['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'].map((handle) => <button key={handle} className={`visual-transform-handle is-${handle}`} type="button" aria-label={t("visualScale", "缩放")} onPointerDown={(event) => startOverlayTransform(event, `scale-${handle}`, overlay)} />)}
+                  </> : null}
+                </div> : null}
+                {selected && !isPlaying ? (
+                  <div
+                    className={`visual-overlay-order-actions is-${overlayToolbar.placement}`}
+                    style={{ left: `${overlayToolbar.left}px`, top: `${overlayToolbar.top}px` }}
+                    role="toolbar"
+                    aria-label={t("pictureInPicture", "画中画")}
+                    onPointerDown={(event) => event.stopPropagation()}
+                  >
+                    <button type="button" title={t("moveLayerUp", "上移一层")} aria-label={t("moveLayerUp", "上移一层")} onClick={(event) => { event.stopPropagation(); onReorderVisualOverlay?.(overlay.id, 1); }}><ArrowUp size={15} /></button>
+                    <button type="button" title={t("moveLayerDown", "下移一层")} aria-label={t("moveLayerDown", "下移一层")} onClick={(event) => { event.stopPropagation(); onReorderVisualOverlay?.(overlay.id, -1); }}><ArrowDown size={15} /></button>
+                  </div>
+                ) : null}
+              </Fragment>;
+            })}
+            {geometricTransition ? transitionLayer : null}
+            {overlaySnapGuides.map((guide) => <div className={`visual-snap-guide is-${guide}`} key={guide} />)}
+            {showVisionOverlays
+              ? visionOverlayBoxes.map((detection, index) => (
+                  <div
+                    className={`vision-detection-box ${detection.isSubject ? "is-subject" : ""}`}
+                    key={`${detection.label || "object"}-${index}`}
+                    style={{
+                      left: `${detection.xMin * 100}%`,
+                      top: `${detection.yMin * 100}%`,
+                      width: `${Math.max(0, detection.xMax - detection.xMin) * 100}%`,
+                      height: `${Math.max(0, detection.yMax - detection.yMin) * 100}%`,
+                    }}
+                  >
+                    <span>
+                      {detection.label || "subject"}
+                      {Number.isFinite(detection.score) ? ` ${Math.round(detection.score * 100)}%` : ""}
+                    </span>
+                  </div>
+                ))
+              : null}
+            {smartCropActive || captionAvoidanceActive || backgroundRemoved ? (
+              <div className="preview-ai-badges" aria-hidden="true">
+                {backgroundRemoved ? <span>MODNet</span> : null}
+                {smartCropActive ? <span>{t("smartVisionCrop")}</span> : null}
+                {captionAvoidanceActive ? <span>{t("smartVisionCaptionAvoidance")}</span> : null}
+              </div>
+            ) : null}
+            {visualMaskEditable && visualMask.type && visualMask.type !== "none" ? (
+              <div className={`visual-mask-editor is-${visualMask.type}`} style={{ left: `${maskCenterX - maskWidth / 2}%`, top: `${maskCenterY - maskHeight / 2}%`, width: `${maskWidth}%`, height: `${maskHeight}%`, borderRadius: visualMask.type === "rounded" ? `${roundedRadius}px` : undefined }} onPointerDown={(event) => startMaskEdit(event, "move")}>
+                <span>{t("visualMask")}</span><button type="button" aria-label={t("visualMaskResize")} onPointerDown={(event) => startMaskEdit(event, "resize")} />
+              </div>
+            ) : null}
+            {captionsEnabled && trackVisibility.caption
+              ? (Array.isArray(currentCaptions) ? currentCaptions : currentCaption ? [{ id: "current", text: currentCaption }] : [])
+                .map((caption, index, visibleCaptions) => {
+                  const basePlacement = resolveCaptionSegmentPlacement(caption, captionPlacement);
+                  return (
+                    <CaptionOverlay
+                      key={caption.id}
+                      text={caption.text}
+                      captionSize={resolveCaptionSizeForSegment(captionSize, caption)}
+                      captionStyle={resolveCaptionStyleForSegment(captionStyle, caption)}
+                      placement={{
+                        ...basePlacement,
+                        y: basePlacement.y + (caption.placement ? 0 : (index - (visibleCaptions.length - 1) / 2) * 12),
+                      }}
+                      frameSize={activePreviewFrameSize}
+                      onPointerDown={(event) => startCaptionDrag(event, caption.id)}
+                      onDoubleClick={() => setActiveTool("caption")}
+                    />
+                  );
+                })
+              : null}
+            {visibleStickers.map((sticker, index) => {
+              const isEditable = stickerEditable && sticker.id === selectedStickerId;
+              return sticker.src ? (
+                <div
+                  key={sticker.id || `${sticker.src}-${index}`}
+                  className={`sticker-overlay sticker-transform-box ${isEditable ? "is-editable" : ""}`}
+                  onPointerDown={(event) => startStickerDrag(event, sticker)}
+                  style={{
+                    width: `${stickerBaseSize}px`,
+                    height: `${stickerBaseSize}px`,
+                    left: `${Number.isFinite(sticker.x) ? sticker.x : 82}%`,
+                    top: `${Number.isFinite(sticker.y) ? sticker.y : 20}%`,
+                    transform: `translate(-50%, -50%) scale(${Number.isFinite(sticker.scale) ? sticker.scale : 1}) rotate(${Number.isFinite(sticker.rotation) ? sticker.rotation : 0}deg)`,
+                    opacity: Number.isFinite(sticker.opacity) ? sticker.opacity : 1,
+                  }}
+                >
+                  <img className="sticker-overlay-image" src={sticker.src} alt="" draggable={false} />
+                  {isEditable ? <>
+                    <button className="sticker-rotate-handle" type="button" aria-label={t("visualRotation", "旋转")} onPointerDown={(event) => startStickerTransform(event, "rotate", sticker)} />
+                    <button className="sticker-scale-handle" type="button" aria-label={t("visualScale", "缩放")} onPointerDown={(event) => startStickerTransform(event, "scale", sticker)}>
+                      <Resize size={12} weight="bold" aria-hidden="true" />
+                    </button>
+                  </> : null}
+                </div>
+              ) : sticker.text ? (
+                <div key={sticker.id || `${sticker.text}-${index}`} className="sticker-overlay is-label">{sticker.text}</div>
+              ) : null;
+            })}
+          </div>
+        )}
+      </div>
+      <div className="transport">
+        <input
+          className="scrubber"
+          type="range"
+          min="0"
+          max={Math.max(estimatedDuration, 1)}
+          step="0.01"
+          value={Math.min(currentTime, estimatedDuration)}
+          onChange={(event) => seekTo(Number(event.target.value))}
+        />
+        <div className="transport-row">
+          <span>
+            {formatTime(currentTime)} <em>/ {formatTime(estimatedDuration)}</em>
+          </span>
+          <div className="playback-controls">
+            <IconButton label={t("backTwoSeconds")} onClick={() => seekTo(currentTime - 2)}>
+              <SkipBack size={18} weight="fill" />
+            </IconButton>
+            <IconButton label={t("play")} active onClick={handlePlayToggle}>
+              {isPlaying ? <Pause size={20} weight="fill" /> : <Play size={20} weight="fill" />}
+            </IconButton>
+            <IconButton label={t("forwardTwoSeconds")} onClick={() => seekTo(currentTime + 2)}>
+              <SkipForward size={18} weight="fill" />
+            </IconButton>
+          </div>
+          <button
+            className="fit-button desktop-fit-button"
+            type="button"
+            onClick={() => {
+              setFitMode((mode) => (mode === "contain" ? "cover" : "contain"));
+              notify(fitMode === "contain" ? "预览已切换为填充裁切" : "预览已切换为完整适配");
+            }}
+          >
+            {fitMode === "contain" ? t("fit") : t("cover")} <CaretDown size={14} />
+          </button>
+          <label className="mobile-ratio-select" aria-label={t("canvasRatio", "画布比例")}>
+            <select value={ratioId} onChange={(event) => setRatioId?.(event.target.value)}>
+              {RATIO_OPTIONS.map((option) => <option value={option.id} key={option.id}>{option.label}</option>)}
+            </select>
+            <CaretDown size={14} />
+          </label>
+          <IconButton label={isFocusPreviewOpen ? t("closeFocusPreview", "关闭大画布预览") : t("fullscreenPreview")} onClick={() => setIsFocusPreviewOpen((open) => !open)}>
+            <FrameCorners size={19} />
+          </IconButton>
+        </div>
+      </div>
+    </section>
+  );
+  const alignmentMenu = contextMenu ? <PreviewContextMenu menu={contextMenu} locked={Boolean(alignmentLocks[contextMenu.track])}
+    mainRange={alignmentMainRange} reference={alignmentReference}
+    overlayCount={visualOverlays.length + (trackVisibility.image && previewVisualSegment && currentTime >= (alignmentPrimaryRange?.start ?? 0) && currentTime < (alignmentPrimaryRange?.end ?? 0) ? 1 : 0)}
+    splitLocked={Boolean((visualOverlays.length && alignmentLocks.overlay) || (trackVisibility.image && previewVisualSegment && alignmentLocks.image))} t={t} onAction={onPreviewAlignment} onClose={() => setContextMenu(null)} /> : null;
+  if (isFocusPreviewOpen && typeof document !== "undefined") {
+    return createPortal(<>
+      <button className="focus-preview-backdrop" type="button" aria-label={t("closeFocusPreview", "关闭大画布预览")} onClick={() => setIsFocusPreviewOpen(false)} />
+      {previewStage}
+      {alignmentMenu}
+    </>, document.body);
+  }
+  return <>{previewStage}{alignmentMenu}</>;
+}

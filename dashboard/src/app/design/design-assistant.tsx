@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { History, PanelLeftClose, Plus } from "lucide-react";
+import { History, Plus } from "lucide-react";
 import AgentRuntimePanel from "@/app/components/hermes/agent-runtime-panel";
 import { useAgentSession, type AgentSendOptions } from "@/app/components/hermes/use-agent-session";
 import { useInlineAgentQuestions } from "@/app/components/hermes/use-inline-agent-questions";
@@ -25,10 +25,9 @@ import styles from "./design.module.css";
 const DESIGN_CHATS = "design";
 
 /** Bread for the Design page: its own chats, scoped like the PDF assistant, that edit the open design over `doory`. */
-export default function DesignAssistant({ designTitle, editing, onHide }: {
+export default function DesignAssistant({ designTitle, editing }: {
   designTitle: string | null;
   editing: boolean;
-  onHide: () => void;
 }) {
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
@@ -117,9 +116,6 @@ export default function DesignAssistant({ designTitle, editing, onHide }: {
         <button type="button" className={styles.iconButton} title="Chat history" aria-label="Design chat history" aria-expanded={historyOpen}
           onClick={() => void toggleHistory()}>
           <History size={16} />
-        </button>
-        <button type="button" className={styles.iconButton} title="Hide assistant" aria-label="Hide design assistant" onClick={onHide}>
-          <PanelLeftClose size={16} />
         </button>
       </div>
       {historyOpen && (

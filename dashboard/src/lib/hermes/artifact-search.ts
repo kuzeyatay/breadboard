@@ -58,3 +58,19 @@ export function filterArtifactsForSearch(
   if (!query.trim()) return artifacts;
   return artifacts.filter((artifact) => artifactMatchesSearch(artifact, query));
 }
+
+/**
+ * The archive lists every ready version; the Artifacts tab shows each artifact once, with
+ * its versions newest first. Groups keep the order of their newest version.
+ */
+export function groupArtifactVersions(
+  artifacts: PresentedArtifact[],
+): { id: string; versions: PresentedArtifact[] }[] {
+  const groups = new Map<string, PresentedArtifact[]>();
+  for (const artifact of artifacts) {
+    const versions = groups.get(artifact.id);
+    if (versions) versions.push(artifact);
+    else groups.set(artifact.id, [artifact]);
+  }
+  return [...groups].map(([id, versions]) => ({ id, versions: versions.sort((a, b) => b.version - a.version) }));
+}

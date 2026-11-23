@@ -1,0 +1,141 @@
+# Timeline Studio — 브라우저 AI 동영상 편집기
+
+[English](README.md) | [中文](README.zh-CN.md) | [日本語](README.ja.md) | **한국어** | [Español](README.es.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | [Português](README.pt-BR.md) | [ไทย](README.th.md) | [Tiếng Việt](README.vi.md) | [Русский](README.ru.md)
+
+[![skills.sh](https://skills.sh/b/MartinDelophy/ai-video-editor)](https://skills.sh/MartinDelophy/ai-video-editor)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=flat-square)](CONTRIBUTING.md) [![LINUX DO](https://shorturl.at/ggSqS)](https://linux.do)
+
+## Anna에서 확장되는 영상 제작
+
+Anna 버전에서 AI 편집 지원과 프로젝트 이어 작업을 경험하세요.
+
+- Anna에게 편집 요구를 설명하고 요구 사항과 미디어 메타데이터를 바탕으로 만든 계획을 검토한 뒤, 지원되는 클립 정렬과 간단한 1× 영상 트리밍을 적용하세요.
+- 프로젝트와 미디어는 Anna 클라우드에 자동 저장되며, 같은 계정으로 다른 브라우저에서도 작업을 이어갈 수 있습니다. 로컬 프로젝트 체크포인트도 저장할 수 있습니다.
+- 편집 가능한 다중 트랙 타임라인에서 다듬고 AI 음성과 수동 자막을 추가한 뒤, 브라우저에서 사용 가능한 인코더로 MP4를 내보내세요.
+
+현재 데스크톱 미리보기 버전입니다. 계획 단계는 영상 프레임이나 오디오를 분석하지 않으며, 로컬 AI 기능은 Anna 컨테이너의 지원 여부에 따라 달라집니다.
+
+→ [Anna에서 Timeline Studio 체험](https://anna.partners/store/@martindelophy/timeline-studio)
+
+## 딥 신세시스 기술의 책임 있는 사용
+
+이 도구는 딥 신세시스 기술을 기반으로 하며 기술 연구와 학습 목적으로만 제공됩니다.
+
+사용자는 다음 사항을 반드시 준수해야 합니다.
+
+- 본인 또는 적법한 사용 허가를 받은 사람의 얼굴 이미지나 동영상만 사용할 것
+- 불법적이거나 권리를 침해하거나 허위 또는 오해를 유발하는 콘텐츠를 제작하거나 배포하지 않을 것
+- 생성된 콘텐츠를 실제 영상으로 가장하지 않고, 당사자의 동의 없이 다른 사람의 신원을 도용하지 않을 것
+
+위 요구 사항을 위반하여 발생하는 모든 법적 책임은 사용자 본인에게 있습니다.
+
+## 프로젝트 업데이트
+
+- **2026-11-13** — 동영상을 가져올 때 타임라인 썸네일을 일괄 추출합니다. 재생 헤드를 끌면 미리보기가 더 빠르게 따라오며 프레임 시간은 그대로 유지됩니다. 재생 헤드를 끌 때 반복 계산을 줄여 클립이 많은 프로젝트에서도 더 빠르게 반응합니다.
+- **2026-11-10** — 미디어 라이브러리에서 효과음 120개를 검색하고 미리 듣고 타임라인에 추가할 수 있습니다. 효과음과 배경음악은 같은 곡선을 사용합니다. 가운데를 위아래로 끌어 볼륨을 조절하고 양쪽 점을 좌우로 끌어 페이드 길이를 설정합니다. 기억의 소용돌이 비트 템플릿에는 주요 박자에 효과음이 들어갑니다. 여러 클립을 함께 드래그하면 정렬 가이드가 나타나고 클립 사이 간격을 유지한 채 스냅됩니다.
+- **2026-11-09** — 편집 가능한 비트 템플릿 두 가지를 추가했습니다. 3D 원근 비트 컷은 열리고 닫히는 가로 띠 네 개와 개별 교체할 수 있는 화면 속 화면 카드 16개를 사용합니다. 기억의 소용돌이 비트 컷은 48개 슬롯의 사진과 동영상 프레임으로 유리 터널을 만든 뒤 각 장면을 전체 화면으로 보여 줍니다. 데스크톱 컬러 휠에 색 보정된 SDR 레벨을 확인하는 RGB 퍼레이드를 추가했습니다. 4K 오프라인 내보내기는 필요한 미디어만 불러오고 대용량 MP4 및 MOV 저장 시 메모리 사용을 줄입니다.
+- **2026-11-08** — 클립 교체 창에서 양쪽 핸들을 끌어 시작점과 끝점을 각각 조절하고, 선택 영역 가운데를 끌어 길이와 재생 속도를 유지한 채 이동할 수 있습니다. 데스크톱과 모바일에서 닫기 아이콘을 중앙에 맞췄습니다. 속성 패널은 타임라인이나 미리보기에서 선택한 클립을 따라 전환되고, 화면 속 화면 설정은 패널의 남은 공간을 채우며 스크롤할 수 있습니다. 타임라인에서 선택한 영상과 화면 속 화면을 미리보기에서 강조하고, 클립의 키프레임 위치에 마름모를 표시합니다. 특수 효과 트랙 이름을 열 안에 표시하며 재생 헤드를 끄는 동안 미리보기 부담을 줄입니다. 네온 카드 오프닝, 교체 가능한 비트 컷 10개, BPM에 맞춘 음악을 담은 정사각형 회전 카드 템플릿을 추가했습니다. 화면 또는 화면 속 화면 클립의 마름모를 끌어 키프레임 시간을 바꿀 수 있습니다. 회전 트럼프 카드의 무늬마다 사진이나 영상을 지정할 수 있습니다. 7분할 오프닝, 네온 필름, 물결 마스크, 엇갈린 마스크 템플릿 4종을 추가했습니다. WebMCP에서 비트 템플릿을 검토해 추가하고 타임라인 효과를 확인하며 마스크 전환을 설정할 수 있습니다. Timeline Studio Skill에 사용 방법을 추가했습니다.
+- **2026-11-07** — 특수 효과 다음에 템플릿 작업 공간을 추가했습니다. 내 이미지, 영상, 선택 음악을 넣고 BPM을 조정한 뒤 편집 가능한 3분할 몽타주를 추가할 수 있습니다. 망점과 다중 화면 미리보기가 더 부드러워졌습니다. 템플릿 설정은 오른쪽에 있으며 기본 음악은 BPM에 맞춰집니다. 메인 영상이나 화면 속 화면 클립을 우클릭해 타임라인의 위치와 길이를 유지하면서 원하는 소스 구간으로 교체할 수 있습니다. 다음 장면과 화면 속 화면의 첫 프레임을 미리 디코딩해 전환이 부드러워졌습니다. 교체 창에 썸네일과 파일 이름을 표시합니다. 소재가 4개를 넘으면 가로 스크롤 막대를 제공하고, 선택한 구간에 필요한 재생 속도를 계산합니다.
+계획된 작업은 [Roadmap](ROADMAP.md), 출시된 변경 사항은 [Releases](https://github.com/MartinDelophy/ai-video-editor/releases), 개별 작업과 버그는 [Issues](https://github.com/MartinDelophy/ai-video-editor/issues)에서 확인하세요.
+
+## 무엇을 만들 수 있나요?
+
+재현 가능한 전후 비교 예시와 편집 레시피를 살펴보세요:
+
+→ [AI Video Editing Skills Handbook](https://github.com/MartinDelophy/timeline-studio-handbook)
+
+<p align="center">
+  <a href="https://trendshift.io/repositories/77422?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-77422" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/77422/daily?language=JavaScript" alt="MartinDelophy%2Fai-video-editor | Trendshift" width="250" height="55"/></a>
+  <a href="https://trendshift.io/repositories/77422?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-77422" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/77422/weekly?language=JavaScript" alt="MartinDelophy%2Fai-video-editor | Trendshift" width="250" height="55"/></a>
+</p>
+
+Timeline Studio는 브라우저에서 실행되는 로컬 우선 AI 동영상 편집기입니다. CapCut 스타일의 멀티트랙 타임라인에 AI 음성, 자동 자막, 비전 도구, 말하는 아바타, 결정적 오프라인 내보내기를 결합합니다.
+
+[편집기 열기](https://video-editor.ai-creator.top/) · [데모 보기](https://www.youtube.com/watch?v=chdRPG2ndMs) · [Hugging Face Space](https://huggingface.co/spaces/haixin/timeline-studio)
+
+![Timeline Studio 편집기](docs/screenshots/editor-timeline.png)
+
+## 주요 기능
+
+- Piper/VITS ONNX와 Kokoro 82M을 이용한 다국어 음성.
+- Stable Audio 3 Small Q4 ONNX와 WebGPU를 이용한 로컬 AI 음악 생성. 자유 형식 프롬프트 번역, 30/60/90/120초 옵션, 파형 기반 장시간 루프, 영구 모델 캐시, 내 에셋 자동 추가를 지원합니다.
+- Whisper small q8 ONNX 자동 자막.
+- YOLOS tiny와 MODNet 스마트 프레이밍.
+- 보컬 분리 및 JoyVASA/LivePortrait 아바타 생성.
+- 오버레이, 마스크, 필터, 애니메이션, 키프레임을 지원하는 멀티트랙 편집.
+- WebCodecs와 오디오 믹싱을 이용한 브라우저 MP4/WebM 내보내기.
+- 설치형 PWA, 로컬 모델 캐시, `.timeline` 프로젝트.
+
+## AI 음성 데모
+
+https://github.com/user-attachments/assets/304a744e-d620-4380-9c17-19af3726f5a4
+
+## Agent Skill
+
+이 저장소에는 편집 가능한 동영상 타임라인을 계획하고 조작하며 검증하는 [`edit-timeline-studio`](skills/edit-timeline-studio/SKILL.md) Agent Skill이 포함되어 있습니다. GitHub CLI 2.90.0 이상에서 설치할 수 있습니다.
+
+[skills.sh](https://skills.sh/MartinDelophy/ai-video-editor)를 통한 설치에는 Node.js 22.20.0 이상이 필요합니다.
+
+```bash
+npx skills add MartinDelophy/ai-video-editor --skill edit-timeline-studio
+```
+
+```bash
+# Claude Code
+gh skill install MartinDelophy/ai-video-editor edit-timeline-studio --agent claude-code --scope user
+
+# Codex
+gh skill install MartinDelophy/ai-video-editor edit-timeline-studio --agent codex --scope user
+```
+
+검증된 릴리스로 고정하려면 `--pin v1.0.8`을 추가하세요. 설치 전에 `gh skill preview MartinDelophy/ai-video-editor edit-timeline-studio`로 내용을 확인할 수 있습니다.
+
+## 로드맵
+
+- **현재:** 결정적 오프라인 내보내기 안정화, 타임라인 편집 신뢰성 향상, 브라우저 E2E 테스트 확대.
+- **다음:** 헤드리스 렌더링과 브라우저 출력의 기능 일치를 확대하고, 검토 가능한 WebMCP 편집 명령과 재사용 프로젝트 템플릿 공유를 개선합니다.
+- **향후:** 협업 검토 흐름, 플러그인 확장 인터페이스, 로컬에서 검증된 AI 모델 추가.
+
+우선순위는 [GitHub Discussions](https://github.com/MartinDelophy/ai-video-editor/discussions)에서 함께 정합니다.
+
+## 도움을 기다립니다
+
+브라우저 미디어, WebCodecs, WebGPU/ONNX, 타임라인 UX, 현지화, 테스트 및 문서화 기여를 환영합니다. 재현 가능한 버그는 [Issues](https://github.com/MartinDelophy/ai-video-editor/issues)에, 아이디어와 작품은 [Discussions](https://github.com/MartinDelophy/ai-video-editor/discussions)에 공유해 주세요. 작은 수정, 테스트, 번역, 예제도 큰 도움이 됩니다.
+
+## 빠른 시작
+
+Node.js 20+와 최신 Chromium 브라우저가 필요합니다. WebGPU를 권장합니다.
+
+```bash
+git clone https://github.com/MartinDelophy/ai-video-editor.git
+cd ai-video-editor
+npm install
+npm run dev
+```
+
+## 검증
+
+```bash
+npm run build
+npm run check
+```
+
+## 지원 및 피드백
+
+이 프로젝트가 도움이 되었다면 ⭐ Star를 눌러 주세요. 문제가 발생하면 [Issue를 등록해 주세요](https://github.com/MartinDelophy/ai-video-editor/issues).
+
+질문과 피드백을 공유하고 다른 사용자 및 기여자와 소통하려면 [Discord 커뮤니티](https://discord.gg/uq2uvUTBr)에 참여해 주세요.
+
+## 라이선스
+
+[MIT](LICENSE)
+
+## Star History
+
+<a href="https://www.star-history.com/?repos=MartinDelophy/ai-video-editor">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=MartinDelophy/ai-video-editor&amp;type=date&amp;theme=dark&amp;legend=top-left" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=MartinDelophy/ai-video-editor&amp;type=date&amp;legend=top-left" />
+    <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=MartinDelophy/ai-video-editor&amp;type=date&amp;legend=top-left" />
+  </picture>
+</a>

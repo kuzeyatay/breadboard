@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en" translate="no" class="notranslate">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- The editor localizes its own live UI; external translation replaces React-owned text nodes. -->
+    <meta name="google" content="notranslate" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Timeline Studio — Free Browser AI Video Editor & Voiceover Generator</title>
+    <meta name="description" content="Create AI voiceovers, automatic captions, talking avatars, and timeline-based videos directly in your browser with Timeline Studio. Local-first editing with MP4 and WebM export." />
+    <meta name="keywords" content="AI video editor, AI voiceover generator, automatic captions, talking avatar, browser video editor, text to speech, timeline editor, local AI, 视频编辑器, AI 配音, 自动字幕, 数字人" />
+    <meta name="application-name" content="Timeline Studio" />
+    <meta name="author" content="Timeline Studio" />
+    <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1" />
+    <link rel="canonical" href="https://video-editor.ai-creator.top/" />
+    <link rel="help" href="https://video-editor.ai-creator.top/how-it-works/" />
+    <link rel="privacy-policy" href="https://video-editor.ai-creator.top/privacy/" />
+    <link rel="alternate" type="text/plain" href="https://video-editor.ai-creator.top/llms.txt" title="LLM product summary" />
+    <link rel="service-doc" type="text/markdown" href="/agent-guide.md" title="Timeline Studio agent guide" />
+    <link rel="https://agentskills.io/discovery" type="application/json" href="/.well-known/agent-skills/index.json" title="Agent Skills discovery index" />
+    <meta name="theme-color" content="#101720" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Timeline Studio" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/icons/timeline-studio-icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/icons/timeline-studio-apple-touch.png" />
+    <link rel="preconnect" href="https://huggingface.co" crossorigin />
+    <link rel="dns-prefetch" href="https://cdn-lfs.huggingface.co" />
+    <link rel="preconnect" href="https://www.modelscope.cn" crossorigin />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Timeline Studio" />
+    <meta property="og:title" content="Timeline Studio — Browser AI Video Editor" />
+    <meta property="og:description" content="Generate AI voiceovers, captions, talking avatars, and export timeline videos directly in your browser." />
+    <meta property="og:url" content="https://video-editor.ai-creator.top/" />
+    <meta property="og:image" content="https://video-editor.ai-creator.top/icons/timeline-studio-icon-512.png" />
+    <meta property="og:image:width" content="512" />
+    <meta property="og:image:height" content="512" />
+    <meta property="og:image:alt" content="Timeline Studio AI video editor icon" />
+    <meta property="og:locale" content="en_US" />
+    <meta property="og:locale:alternate" content="zh_CN" />
+
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Timeline Studio — Browser AI Video Editor" />
+    <meta name="twitter:description" content="Local-first AI voiceover, automatic captions, talking avatars, and timeline video export." />
+    <meta name="twitter:image" content="https://video-editor.ai-creator.top/icons/timeline-studio-icon-512.png" />
+    <meta name="twitter:image:alt" content="Timeline Studio AI video editor icon" />
+
+    <script type="application/ld+json">{
+      "@context":"https://schema.org",
+      "@graph":[
+        {"@type":"Organization","@id":"https://video-editor.ai-creator.top/#organization","name":"Timeline Studio","url":"https://video-editor.ai-creator.top/","logo":"https://video-editor.ai-creator.top/icons/timeline-studio-icon-512.png","sameAs":["https://github.com/MartinDelophy/ai-video-editor","https://huggingface.co/spaces/haixin/timeline-studio","https://youtu.be/mUXduGpBmwE"]},
+        {"@type":"WebSite","@id":"https://video-editor.ai-creator.top/#website","url":"https://video-editor.ai-creator.top/","name":"Timeline Studio","description":"Free local-first browser AI video editor and voiceover generator.","publisher":{"@id":"https://video-editor.ai-creator.top/#organization"},"inLanguage":["en","zh-CN","ja","ko","es","fr","de","pt-BR","th","vi","ru"]},
+        {"@type":["SoftwareApplication","WebApplication"],"@id":"https://video-editor.ai-creator.top/#app","name":"Timeline Studio","url":"https://video-editor.ai-creator.top/","applicationCategory":"MultimediaApplication","applicationSubCategory":"VideoEditor","browserRequirements":"Requires a modern browser with WebAssembly and MediaRecorder; WebGPU is recommended for local AI workflows.","operatingSystem":"Web browser","description":"A free, open-source, local-first browser AI video editor for multilingual voiceovers, automatic captions, AI music, talking portraits, multi-track editing, visual effects and deterministic MP4 or WebM export.","image":"https://video-editor.ai-creator.top/icons/timeline-studio-icon-512.png","screenshot":"https://raw.githubusercontent.com/MartinDelophy/ai-video-editor/main/docs/screenshots/editor-timeline.png","softwareVersion":"1.0.0","dateModified":"2026-09-02","inLanguage":["en","zh-CN","ja","ko","es","fr","de","pt-BR","th","vi","ru"],"license":"https://opensource.org/license/mit","isAccessibleForFree":true,"featureList":["Multilingual browser AI voiceover and authorized voice conversion","Whisper automatic captions","Browser-local AI music generation","Multi-track timeline editing","Browser-local video repair and subject effects","Transform and color keyframes","Browser-side MP4 and WebM export","Installable progressive web app"],"offers":{"@type":"Offer","price":"0","priceCurrency":"USD","availability":"https://schema.org/InStock"},"publisher":{"@id":"https://video-editor.ai-creator.top/#organization"},"softwareHelp":"https://video-editor.ai-creator.top/how-it-works/","privacyPolicy":"https://video-editor.ai-creator.top/privacy/","sameAs":"https://github.com/MartinDelophy/ai-video-editor"}
+      ]
+    }</script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <noscript>Timeline Studio requires JavaScript to run the editor. Read the <a href="/features/">feature overview</a> or <a href="/how-it-works/">editing guide</a>.</noscript>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

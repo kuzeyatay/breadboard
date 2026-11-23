@@ -89,7 +89,12 @@ import WorkflowTemplatesPanel from "./workflow-templates-panel";
 import { UnifiedWorkflowsPanel } from "./unified-workflows-panel";
 import { AgentManagerPanel } from "./agent-manager-panel";
 import { TRADINGAGENTS_COMMAND } from "@/lib/tradingagents/identity.ts";
-import { VIDEO_USE_COMMAND } from "@/lib/video-use/identity.ts";
+import { VIDEO_CAPABILITY_COMMAND } from "@/lib/hermes/video-capability.ts";
+
+// Shorts, HyperFrames, OpenMontage, ViMax, Vox Director, Money Printer and Video Use are folded
+// into the one Video capability (/agents:video), which picks the engine. Their commands still work.
+const VIDEO_ENGINES_FOLDED = true;
+const VIDEO_CAPABILITY_SEARCH = "video videos edit cut trim captions subtitles clip clips shorts reels tiktok film movie animation motion graphics 3d cinematic explainer montage trailer documentary youtube render remotion hyperframes openmontage vimax vox money printer";
 import { CLAUDE_CODE_COMMAND } from "@/lib/claude-code-agent/identity.ts";
 import { PAPER_ORCHESTRA_COMMAND } from "@/lib/paper-orchestra/identity.ts";
 import ReferenceChatsPanel from "./reference-chats-panel";
@@ -829,6 +834,7 @@ const showCareerOps =
         "job search offer evaluation cv resume cover letter application tracker interview salary recruiter ats portal scan",
       );
     const showShorts =
+      !VIDEO_ENGINES_FOLDED &&
       surface !== "quartz_ai" &&
       Boolean(onSelectShorts) &&
       matchesAgentSearch(
@@ -935,6 +941,7 @@ const showCareerOps =
         "cad 3d print stl step glb cadquery freecad fcstd enclosure bracket mount adapter spacer bushing knob printable model mm millimetre",
       );
     const showHyperframes =
+      !VIDEO_ENGINES_FOLDED &&
       surface !== "quartz_ai" &&
       Boolean(onSelectHyperframes) &&
       matchesAgentSearch(
@@ -943,6 +950,7 @@ const showCareerOps =
         "video animation motion graphics mp4 render explainer promo clip title card slideshow",
       );
     const showOpenMontage =
+      !VIDEO_ENGINES_FOLDED &&
       surface !== "quartz_ai" &&
       Boolean(onSelectOpenMontage) &&
       matchesAgentSearch(
@@ -999,6 +1007,7 @@ const showCareerOps =
         "email inbox mailbox mail gmail outlook message thread reply respond draft forward send archive label unread unsubscribe newsletter spam snooze follow up cleanup rules filter sort",
       );
     const showVimax =
+      !VIDEO_ENGINES_FOLDED &&
       surface !== "quartz_ai" &&
       Boolean(onSelectVimax) &&
       matchesAgentSearch(
@@ -1007,6 +1016,7 @@ const showCareerOps =
         "film movie story screenplay script storyboard shots scenes characters animatic cinematic director screenwriter video",
       );
     const showVoxDirector =
+      !VIDEO_ENGINES_FOLDED &&
       surface !== "quartz_ai" &&
       Boolean(onSelectVoxDirector) &&
       matchesAgentSearch(
@@ -1015,6 +1025,7 @@ const showCareerOps =
         "explainer explain vox collage paper torn cutout poster narrated narration voiceover editorial motion graphics short video beats headline scrapbook",
       );
     const showMoneyPrinter =
+      !VIDEO_ENGINES_FOLDED &&
       surface !== "quartz_ai" &&
       Boolean(onSelectMoneyPrinter) &&
       matchesAgentSearch(
@@ -1123,7 +1134,7 @@ const showCareerOps =
     const hasVisibleAgents =
       (surface === "dashboard_terminal" && matchesAgentSearch("Claude Code", CLAUDE_CODE_COMMAND, "claude anthropic code coding terminal")) ||
       matchesAgentSearch("PaperOrchestra", PAPER_ORCHESTRA_COMMAND, PAPER_ORCHESTRA_SEARCH) ||
-      (surface === "dashboard_terminal" && matchesAgentSearch("Video Use", VIDEO_USE_COMMAND, "edit video clips subtitles")) ||
+      matchesAgentSearch("Video", VIDEO_CAPABILITY_COMMAND, VIDEO_CAPABILITY_SEARCH) ||
       showPraxist ||
       showTradingAgents ||
       showGodsEye ||
@@ -1704,13 +1715,12 @@ const showCareerOps =
                         </button>
                       </li>
                     ) }] : []),
-                    ...(surface === "dashboard_terminal" && matchesAgentSearch("Video Use", VIDEO_USE_COMMAND, "edit video clips subtitles") ? [{ name: "Video Use", node: (
-                      <li key="agent-video-use" className="group flex items-center gap-2 hover:bg-[var(--paper-surface)]">
-                        <button id="video-use-entry" type="button" onClick={() => choose({ id: "runtime-agent:video-use", kind: "agent", slug: "agents:video-use", token: "agents:video-use", name: "Video Use", description: "Edit an attached video.", installed: true, enabled: true, healthy: true })} className="min-w-0 flex-1 px-3 py-2.5 text-left focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-[var(--botanical)]">
-                          <span className="block font-mono text-sm font-medium text-[var(--ink-heading)]">{VIDEO_USE_COMMAND}</span>
-                          <span className="mt-0.5 block text-xs text-[var(--ink)]">Edit a supplied video’s cuts, framing, pacing and captions. Attach a video or open its artifact in the editor.</span>
+                    ...(matchesAgentSearch("Video", VIDEO_CAPABILITY_COMMAND, VIDEO_CAPABILITY_SEARCH) ? [{ name: "Video", node: (
+                      <li key="agent-video" className="group flex items-center gap-2 hover:bg-[var(--paper-surface)]">
+                        <button id="video-entry" type="button" onClick={() => choose({ id: "runtime-agent:video", kind: "agent", slug: "agents:video", token: "agents:video", name: "Video", description: "Make or edit any video.", installed: true, enabled: true, healthy: true })} className="min-w-0 flex-1 px-3 py-2.5 text-left focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-[var(--botanical)]">
+                          <span className="block font-mono text-sm font-medium text-[var(--ink-heading)]">{VIDEO_CAPABILITY_COMMAND}</span>
+                          <span className="mt-0.5 block text-xs text-[var(--ink)]">Make or edit any video: motion graphics, 3D shots, films, explainers, shorts and edits of your own footage. Open the result in Video Studio to keep editing with Bread.</span>
                         </button>
-                        <AgentSettingsButton name="Video Use" onOpen={() => setAgentSettingsFor("video-use")} />
                       </li>
                     ) }] : []),
                     ...(showTradingAgents ? [{ name: "Trading Agent", node: (

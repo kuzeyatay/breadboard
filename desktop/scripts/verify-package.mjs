@@ -3815,6 +3815,11 @@ function checkResourcesRoot(resources, binRoot, label) {
     (name) => name === ".venv" || name === "node_modules" || name === "__pycache__" || name.endsWith(".sqlite3") || name === ".env",
     `${label} forbidden Doory mutable/cache file staged`,
   );
+  const timelineStudioRoot = path.join(resources, "app-services", "timeline-studio");
+  for (const relative of [["LICENSE"], ["BREADBOARD_SOURCE_COMMIT"], ["breadboard", "serve.mjs"], ["breadboard", "bridge.js"], ["dist", "index.html"]]) {
+    requireDirectFile(path.join(timelineStudioRoot, ...relative), `${label} Timeline Studio video editor ${relative.join("/")}`);
+  }
+  forbidMatches(timelineStudioRoot, (name) => name === "node_modules" || name === ".env", `${label} forbidden Timeline Studio mutable file staged`);
   const openworkRoot = path.join(resources, "app-services", "openwork");
   for (const relative of [
     ["apps", "server", "src", "cli.ts"],

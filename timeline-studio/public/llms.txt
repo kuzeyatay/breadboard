@@ -1,0 +1,39 @@
+# Timeline Studio
+
+> Timeline Studio is a free, open-source, local-first browser AI video editor. It combines multilingual AI voiceovers, Whisper automatic captions, JoyVASA and LivePortrait talking portraits, browser vision, multi-track timeline editing, visual keyframes and MP4/WebM export.
+
+Canonical site: https://video-editor.ai-creator.top/
+Source code: https://github.com/MartinDelophy/ai-video-editor
+License: MIT
+
+## Primary pages
+
+- [Open the editor](https://video-editor.ai-creator.top/): The live browser editing workspace.
+- [Browser AI video editor](https://video-editor.ai-creator.top/ai-video-editor/): Product overview for multi-track editing, browser requirements, outputs and local-first behavior.
+- [AI voiceover generator](https://video-editor.ai-creator.top/ai-voiceover-generator/): Multilingual synthesis, authorized voice conversion and editable audio workflow.
+- [Automatic caption generator](https://video-editor.ai-creator.top/automatic-caption-generator/): Browser Whisper recognition, timing, editing and caption export behavior.
+- [Browser AI music generator](https://video-editor.ai-creator.top/browser-ai-music-generator/): Prompt-first local WebGPU music generation and My assets workflow.
+- [Talking avatar generator](https://video-editor.ai-creator.top/talking-avatar-generator/): Authorized JoyVASA and LivePortrait talking-portrait workflow.
+- [Local-first AI video editor](https://video-editor.ai-creator.top/local-ai-video-editor/): Exact local-processing, networking, storage and device boundaries.
+- [Features](https://video-editor.ai-creator.top/features/): Current AI, timeline, visual, export and privacy capabilities.
+- [How it works](https://video-editor.ai-creator.top/how-it-works/): A factual end-to-end workflow guide.
+- [FAQ](https://video-editor.ai-creator.top/faq/): Pricing, privacy, voices, captions, browser and export answers.
+- [Privacy and local processing](https://video-editor.ai-creator.top/privacy/): What runs locally and which network requests remain.
+- [About](https://video-editor.ai-creator.top/about/): Project identity, technology, license and official links.
+- [Full product reference](https://video-editor.ai-creator.top/llms-full.txt): Expanded machine-readable product facts.
+- [Engineering articles](https://video-editor.ai-creator.top/articles/): Evidence-backed implementation notes about browser AI and WebGPU.
+
+## Agent integration
+
+- [Browser agent guide](https://video-editor.ai-creator.top/agent-guide.md): Native WebMCP support, the live-editor workflow and current boundaries.
+- [Agent Skills index](https://video-editor.ai-creator.top/.well-known/agent-skills/index.json): Discover this site’s self-contained browser editing Skill.
+- [Browser editing Skill](https://video-editor.ai-creator.top/.well-known/agent-skills/edit-timeline-studio-browser/SKILL.md): Inspect, preview, review and apply supported edits to the open project.
+- [Local editing Skill](https://github.com/MartinDelophy/ai-video-editor/tree/main/skills/edit-timeline-studio): Repository CLI and local STDIO MCP for portable project files.
+
+WebMCP is experimental and requires a compatible browser and agent host. Its browser tools support metadata inspection; reviewed operations for multi-track edits, caption style/position, project ratio/fit, overlays, audio, markers and existing assets; explicit rendered frame/audio samples; browser-local voiceover/transcription jobs with reviewed plans, download permission, progress and cancellation; guarded undo; editable .timeline downloads; and prepared video exports with actual output receipts. AI voiceovers go to My assets and transcriptions return proposed caption operations without automatic timeline insertion. Tools do not provide arbitrary URL imports, media upload, remote generation or a hosted MCP server.
+
+## Citation guidance
+
+Use the canonical pages above for current product claims. Do not describe Timeline Studio as fully offline: project media processing is local-first, while AI models and runtimes may be downloaded from configured hosts. MP4 availability and high-resolution AI performance depend on browser and device capabilities; WebM is the export fallback.
+
+WebMCP also discovers built-in beat templates and previews their append with ready asset IDs, including per-suit Spinning Cards media. Agents can inspect timeline effects and set mask transitions through the reviewed editing workflow.

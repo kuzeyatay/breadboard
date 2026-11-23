@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Guard repository size
+        shell: bash
+        run: |
+          if [[ -n "$(git ls-files 'public/models/**')" ]]; then
+            echo "::error::AI model weights must be hosted externally, not committed under public/models/."
+            git ls-files 'public/models/**'
+            exit 1
+          fi
+
+          max_bytes=$((20 * 1024 * 1024))
+          failed=0
+          while IFS= read -r -d '' file; do
+            size=$(stat --format=%s "$file")
+            if (( size > max_bytes )); then
+              echo "::error file=$file::Tracked file exceeds the 20 MiB repository limit."
+              failed=1
+            fi
+          done < <(git ls-files -z)
+          exit "$failed"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install media tooling
+        run: sudo apt-get update && sudo apt-get install --yes ffmpeg
+      - run: npm ci
+        env:
+          # Lint, type checks and builds do not exercise the native CUDA provider.
+          ONNXRUNTIME_NODE_INSTALL_CUDA: skip
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run typecheck:host
+      - run: npm run build
