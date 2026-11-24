@@ -2884,7 +2884,7 @@ await stagePinnedTrackedSourceClosure({
   const actual = requirePinnedVendoredSource("Hermes", hermesRoot, HERMES_UPSTREAM_COMMIT);
   const status = spawnSync(
     "git",
-    ["-C", hermesRoot, "status", "--porcelain", "--untracked-files=all"],
+    ["-C", hermesRoot, "status", "--porcelain", "--untracked-files=all", "--", "."],
     { encoding: "utf8", shell: false },
   );
   if (status.status !== 0 || status.stdout.trim() !== "") {
@@ -3147,7 +3147,7 @@ fs.copyFileSync(
   const omhTarget = path.join(stagingRoot, "oh-my-hermes");
   const expectedCommit = "080030ccef0d3c15123a3f7478b671a0d2ddcf22";
   const actualCommit = requirePinnedVendoredSource("Oh My Hermes", omhSource, expectedCommit);
-  const status = spawnSync("git", ["-C", omhSource, "status", "--porcelain", "--untracked-files=no"], {
+  const status = spawnSync("git", ["-C", omhSource, "status", "--porcelain", "--untracked-files=no", "--", "."], {
     encoding: "utf8",
     shell: false,
   });
@@ -3207,7 +3207,7 @@ fs.copyFileSync(
   const factcheckTarget = path.join(stagingRoot, "bullshit-detector");
   const expectedCommit = "7b8fac1857eba19d25665825793dfbaf0414c6bf";
   const actualCommit = requirePinnedVendoredSource("Factcheck", factcheckSource, expectedCommit);
-  const status = spawnSync("git", ["-C", factcheckSource, "status", "--porcelain", "--untracked-files=no"], {
+  const status = spawnSync("git", ["-C", factcheckSource, "status", "--porcelain", "--untracked-files=no", "--", "."], {
     encoding: "utf8",
     shell: false,
   });
@@ -3252,7 +3252,7 @@ fs.copyFileSync(
   const loopxTarget = path.join(stagingRoot, "LoopX");
   const expectedCommit = "924213b86ba7788bdb83ebecab9569ec6cd79b41";
   const actualCommit = requirePinnedVendoredSource("LoopX", loopxSource, expectedCommit);
-  const status = spawnSync("git", ["-C", loopxSource, "status", "--porcelain", "--untracked-files=no"], {
+  const status = spawnSync("git", ["-C", loopxSource, "status", "--porcelain", "--untracked-files=no", "--", "."], {
     encoding: "utf8",
     shell: false,
   });
@@ -3370,7 +3370,7 @@ fs.copyFileSync(
   const targetRoot = path.join(stagingRoot, "MatrAIx-Persona-8B");
   const expectedCommit = "2418b37ffb99f79c0a7d4b3dd4e461ced498aefc";
   const actualCommit = requirePinnedVendoredSource("MatrAIx", sourceRoot, expectedCommit);
-  const status = spawnSync("git", ["-C", sourceRoot, "status", "--porcelain", "--untracked-files=no"], {
+  const status = spawnSync("git", ["-C", sourceRoot, "status", "--porcelain", "--untracked-files=no", "--", "."], {
     encoding: "utf8",
     shell: false,
   });
@@ -3430,7 +3430,7 @@ fs.copyFileSync(
   const targetRoot = path.join(stagingRoot, "ShapeR");
   const expectedCommit = "8e9bd5b25a075bdd2fc4d60027d27e515fa11769";
   const actualCommit = requirePinnedVendoredSource("ShapeR", sourceRoot, expectedCommit);
-  const status = spawnSync("git", ["-C", sourceRoot, "status", "--porcelain", "--untracked-files=all"], {
+  const status = spawnSync("git", ["-C", sourceRoot, "status", "--porcelain", "--untracked-files=all", "--", "."], {
     encoding: "utf8",
     shell: false,
   });
@@ -3488,7 +3488,7 @@ fs.copyFileSync(
   const targetRoot = path.join(stagingRoot, "Resource2Skill");
   const expectedCommit = "7f101b4cfe214cc496d085a34efac528a17cc375";
   const actualCommit = requirePinnedVendoredSource("Resource2Skill", sourceRoot, expectedCommit);
-  const status = spawnSync("git", ["-C", sourceRoot, "status", "--porcelain", "--untracked-files=no"], {
+  const status = spawnSync("git", ["-C", sourceRoot, "status", "--porcelain", "--untracked-files=no", "--", "."], {
     encoding: "utf8",
     shell: false,
   });
@@ -3562,7 +3562,7 @@ fs.copyFileSync(
     ["helpers/render.py", "29E3D95FE6C8DFD955C3D7C8EE8E134D20AA61E1C949F848058ED2A869D4D86D"],
   ]);
   const actualCommit = requirePinnedVendoredSource("Video Use", sourceRoot, expectedCommit);
-  const status = spawnSync("git", ["-C", sourceRoot, "status", "--porcelain", "--untracked-files=all"], {
+  const status = spawnSync("git", ["-C", sourceRoot, "status", "--porcelain", "--untracked-files=all", "--", "."], {
     encoding: "utf8",
     shell: false,
   });
@@ -3649,7 +3649,7 @@ fs.copyFileSync(
   const targetRoot = path.join(stagingRoot, "hyperframes");
   const expectedCommit = "29f004cfc04b351bf38a8b28b20916bb5bad9fc4";
   const actualCommit = requirePinnedVendoredSource("HyperFrames", sourceRoot, expectedCommit);
-  const status = spawnSync("git", ["-C", sourceRoot, "status", "--porcelain", "--untracked-files=no"], {
+  const status = spawnSync("git", ["-C", sourceRoot, "status", "--porcelain", "--untracked-files=no", "--", "."], {
     encoding: "utf8",
     shell: false,
   });
@@ -4185,7 +4185,7 @@ fs.copyFileSync(
   const targetRoot = path.join(stagingRoot, "OpenMontage");
   const expectedCommit = "4eab34c5cfcccaa4f1970554928feccce73ee930";
   const actualCommit = requirePinnedVendoredSource("OpenMontage", sourceRoot, expectedCommit);
-  const status = spawnSync("git", ["-C", sourceRoot, "status", "--porcelain", "--untracked-files=no"], {
+  const status = spawnSync("git", ["-C", sourceRoot, "status", "--porcelain", "--untracked-files=no", "--", "."], {
     encoding: "utf8",
     shell: false,
   });
@@ -4245,7 +4245,7 @@ fs.copyFileSync(
   const targetRoot = path.join(stagingRoot, "bolt-slides");
   const expectedCommit = "53b55bcf365dc2864fac29e7a5594213611142be";
   const actualCommit = requirePinnedVendoredSource("Bolt Slides", sourceRoot, expectedCommit);
-  const status = spawnSync("git", ["-C", sourceRoot, "status", "--porcelain", "--untracked-files=no"], {
+  const status = spawnSync("git", ["-C", sourceRoot, "status", "--porcelain", "--untracked-files=no", "--", "."], {
     encoding: "utf8",
     shell: false,
   });
@@ -4305,7 +4305,7 @@ fs.copyFileSync(
   const targetRoot = path.join(stagingRoot, "subsai");
   const expectedCommit = "5ed78a85d2b868a907c811404f7cd9179db39968";
   const actualCommit = requirePinnedVendoredSource("SubsAI", sourceRoot, expectedCommit);
-  const status = spawnSync("git", ["-C", sourceRoot, "status", "--porcelain", "--untracked-files=no"], {
+  const status = spawnSync("git", ["-C", sourceRoot, "status", "--porcelain", "--untracked-files=no", "--", "."], {
     encoding: "utf8",
     shell: false,
   });
