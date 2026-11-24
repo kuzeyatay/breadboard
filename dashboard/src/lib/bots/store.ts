@@ -101,7 +101,7 @@ export class BotsStore {
     this.db.transaction(() => {
       for (const bot of PREBUILT_BOTS) {
         insert.run(userId, bot.id, bot.name, bot.description, bot.personality, JSON.stringify(bot.avatar), bot.effort ?? null);
-        upgrade.run(bot.description, bot.personality, bot.effort ?? null, userId, bot.id, LEGACY_PREBUILT_PERSONALITIES[bot.id]);
+        for (const legacy of LEGACY_PREBUILT_PERSONALITIES[bot.id] ?? []) upgrade.run(bot.description, bot.personality, bot.effort ?? null, userId, bot.id, legacy);
       }
     })();
   }

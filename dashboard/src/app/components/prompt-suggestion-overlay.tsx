@@ -1,7 +1,8 @@
 'use client';
 
-import { useState, useSyncExternalStore, type CSSProperties } from 'react';
+import { useState, useSyncExternalStore, type CSSProperties, type RefObject } from 'react';
 import { textEraseMs, textTypeMs } from '@/lib/text-replacement-motion';
+import SuggestionInfo from './suggestion-info';
 
 const REDUCED_MOTION = '(prefers-reduced-motion: reduce)';
 const reducedMotionSnapshot = () => window.matchMedia(REDUCED_MOTION).matches;
@@ -14,9 +15,11 @@ function subscribeMotion(changed: () => void) {
 
 /** Mounted only while the empty composer has a valid suggestion. The real
  * draft stays untouched, so typing, Escape and Tab interrupt immediately. */
-export default function PromptSuggestionOverlay({ text, placeholder, compact, multiline = false }: {
+export default function PromptSuggestionOverlay({ text, placeholder, reason, editorRef, compact, multiline = false }: {
   text: string;
   placeholder: string;
+  reason: string;
+  editorRef: RefObject<HTMLInputElement | HTMLTextAreaElement | null>;
   compact: boolean;
   multiline?: boolean;
 }) {
@@ -27,12 +30,11 @@ export default function PromptSuggestionOverlay({ text, placeholder, compact, mu
 
   return (
     <div
-      aria-hidden
       data-prompt-suggestion
       data-suggestion-phase={visiblePhase}
-      className={`pointer-events-none absolute flex min-w-0 select-none gap-2 text-[var(--ink-muted)] ${multiline ? 'inset-x-0 top-0 items-start py-1 text-sm leading-[22px]' : `inset-0 items-center px-1 ${compact ? 'text-sm leading-5' : 'text-[15px] leading-6'}`}`}
+      className={`pointer-events-none absolute z-10 flex min-w-0 select-none gap-1 text-[var(--ink-muted)] ${multiline ? 'inset-x-0 top-0 items-start py-1 text-sm leading-[22px]' : `inset-0 items-center px-1 ${compact ? 'text-sm leading-5' : 'text-[15px] leading-6'}`}`}
     >
-      <span className={`min-w-0 flex-1 ${multiline ? 'break-words' : 'truncate'} ${visiblePhase === 'erase' ? '' : 'opacity-70'}`}>
+      <span aria-hidden className={`min-w-0 flex-1 ${multiline ? 'break-words' : 'truncate'} ${visiblePhase === 'erase' ? '' : 'opacity-70'}`}>
         <span
           className="bb-composer-suggestion-text"
           data-text-replacement={visiblePhase === 'ready' ? undefined : visiblePhase}
@@ -49,7 +51,8 @@ export default function PromptSuggestionOverlay({ text, placeholder, compact, mu
           }}
         >{displayed}</span>
       </span>
-      <kbd className={`shrink-0 rounded border border-[var(--line)] px-1.5 py-0.5 font-sans text-[10px] leading-none ${multiline ? 'mt-1' : ''}`}>Tab</kbd>
+      <kbd aria-hidden className={`shrink-0 rounded border border-[var(--line)] px-1.5 py-0.5 font-sans text-[10px] leading-none ${multiline ? 'mt-1' : ''}`}>Tab</kbd>
+      <SuggestionInfo reason={reason} editorRef={editorRef} />
     </div>
   );
 }

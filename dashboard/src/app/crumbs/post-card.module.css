@@ -27,14 +27,14 @@
 .lead { display: flex; flex: 1; min-width: 0; max-width: 320px; margin-left: -6px; }
 .lead > span { display: flex; flex: 1 1 0; min-width: 0; }
 .tail { display: flex; align-items: center; gap: 4px; margin-right: -6px; }
-.action { display: inline-flex; align-items: center; gap: 4px; padding: 5px; border: 0; border-radius: 999px; background: transparent; color: inherit; font-size: 13px; line-height: 16px; transition: color .15s ease, background-color .15s ease; }
+.action { display: inline-flex; align-items: center; gap: 4px; padding: 5px; border: 0; border-radius: 999px; corner-shape: round; background: transparent; color: inherit; font-size: 13px; line-height: 16px; transition: color .15s ease, background-color .15s ease; }
 .glyph { display: grid; place-items: center; }
 .action:hover:not(:disabled), .action[aria-expanded="true"], .action[aria-pressed="true"] { color: var(--botanical); background: color-mix(in srgb, var(--botanical) 12%, transparent); }
 .action:focus-visible { outline: 2px solid var(--botanical); outline-offset: -2px; }
 .lead > .label { align-items: center; gap: 5px; overflow: hidden; font-size: 13px; white-space: nowrap; }
 
 .menu { position: relative; flex-shrink: 0; color: var(--ink-muted); }
-.menu summary { display: grid; place-items: center; padding: 5px; border-radius: 999px; list-style: none; cursor: pointer; transition: background-color .15s ease, color .15s ease; }
+.menu summary { display: grid; place-items: center; padding: 5px; border-radius: 999px; corner-shape: round; list-style: none; cursor: pointer; transition: background-color .15s ease, color .15s ease; }
 .menu summary::-webkit-details-marker { display: none; }
 .menu summary:hover, .menu[open] summary { background: color-mix(in srgb, var(--botanical) 12%, transparent); color: var(--botanical); }
 .menu > div { position: absolute; z-index: 6; top: calc(100% + 4px); right: 0; min-width: 232px; max-width: 300px; padding: 4px 0; overflow: hidden; border: 1px solid var(--neu-border, var(--line)); border-radius: 12px; background: var(--neu-surface-raised, var(--paper-raised)); box-shadow: var(--neu-strong-shadow, 0 10px 30px color-mix(in srgb, var(--ink) 18%, transparent)); }

@@ -30,10 +30,6 @@ export function organizationPublicId(organizationId: number): string {
   return opaqueBrainId("org", organizationId);
 }
 
-export function memberNodeId(username: string): string {
-  return `member:${opaqueBrainId("person", username.toLocaleLowerCase())}`;
-}
-
 export function gardenNodeId(slug: string): string {
   return `garden:${safeIdPart(slug)}`;
 }
@@ -42,28 +38,8 @@ export function knowledgeNodeId(gardenSlug: string, kind: string, slug: string):
   return `garden:${safeIdPart(gardenSlug)}:${kind}:${safeIdPart(slug)}`;
 }
 
-export function conversationNodeId(publicId: string): string {
-  return `conversation:${safeIdPart(publicId)}`;
-}
-
-export function memoryNodeId(memoryId: number): string {
-  return `memory:${opaqueBrainId("memory", memoryId)}`;
-}
-
-export function artifactNodeId(artifactId: string): string {
-  return `artifact:${safeIdPart(artifactId)}`;
-}
-
-export function buzzRoomNodeId(publicId: string): string {
-  return `buzz-room:${safeIdPart(publicId)}`;
-}
-
 export function buzzThreadNodeId(roomPublicId: string, messageId: number): string {
   return `buzz-thread:${opaqueBrainId("thread", `${roomPublicId}:${messageId}`)}`;
-}
-
-export function agentNodeId(slug: string): string {
-  return `agent:${safeIdPart(slug.toLocaleLowerCase())}`;
 }
 
 export function brainEdgeId(

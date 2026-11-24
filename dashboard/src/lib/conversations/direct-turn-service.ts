@@ -55,6 +55,7 @@ import {
 } from "../responses-stream-text.ts";
 import type { HermesSurface } from "../hermes/config.ts";
 import { personalTurnPrompt } from "../personal-context/resolve.ts";
+import { answerFeedbackContext } from "../hermes/answer-signals.ts";
 import { ApiError } from "../hermes/route-core.ts";
 import {
   getRuntimeSessionByConversation,
@@ -81,6 +82,7 @@ import {
   isPreDispatchReservedAssistant,
   conversationIsTemporary,
   ConversationStoreError,
+  type ConversationMessageRow,
   type ConversationRow,
 } from "./store.ts";
 import {
@@ -235,14 +237,12 @@ function directSystemPrompt(
 }
 
 function historyInput(
-  conversation: ConversationRow,
-  clientMessageId: string,
+  messages: ConversationMessageRow[],
 ): EasyInputMessage[] {
-  return listRecentConversationMessages(conversation.id, HISTORY_MESSAGES)
+  return messages
     .map((message) => ({ ...message, content: conversationMessageText(message) }))
     .filter(
       (message) =>
-        message.client_message_id !== clientMessageId &&
         message.content.trim().length > 0 &&
         (message.role === "user" || message.status === "complete"),
     )
@@ -636,7 +636,11 @@ export async function startDirectProviderTurn(
 
   let stream: AsyncIterable<ResponseStreamEvent>;
   try {
-    const history = historyInput(input.conversation, input.clientMessageId);
+    const previousMessages = listRecentConversationMessages(input.conversation.id, HISTORY_MESSAGES)
+      .filter(message => message.client_message_id !== input.clientMessageId);
+    const history = historyInput(previousMessages);
+    const feedback = input.internalAgentContinuation ? "" :
+      answerFeedbackContext(input.conversation, previousMessages.filter(message => message.order_index < reservation.userMessage.order_index), input.textSelection?.sourceMessageId);
     const { baseURL } = resolveChatmockBaseUrl(input.request);
     const client = new OpenAI({
       baseURL,
@@ -666,6 +670,7 @@ export async function startDirectProviderTurn(
         botTurnPersona({ userId: input.conversation.user_id, conversationPublicId: input.conversation.public_id, text: requestText, tools: false, inRoom: Boolean(input.conversation.buzz_room_id) }),
         input.conversation.user_id,
       )
+        + (feedback ? "\n\n" + feedback : "")
         + (personalContext ? "\n\n"+personalContext+"\nThis turn can explain the supplied evidence. It cannot use tools or perform actions." : "")
         + (attachments.some(item => item.type === "image") ? "\n\n" + imageAnnotationPrompt(attachments, reservation.userMessage) : "")
         + "\n\n" + await browserTerminalPrompt(input.surface !== "quartz_ai" ? input.browserAccess : undefined, false, { userId: input.conversation.user_id }),

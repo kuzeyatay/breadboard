@@ -63,7 +63,7 @@ for (const {surface,pdfChat} of [
         const [savedInlineSelections,setSavedInlineSelections]=useState([]),[savedChatHighlights,setSavedChatHighlights]=useState([]);
         const [openInlineAnswers,setOpenInlineAnswers]=useState([]);
         const composerTextareaRef=useRef(null),textareaRef=composerTextareaRef;
-        const setInlineSelectionRunId=()=>{};
+        const setInlineSelectionRunId=()=>{};const [inlineAttemptChoice,setInlineAttemptChoice]=useState({});
         const onAbortInline=${pdfChat}?id=>{window.inlineStops.push(id);setMessages(current=>current.map(m=>m.role==='assistant'&&m.textSelection?.id===id?{...m,pending:false,interrupted:true,content:'Stopped.'}:m));}:undefined;
         ${declarations.get('inlineSelectionThreads')}
         ${declarations.get('annotationsByMessage')}

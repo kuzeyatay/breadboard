@@ -76,6 +76,7 @@ export interface BrainNode {
   gardenSlug?: string;
   createdAt?: string;
   updatedAt?: string;
+  activityTimes?: number[];
   expandable: boolean;
   metrics?: {
     degree?: number;
@@ -94,6 +95,7 @@ export interface BrainEdge {
   origin: BrainEdgeOrigin;
   explicit: boolean;
   confidence?: number;
+  changedAt?: number;
   /** Affinity threshold used to admit this semantic edge. */
   threshold?: number;
   createdAt?: string;
@@ -124,7 +126,6 @@ export interface BrainGraphDiagnostics {
   adapterMs: Record<string, number>;
   overviewNodeCount: number;
   overviewEdgeCount: number;
-  truncated: boolean;
 }
 
 export interface BrainGraphResponse {
@@ -135,15 +136,11 @@ export interface BrainGraphResponse {
   nodes: BrainNode[];
   edges: BrainEdge[];
   counts: Record<string, number>;
-  truncated: boolean;
   warnings: BrainWarning[];
   scopeOptions: BrainScopeOption[];
   capabilities: {
-    buzz: boolean;
     thoughtTopology: boolean;
     organization: boolean;
-    expansion: boolean;
-    pathFinding: boolean;
   };
   diagnostics: BrainGraphDiagnostics;
 }
@@ -152,47 +149,14 @@ export interface BrainGraphFragment {
   nodes: BrainNode[];
   edges: BrainEdge[];
   warnings?: BrainWarning[];
-  truncated?: boolean;
 }
 
-export interface BrainGraphLimits {
-  maxNodes: number;
-  maxEdges: number;
-  maxGardens: number;
-  maxKnowledgeNodesPerGarden: number;
-  maxConversations: number;
-  maxMemories: number;
-  maxArtifacts: number;
-  maxBuzzRooms: number;
-  maxBuzzThreadsPerRoom: number;
-}
-
+/** The Knowledge map is never cut off: a source builds every authorized page. */
 export interface BrainGraphSourceAdapter<TContext> {
   readonly name: string;
   buildOverview(
     context: TContext,
     scope: BrainScope,
-    limits: BrainGraphLimits,
-    signal?: AbortSignal,
-  ): Promise<BrainGraphFragment> | BrainGraphFragment;
-  expand?(
-    context: TContext,
-    scope: BrainScope,
-    nodeId: string,
-    depth: number,
-    limits: BrainGraphLimits,
     signal?: AbortSignal,
   ): Promise<BrainGraphFragment> | BrainGraphFragment;
 }
-
-export const DEFAULT_BRAIN_GRAPH_LIMITS: BrainGraphLimits = {
-  maxNodes: 1_500,
-  maxEdges: 3_500,
-  maxGardens: 100,
-  maxKnowledgeNodesPerGarden: 450,
-  maxConversations: 160,
-  maxMemories: 300,
-  maxArtifacts: 300,
-  maxBuzzRooms: 120,
-  maxBuzzThreadsPerRoom: 40,
-};

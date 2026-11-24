@@ -5,7 +5,7 @@ import test from "node:test";
 const source = (relativePath) =>
   fs.readFileSync(new URL(relativePath, import.meta.url), "utf8");
 
-test("MCP management lives in Settings and not the capability manager", () => {
+test("MCP management lives under Connections in Settings", () => {
   const hub = source("../src/app/components/hermes/command-hub.tsx");
   const dialog = source("../src/app/components/settings-dialog.tsx");
   const mcp = source("../src/app/components/settings-mcp.tsx");
@@ -14,10 +14,9 @@ test("MCP management lives in Settings and not the capability manager", () => {
   assert.doesNotMatch(hub, /\{ id: "mcp", label: "MCP" \}/);
   assert.doesNotMatch(hub, /Manage MCP servers|Add an MCP server|Search MCP servers/);
   assert.match(hub, /onOpenConnections=\{onOpenMcpSettings/);
-  assert.match(dialog, /\| "mcp"/);
-  assert.match(dialog, /value: "mcp"[\s\S]{0,100}label: "MCP"/);
-  assert.match(dialog, /visitedTabs\.has\("mcp"\)[\s\S]*<SettingsMcp \/>/);
-  assert.match(composer, /onOpenMcpSettings=\{\(\) => \{[\s\S]{0,160}setSettingsInitialTab\('mcp'\)/);
+  assert.doesNotMatch(dialog, /value: "mcp"/);
+  assert.match(dialog, /id="settings-panel-connections"[\s\S]{0,700}<SettingsMcp \/>/);
+  assert.match(composer, /onOpenMcpSettings=\{\(\) => \{[\s\S]{0,160}setSettingsInitialTab\('connections'\)/);
 
   assert.match(mcp, /fetchCachedSettings\(MCP_SETTINGS_URL/);
   assert.match(mcp, /fetch\(MCP_SETTINGS_URL,[\s\S]{0,100}method: "POST"/);

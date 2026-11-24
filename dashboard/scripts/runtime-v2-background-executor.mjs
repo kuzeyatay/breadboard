@@ -206,8 +206,14 @@ async function runBackgroundOperation(request, sourceRoot) {
         sourceUrl(sourceRoot, "lib/schedules/scheduler.ts")
       );
       const due = await runDueScheduledChats();
+      // Same tick: hand finished delegated workers back to their parent turn,
+      // which otherwise only a still-open browser tab would do.
+      const { sweepDelegatedHandBacks } = await import(
+        sourceUrl(sourceRoot, "lib/conversations/delegated-hand-back-runner.ts")
+      );
+      const handedBack = await sweepDelegatedHandBacks().catch(() => 0);
       await drainDetachedPumps(sourceRoot);
-      return { operation: request.operation, dispatched: due.length };
+      return { operation: request.operation, dispatched: due.length, handedBack };
     }
     case "memory-autofetch": {
       const { runMemoryAutofetch } = await import(

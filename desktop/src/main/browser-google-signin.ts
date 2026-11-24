@@ -17,12 +17,17 @@ import WebSocket from "ws";
  */
 const SIGN_IN_PATH = /^\/(?:v3\/signin\/|signin\/v2\/|ServiceLogin$|AccountChooser$|AddSession$)/;
 
-/** Interactive sign-in pages; passive=true is Google's silent session refresh and stays in the tab. */
+/**
+ * Interactive sign-in pages. Any `passive` value (true, or a max age such as
+ * 1209600 that docs.google.com and Forms send) is Google's silent session check,
+ * which bounces straight back and stays in the tab; stopping it blanks the page.
+ */
 export function isGoogleSignInPage(url: string): boolean {
   try {
     const parsed = new URL(url);
+    const passive = parsed.searchParams.get("passive");
     return parsed.protocol === "https:" && parsed.hostname === "accounts.google.com"
-      && SIGN_IN_PATH.test(parsed.pathname) && parsed.searchParams.get("passive") !== "true";
+      && SIGN_IN_PATH.test(parsed.pathname) && (passive === null || passive === "false");
   } catch { return false; }
 }
 

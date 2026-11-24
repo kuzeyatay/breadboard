@@ -6462,14 +6462,31 @@ def run_conversation(
                         attempts=getattr(agent, "_narrated_intent_nudges", 0),
                         max_attempts=max_narrated_intent_nudges(),
                     )
+                    _handback = False
+                    if not _intent_nudge:
+                        # Hand-back stop: "I can't access Downloads…" /
+                        # "complete the form and tell me when…" while the
+                        # session holds tools that could do it.
+                        from agent.narrated_intent_stop import build_handback_nudge
+
+                        _intent_nudge = build_handback_nudge(
+                            final_response=final_response,
+                            tool_names=getattr(agent, "valid_tool_names", None) or (),
+                            attempts=getattr(agent, "_handback_nudges", 0),
+                        )
+                        _handback = bool(_intent_nudge)
                 except Exception:
                     logger.debug("narrated-intent stop-loop check failed", exc_info=True)
                     _intent_nudge = None
+                    _handback = False
 
                 if _intent_nudge:
-                    agent._narrated_intent_nudges = (
-                        getattr(agent, "_narrated_intent_nudges", 0) + 1
-                    )
+                    if _handback:
+                        agent._handback_nudges = getattr(agent, "_handback_nudges", 0) + 1
+                    else:
+                        agent._narrated_intent_nudges = (
+                            getattr(agent, "_narrated_intent_nudges", 0) + 1
+                        )
                     final_msg["finish_reason"] = "narrated_intent_continue"
                     # The announcement is real commentary: persist it and show
                     # it as an interim message, exactly like verify-on-stop, so
@@ -6487,8 +6504,9 @@ def run_conversation(
                     })
                     agent._session_messages = messages
                     logger.info(
-                        "narrated-intent stop-loop nudge issued (attempt %d)",
-                        agent._narrated_intent_nudges,
+                        "%s stop-loop nudge issued (attempt %d)",
+                        "hand-back" if _handback else "narrated-intent",
+                        agent._handback_nudges if _handback else agent._narrated_intent_nudges,
                     )
                     _pending_verification_response = final_response
                     _pending_verification_response_previewed = (

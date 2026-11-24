@@ -106,6 +106,7 @@ export function delegatedAgentStartedAtForMessage(
 interface DelegationPresentationMessage extends AssistantHandoffMessage {
   role: "user" | "assistant";
   content: string;
+  clientMessageId?: string;
   progressNotes?: string[];
   internalAgentContinuation?: boolean;
   delegatedAgentRun?: boolean;
@@ -137,7 +138,8 @@ function visibleAssistantCandidate(
 /**
  * Internal hand-backs are separate durable turns. Only a recorded handoff or
  * an empty progress row may be folded into its continuation. A finished answer
- * remains visible, including during recovery, Goal and team continuations.
+ * remains visible during Goal and team continuations; a task-recovery answer
+ * (`recovery:` turn) replaces the answer it re-did.
  *
  * A self-presenting worker is the exception. Its animation or globe is an
  * irreplaceable part of the answer, not an interim sentence synthesis can carry
@@ -161,6 +163,18 @@ export function supersededDelegationAssistantIndices(
       visibleAssistantIndex >= 0
     ) {
       const visibleAssistant = messages[visibleAssistantIndex]!;
+      // A task-recovery continuation re-answers the same request; once it has
+      // a usable answer it replaces the earlier one instead of stacking a
+      // second reply. A failed recovery leaves the earlier answer on screen.
+      if (
+        message.clientMessageId?.startsWith("recovery:") &&
+        message.content.trim() && !message.failed && !message.interrupted &&
+        !selfPresentingDelegation(visibleAssistant)
+      ) {
+        superseded.add(visibleAssistantIndex);
+        visibleAssistantIndex = index;
+        continue;
+      }
       if (
         selfPresentingDelegation(message) &&
         delegatedWorkersForMessage(messages, visibleAssistantIndex).length > 0

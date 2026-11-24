@@ -1022,6 +1022,15 @@ impl RuntimeRecallReconcileResponse {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum RuntimeRecallStorageIssue {
+    LowDisk,
+    CheckingHistory,
+    HistoryNeedsRepair,
+    StorageUnavailable,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeRecallStatusResponse {
@@ -1031,6 +1040,8 @@ pub struct RuntimeRecallStatusResponse {
     pub desired_state: RuntimeDesiredState,
     pub service_state: RuntimeServiceState,
     pub owned_by_requester: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_issue: Option<RuntimeRecallStorageIssue>,
     pub log_tail: Vec<String>,
 }
 

@@ -195,19 +195,12 @@ test("3D is the only visible viewer and preserves orbit, text, navigation, filte
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   const debug = () => page.evaluate(() => window.__breadboardThoughtTopologyDebug);
-  const ready = async (mode, pauseSpin = true) => {
+  const ready = async (mode) => {
     await page.waitForFunction((mode) => {
       const state = window.__breadboardThoughtTopologyDebug;
       return state?.nodes?.a && state.viewSettled && (state.dimension ?? "2d") === mode;
     }, mode);
-    // Pause any explicitly enabled spin for deterministic geometry assertions.
-    // The startup behavior is exercised separately on both production surfaces.
-    const spin = page.getByRole("button", { name: "Spin", exact: true });
-    if (mode === "3d" && pauseSpin && await spin.count() && await spin.getAttribute("aria-pressed") === "true") {
-      await spin.click();
-      await page.waitForFunction(() => !window.__breadboardThoughtTopologyDebug.spinning);
-      await page.mouse.move(20, 760);
-    }
+
   };
   const background = () => page.locator(".global-graph-container").evaluate((el) => getComputedStyle(el).background);
   const moveTo = async (point) => page.mouse.move(point.x, point.y);
@@ -219,24 +212,9 @@ test("3D is the only visible viewer and preserves orbit, text, navigation, filte
   const originalEdges = (await debug()).edges;
   for (const surface of ["quartz", "profile"]) {
     await page.goto(`http://127.0.0.1:${server.address().port}/?topologyTest=1&surface=${surface}`);
-    await ready("3d", false);
-    const startupSpin = page.getByRole("button", { name: "Spin", exact: true });
-    assert.equal(await startupSpin.getAttribute("aria-pressed"), "false", "spin is opt-in so an open map can rest");
-    await startupSpin.click();
-    const startupYaw = (await debug()).camera.yaw;
-    await page.waitForFunction((yaw) => window.__breadboardThoughtTopologyDebug.camera.yaw > yaw + 0.01, startupYaw);
-    const spinFrames = await page.evaluate(() => new Promise(resolve => {
-      const angles = [];
-      const sample = () => {
-        angles.push(window.__breadboardThoughtTopologyDebug.camera.yaw);
-        if (angles.length === 12) resolve(angles);
-        else requestAnimationFrame(sample);
-      };
-      requestAnimationFrame(sample);
-    }));
-    assert.ok(spinFrames.every((yaw, index) => index === 0 || yaw >= spinFrames[index - 1]), "automatic spin never reverses");
-    assert.ok(spinFrames.at(-1) > spinFrames[0], "automatic spin keeps moving");
     await ready("3d");
+    const spin = page.getByRole("button", { name: "Spin", exact: true });
+    assert.equal(await spin.count(), 0);
     assert.equal(await page.locator(".thought-topology-dimension").count(), 0);
     assert.equal(await page.getByRole("button", { name: /^(2D|3D)$/ }).count(), 0);
     const twoDStorage = await page.evaluate(() => localStorage.getItem("thought-topology-home-positions:v2:garden:root"));
@@ -246,41 +224,14 @@ test("3D is the only visible viewer and preserves orbit, text, navigation, filte
     assert.deepEqual(initial.nodes["garden:garden"], { x: 640, y: 400 }, "Garden is centred in the viewport");
     assert.ok(new Set(Object.values(initial.worldNodes).map((point) => Math.round(point.z))).size > 3);
     for (const [id, edge] of Object.entries(initial.edges)) {
-      assert.equal(edge.restColor, originalEdges[id].restColor);
+      assert.match(edge.restColor, /^#[0-9a-f]{6}$/i);
       assert.equal(edge.baseWidth, originalEdges[id].baseWidth);
     }
-    const spin = page.getByRole("button", { name: "Spin", exact: true });
-    const filters = page.getByRole("button", { name: "Filters", exact: true });
-    const spinBox = await spin.boundingBox();
-    const filterBox = await filters.boundingBox();
-    assert.ok(spinBox.y >= filterBox.y + filterBox.height, "Spin sits below Filters");
-    assert.equal(spinBox.x, filterBox.x);
-    const buttonStyle = (el) => {
-      const style = getComputedStyle(el);
-      return [style.height, style.backgroundColor, style.borderColor, style.borderRadius, style.font];
-    };
-    await page.waitForFunction(() => {
-      const spin = document.querySelector(".thought-topology-spin");
-      const filters = document.querySelector(".thought-topology-filter-toggle:not(.thought-topology-spin)");
-      return getComputedStyle(spin).borderColor === getComputedStyle(filters).borderColor;
-    });
-    assert.deepEqual(await spin.evaluate(buttonStyle), await filters.evaluate(buttonStyle));
-    assert.equal(await spin.getAttribute("aria-pressed"), "false");
-    await spin.click();
-    await page.waitForFunction((yaw) => window.__breadboardThoughtTopologyDebug.camera.yaw > yaw + 0.01, initial.camera.yaw);
-    assert.deepEqual((await debug()).worldNodes, initial.worldNodes, "spin rotates the camera without moving nodes");
-    const spinningEdge = (await debug()).edges["edge:a:b"];
-    await page.mouse.click(spinningEdge.x, spinningEdge.y);
-    await page.waitForFunction(() => window.__breadboardThoughtTopologyDebug.selectedConnectionId === "edge:a:b");
-    assert.equal(await spin.getAttribute("aria-pressed"), "true", "selecting a line keeps spin enabled");
-    const selectedYaw = (await debug()).camera.yaw;
-    await page.waitForFunction((yaw) => window.__breadboardThoughtTopologyDebug.camera.yaw > yaw + 0.01, selectedYaw);
-    await spin.press("Space");
-    assert.equal(await spin.getAttribute("aria-pressed"), "false");
-    await page.waitForFunction(() => !window.__breadboardThoughtTopologyDebug.spinning);
-    const stoppedCamera = (await debug()).camera;
-    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-    assert.deepEqual((await debug()).camera, stoppedCamera, "Spin can be stopped with the keyboard");
+    const selected = initial.edges["edge:a:b"];
+    await page.mouse.click(selected.x, selected.y);
+    await page.locator(".thought-inspector.open .map-endpoint").first().waitFor();
+    assert.equal((await debug()).selectedConnectionId, "edge:a:b");
+    await page.keyboard.press("Escape");
     await moveTo((await debug()).edges["edge:a:b"]);
     await page.waitForFunction(() => document.querySelector('.thought-callout.visible[data-kind="edge"]'));
     assert.match(await callout.getAttribute("style"), /perspective\(900px\).*rotateX\(.*rotateY\(/);
@@ -289,29 +240,21 @@ test("3D is the only visible viewer and preserves orbit, text, navigation, filte
     await page.screenshot({ path: path.join(screenshotDirectory, `${surface}-3d.png`) });
 
     // Empty-space orbit changes the camera, never the XYZ layout.
-    await spin.click();
     await page.mouse.move(60, 730);
     await page.mouse.down();
     await page.mouse.move(210, 690, { steps: 10 });
     await page.mouse.up();
     await page.waitForFunction((yaw) => window.__breadboardThoughtTopologyDebug.camera.yaw !== yaw, initial.camera.yaw);
-    assert.equal(await spin.getAttribute("aria-pressed"), "true", "manual orbit keeps spin enabled");
-    const orbitYaw = (await debug()).camera.yaw;
     const spinningScale = (await debug()).transform.k;
     await page.mouse.wheel(0, -40);
     await page.waitForFunction((k) => window.__breadboardThoughtTopologyDebug.transform.k > k, spinningScale);
-    assert.equal(await spin.getAttribute("aria-pressed"), "true", "zooming keeps spin enabled");
     const enlargedScale = (await debug()).transform.k;
     await page.mouse.wheel(0, 40);
     await page.waitForFunction((k) => window.__breadboardThoughtTopologyDebug.transform.k < k, enlargedScale);
-    assert.equal(await spin.getAttribute("aria-pressed"), "true", "zooming out keeps spin enabled");
     await page.setViewportSize({ width: 1270, height: 790 });
     await page.waitForFunction(() => document.querySelector("canvas").clientWidth === 1270);
-    assert.equal(await spin.getAttribute("aria-pressed"), "true", "resizing keeps spin enabled");
     await page.setViewportSize({ width: 1280, height: 800 });
     await page.waitForFunction(() => document.querySelector("canvas").clientWidth === 1280);
-    await page.waitForFunction((yaw) => window.__breadboardThoughtTopologyDebug.camera.yaw > yaw + 0.01, orbitYaw);
-    await spin.click();
     await page.waitForFunction(() => !window.__breadboardThoughtTopologyDebug.spinning);
     const rotated = await debug();
     assert.deepEqual(rotated.worldNodes, initial.worldNodes);
@@ -348,8 +291,10 @@ test("3D is the only visible viewer and preserves orbit, text, navigation, filte
     await page.getByRole("button", { name: "Close node connections", exact: true }).click();
     const nav = (await debug()).nodes.a;
     await page.mouse.click(nav.x, nav.y);
+    await page.locator(".thought-inspector.open").waitFor();
+    await page.getByRole("button", { name: "Open note", exact: true }).click();
     await page.waitForFunction(() => window.opened?.id === "a");
-    await spin.click();
+    await page.keyboard.press("Escape");
     await page.getByRole("button", { name: "Filters", exact: true }).click();
     const hierarchy = page.getByRole("checkbox", { name: "Show folder lines", exact: true });
     await hierarchy.uncheck();
@@ -357,15 +302,13 @@ test("3D is the only visible viewer and preserves orbit, text, navigation, filte
     await hierarchy.check();
     await page.waitForFunction(() => window.__breadboardThoughtTopologyDebug.visibleLayers.hierarchy === true);
     await page.getByRole("button", { name: "Filters", exact: true }).click();
-    assert.equal(await spin.getAttribute("aria-pressed"), "true", "filters retain the spin setting");
-    await spin.click();
     // Reopening keeps a single 3D canvas and a single copy of its controls.
     for (let i = 0; i < 3; i++) { await page.evaluate(() => window.remount()); await ready("3d"); }
     assert.equal(await background(), baseBackground);
     assert.equal(await page.locator(".thought-topology-dimension").count(), 0);
     assert.equal(await page.locator("canvas").count(), 1);
     assert.equal(await page.locator(".thought-topology-filter").count(), 1);
-    assert.equal(await spin.count(), 1);
+    assert.equal(await spin.count(), 0);
     assert.equal(await page.locator(".thought-inspector").count(), 1);
     await page.evaluate(() => localStorage.clear());
   }
@@ -403,18 +346,33 @@ test("3D is the only visible viewer and preserves orbit, text, navigation, filte
   assert.equal(await page.locator(".thought-topology-dimension, .thought-topology-filter, .thought-inspector").count(), 0);
   assert.ok(Object.values((await debug()).worldNodes).some((point) => point.z !== 0));
 
+  // The workspace iframe still supports map interactions, with both controls reserved for the full map.
+  await page.evaluate(async () => {
+    document.documentElement.classList.add("quartz-graph-preview");
+    await window.remount();
+  });
+  await ready("3d");
+  assert.equal(await page.locator(".thought-topology-filter, .map-assistant").count(), 0);
+  assert.equal(await page.locator(".thought-inspector").count(), 1);
+
+  await page.goto(`http://127.0.0.1:${server.address().port}/?topologyTest=1&inline=1`);
+  await ready("3d");
+  await page.evaluate(async () => {
+    document.querySelector(".graph-outer").dataset.graphSurface = "garden";
+    await window.remount();
+  });
+  await ready("3d");
+  assert.equal(await page.getByRole("button", { name: "Filters", exact: true }).count(), 1);
+  assert.equal(await page.locator(".map-assistant").count(), 0);
+
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await page.goto(`http://127.0.0.1:${server.address().port}/?topologyTest=1`);
   await ready("3d");
-  const springSpin = page.getByRole("button", { name: "Spin", exact: true });
-  await springSpin.click();
   const springStart = (await debug()).nodes.b;
   const springHome = (await debug()).worldNodes.b;
   await moveTo(springStart); await page.mouse.down();
   await page.mouse.move(springStart.x + 48, springStart.y - 32, { steps: 6 });
-  assert.equal(await springSpin.getAttribute("aria-pressed"), "true", "dragging a node keeps spin enabled");
   await page.mouse.up();
-  await springSpin.click();
   await page.mouse.move(20, 760);
   await page.waitForFunction(() => {
     const state = window.__breadboardThoughtTopologyDebug;
@@ -465,12 +423,12 @@ test("3D is the only visible viewer and preserves orbit, text, navigation, filte
   }
 
   // Filtering normally redistributes the remaining nodes over a full sphere.
-  // The previous slice of the complete map remains an explicit, saved option.
   const filters = page.getByRole("button", { name: /^Filters(?:\s*\d+)?$/ });
-  const filteredLayout = page.getByLabel("Filtered layout", { exact: true });
+  const grouping = page.getByLabel("Group by", { exact: true });
   await filters.click();
   await page.screenshot({ path: path.join(screenshotDirectory, "filtered-layout-control.png") });
-  assert.equal(await filteredLayout.inputValue(), "sphere", "filtered views default to a full sphere");
+  assert.equal(await grouping.inputValue(), "garden");
+  assert.equal(await page.getByText("Cross-section", {exact:true}).count(), 0);
   for (const [section, firstNode] of [[2, 300], [3, 450], [4, 530], [5, 570]]) {
     await page.getByRole("checkbox", { name: new RegExp(`^Section ${section} `) }).uncheck();
     await page.waitForFunction((id) => !window.__breadboardThoughtTopologyDebug.worldNodes[id], `large:${firstNode}`);
@@ -495,21 +453,13 @@ test("3D is the only visible viewer and preserves orbit, text, navigation, filte
   await filters.click();
   await page.screenshot({ path: path.join(screenshotDirectory, "filtered-full-sphere.png") });
   await filters.click();
-  await filteredLayout.selectOption("cross-section");
-  await page.waitForFunction((z) => window.__breadboardThoughtTopologyDebug.worldNodes.a.z === z, large.worldNodes.a.z);
+  await grouping.selectOption("community");
   await ready("3d");
-  const crossSection = await debug();
-  for (const [id, point] of Object.entries(crossSection.worldNodes)) {
-    assert.equal(point.z, large.worldNodes[id].z, `${id} retains its original depth in cross-section mode`);
-  }
-  await filters.click();
-  await page.screenshot({ path: path.join(screenshotDirectory, "filtered-cross-section.png") });
   await page.evaluate(() => window.remount());
   await ready("3d");
   await filters.click();
-  assert.equal(await filteredLayout.inputValue(), "cross-section", "layout choice survives reopening");
-  assert.deepEqual((await debug()).worldNodes, crossSection.worldNodes);
-  await filteredLayout.selectOption("sphere");
+  assert.equal(await grouping.inputValue(), "community", "grouping survives reopening");
+  await grouping.selectOption("garden");
   await page.waitForFunction((z) => window.__breadboardThoughtTopologyDebug.worldNodes.a.z === z, filtered.worldNodes.a.z);
   await ready("3d");
   assertRound(await debug());

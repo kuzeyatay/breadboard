@@ -1,3 +1,4 @@
+import { mapThreadOpacity } from "./topologyPaint.mjs"
 // Pure layout and text helpers for the Thought Topology map. Nothing in this
 // module touches the DOM, Pixi, or d3, so the dashboard test-suite can drive it
 // under node:test and the renderer stays a thin interaction layer.
@@ -18,6 +19,7 @@ export type TopologyPayloadFolder = {
   path: string
   parentId: string | null
   title: string
+  gardenTone?: number
   depth: number
   nodeCount: number
   summary: TopologyEnrichmentText
@@ -38,7 +40,10 @@ export type TopologyPayloadNode = {
   summary: TopologyEnrichmentText
   primaryConcepts: string[]
   supportingConcepts: string[]
+  activityTimes?: number[]
   wordCount?: number
+  /** Topic group from community detection; pages are colored by `index`. */
+  topic?: { index: number; label: string }
   x?: number
   y?: number
 }
@@ -50,6 +55,7 @@ export type TopologyPayloadEdge = {
   structural?: boolean
   origin?: "inferred" | "authored" | "provenance"
   score?: number
+  changedAt?: number
   previousScore?: number
   threshold?: number
   components?: { embedding: number; concept: number; lexical: number }
@@ -61,6 +67,9 @@ export type TopologyPayloadEdge = {
 }
 
 export type TopologyPayload = {
+  sourceHierarchy?: PlannedHierarchyEdge[]
+  sourceConnectionCount?: number
+  isPagePath?: boolean
   sourceRevision?: string
   garden: { id: number; slug: string; title: string; summary: TopologyEnrichmentText }
   folders: TopologyPayloadFolder[]
@@ -259,6 +268,7 @@ export interface PlannedNode {
   navigateSlug?: string
   summary: TopologyEnrichmentText
   concepts: string[]
+  topic?: { index: number; label: string }
   degree: number
   bridgeDegree: number
   importance: number
@@ -553,6 +563,8 @@ export function affinityLabel(
 
 export function relationLabel(relationType: string | undefined): string {
   const value = (relationType ?? "related").replace(/[-_]+/g, " ").trim()
+  if (value === "related" || value === "related to" || value === "inter garden related") return "Inter-Garden related"
+  if (value === "cross garden related") return "Cross-Garden related"
   return value ? value.charAt(0).toUpperCase() + value.slice(1) : "Related"
 }
 
@@ -1181,6 +1193,7 @@ export function planThoughtTopology(
       navigateSlug: page.slug,
       summary: page.summary,
       concepts: [...new Set([...page.primaryConcepts, ...page.supportingConcepts])],
+      topic: page.topic,
       degree: degree.get(page.id) ?? 0,
       bridgeDegree: bridgeDegree.get(page.id) ?? 0,
       importance,
@@ -1189,32 +1202,24 @@ export function planThoughtTopology(
     }
   }
 
-  // A sub-folder's own ring: its pages plus, folded in, any deeper pages.
-  const childItems = (childId: string): ClusterItem[] => [
-    ...orderedPages(childId).map((page) => ({ id: page.id, radius: PAGE_RADIUS })),
-    ...childFolders(childId).flatMap((grandchild) =>
-      orderedPages(grandchild.id).map((page) => ({ id: page.id, radius: PAGE_RADIUS })),
-    ),
-  ]
-  // The room a sub-folder needs on its parent's ring: the radius of its own
-  // mini cluster, or a small allowance for its name when it holds nothing.
-  const childFootprint = (childId: string): number => {
-    const items = childItems(childId)
-    if (items.length === 0) return EMPTY_SUBFOLDER_FOOTPRINT
-    return packCluster(items, { x: 0, y: 0 }, 0).clusterRadius
+  // Measure each folder from its actual children, at every nesting depth.
+  const itemsByFolder = new Map<string, ClusterItem[]>()
+  function folderItems(id: string): ClusterItem[] {
+    const cached = itemsByFolder.get(id)
+    if (cached) return cached
+    const items: ClusterItem[] = orderedPages(id).map(page => ({ id: page.id, radius: PAGE_RADIUS }))
+    for (const child of childFolders(id)) {
+      const children = folderItems(child.id)
+      const footprint = children.length ? packCluster(children, { x: 0, y: 0 }, 0).clusterRadius : EMPTY_SUBFOLDER_FOOTPRINT
+      items.push({ id: child.id, radius: SUBFOLDER_RADIUS, footprint })
+    }
+    itemsByFolder.set(id, items)
+    return items
   }
 
-  // First pass: measure each sector's cluster so the anchor ring can be sized.
   for (let index = 0; index < sectorFolders.length; index += 1) {
     const folder = sectorFolders[index]
-    const items: ClusterItem[] = [
-      ...orderedPages(folder.id).map((page) => ({ id: page.id, radius: PAGE_RADIUS })),
-      ...childFolders(folder.id).map((child) => ({
-        id: child.id,
-        radius: SUBFOLDER_RADIUS,
-        footprint: childFootprint(child.id),
-      })),
-    ]
+    const items = folderItems(folder.id)
     const measured = packCluster(items, { x: 0, y: 0 }, 0)
     clusterRadii.push(measured.clusterRadius)
     pendingSectorAnchors.push({ folder, angle: sectorAngles[index], items })
@@ -1257,33 +1262,22 @@ export function planThoughtTopology(
   // Second pass: place anchors, then their clusters.
   pendingSectorAnchors.forEach(({ folder, angle, items }, index) => {
     const anchor = { x: Math.cos(angle) * anchorDistance, y: Math.sin(angle) * anchorDistance }
-    const packed = packCluster(items, anchor, angle)
     sectors.push({ folderId: folder.id, angle, clusterRadius: clusterRadii[index] })
     nodes.push(folderNode(folder, folder.id, anchor.x, anchor.y, FOLDER_RADIUS))
-    for (const page of orderedPages(folder.id)) {
-      const position = packed.positions.get(page.id)!
-      nodes.push(pageNode(page, folder.id, position.x, position.y))
-    }
-    for (const child of childFolders(folder.id)) {
-      const position = packed.positions.get(child.id)!
-      const outward = Math.atan2(position.y - anchor.y, position.x - anchor.x)
-      const childNode = folderNode(child, folder.id, position.x, position.y, SUBFOLDER_RADIUS)
-      nodes.push(childNode)
-      // The sub-folder's own ring, sized in the first pass so its neighbours
-      // on the parent ring already leave room for it. Deeper nesting is
-      // rare; its pages are folded into this ring.
-      const childPacked = packCluster(childItems(child.id), position, outward)
-      for (const page of orderedPages(child.id)) {
-        const childPosition = childPacked.positions.get(page.id)!
-        nodes.push(pageNode(page, folder.id, childPosition.x, childPosition.y))
+    function placeChildren(parentId: string, center: {x: number; y: number}, heading: number, children: ClusterItem[]) {
+      const { positions } = packCluster(children, center, heading)
+      for (const page of orderedPages(parentId)) {
+        const position = positions.get(page.id)!
+        nodes.push(pageNode(page, folder.id, position.x, position.y))
       }
-      for (const grandchild of childFolders(child.id)) {
-        for (const page of orderedPages(grandchild.id)) {
-          const slot = childPacked.positions.get(page.id) ?? position
-          nodes.push(pageNode(page, folder.id, slot.x, slot.y))
-        }
+      for (const child of childFolders(parentId)) {
+        const position = positions.get(child.id)!
+        nodes.push(folderNode(child, folder.id, position.x, position.y, SUBFOLDER_RADIUS))
+        const outward = Math.atan2(position.y - center.y, position.x - center.x)
+        placeChildren(child.id, position, outward, folderItems(child.id))
       }
     }
+    placeChildren(folder.id, anchor, angle, items)
   })
 
   // The worker owns the durable incremental layout. Its cached coordinates
@@ -1320,7 +1314,9 @@ export function planThoughtTopology(
   }
 
   const nodeById = new Map(nodes.map((node) => [node.id, node]))
-  const hierarchyEdges: PlannedHierarchyEdge[] = nodes
+  const hierarchyEdges: PlannedHierarchyEdge[] = payload.sourceHierarchy
+    ? payload.sourceHierarchy.filter(edge => nodeById.has(edge.source) && nodeById.has(edge.target))
+    : nodes
     .filter((node) => node.kind !== "garden" && !placedChats.has(node.id))
     .map((node) => {
       let folderId = node.folderId
@@ -1361,6 +1357,10 @@ export function planThoughtTopology(
           : AUTHORED_CONNECTION_STRENGTH
       const source = nodeById.get(edge.source)!
       const target = nodeById.get(edge.target)!
+      const related = /^(?:(?:cross|inter)[-_]garden[-_])?related(?:[-_]to)?$/.test(edge.relationType ?? "related")
+      // Affinity is relative to the admitting threshold. Compress the extremes
+      // so a weak match remains traceable and a strong one stays a hairline.
+      const affinity = connectionStrength(score, edgeThreshold)
       return {
         id: edge.id,
         source: edge.source,
@@ -1376,13 +1376,14 @@ export function planThoughtTopology(
         evidence: edge.evidence ?? [],
         crossFolder: source.sectorId !== target.sectorId,
         strength,
-        // Every line is the same hairline; strength shows as colour weight.
-        width: CONNECTION_STROKE_WIDTH,
-        opacity: connectionOpacity(strength),
+        width: related ? 0.72 + 0.55 * affinity : CONNECTION_STROKE_WIDTH,
+        opacity: mapThreadOpacity(false, related ? affinity : strength),
       }
     })
     .filter((edge) => minStrength <= 0 || edge.strength >= minStrength)
-    .sort((left, right) => right.score - left.score || left.id.localeCompare(right.id))
+  // Source order breaks equal-strength ties in the profile map. Garden
+  // publications retain their historical strongest-first ordering.
+  if (!payload.sourceHierarchy) edges.sort((left, right) => right.score - left.score || left.id.localeCompare(right.id))
   const cappedEdges = capConnectionsPerNode(edges, options.maxConnectionsPerNode ?? 0)
 
   const bounds = boundsOf(nodes, 28)

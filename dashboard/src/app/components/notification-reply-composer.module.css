@@ -39,7 +39,7 @@
 
 .input::placeholder { color: var(--ink-muted); }
 
-.sendWrap { flex: none; width: 36px; height: 36px; border-radius: 50%; }
+.sendWrap { flex: none; width: 36px; height: 36px; border-radius: 50%; corner-shape: round; }
 
 .send {
   display: flex;
@@ -51,6 +51,7 @@
   padding: 0;
   border: 1px solid var(--line);
   border-radius: 50%;
+  corner-shape: round;
   background: var(--paper-raised);
   color: var(--ink);
   box-shadow: var(--neu-soft-shadow);

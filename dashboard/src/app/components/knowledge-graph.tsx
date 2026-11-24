@@ -544,7 +544,7 @@ function KnowledgeGraph({
                   key={quartzPreviewUrl}
                   src={quartzLease.ready && previewFreshnessReady ? quartzPreviewUrl : undefined}
                   title="Garden learning map preview"
-                  className={`pointer-events-none h-full w-full border-0 bg-gray-950 transition-opacity duration-300 ${
+                  className={`h-full w-full border-0 bg-gray-950 transition-opacity duration-300 ${
                     previewStatus === 'ready' ? 'opacity-100' : 'opacity-0'
                   }`}
                   style={{
@@ -552,8 +552,7 @@ function KnowledgeGraph({
                     backgroundColor: 'var(--paper-bg)',
                   }}
                   loading="eager"
-                  tabIndex={-1}
-                  aria-hidden="true"
+                  tabIndex={0}
                   onError={() => setPreviewState({ url: quartzPreviewUrl, status: 'error' })}
                 />
                 {previewStatus !== 'ready' ? (
@@ -576,10 +575,10 @@ function KnowledgeGraph({
               <Link
                 href={graphHref(clusterSlug)}
                 prefetch
-                className="absolute inset-0"
+                className="absolute bottom-2 right-2"
                 aria-label="Explore"
               >
-                <span className="neu-button absolute bottom-2 right-2 rounded-md border border-gray-700 bg-gray-950/85 px-3 py-1.5 text-xs font-medium text-gray-300 shadow-sm transition-colors group-hover:text-white">
+                <span className="neu-button inline-flex rounded-md border border-gray-700 bg-gray-950/85 px-3 py-1.5 text-xs font-medium text-gray-300 shadow-sm transition-colors group-hover:text-white">
                   Explore
                 </span>
               </Link>

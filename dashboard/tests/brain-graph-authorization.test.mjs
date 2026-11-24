@@ -10,21 +10,14 @@ process.env.BREADBOARD_DATA_DIR = dataRoot;
 process.env.BRAIN_GRAPH_ID_SECRET = "brain-authorization-fixture";
 
 const { ensureBuzzSchema } = await import("../src/lib/buzz/schema.ts");
-const buzz = await import("../src/lib/buzz/store.ts");
+
 const { default: singletonDb } = await import("../src/lib/db.ts");
 const {
   BrainGraphAccessError,
   buildBrainGraphAccessContext,
   parseBrainScope,
 } = await import("../src/lib/profile/brain-graph-auth.ts");
-const { organizationPublicId, buzzRoomNodeId } = await import(
-  "../src/lib/profile/brain-graph-ids.ts"
-);
-const { normalizeBrainGraph } = await import("../src/lib/profile/brain-graph-normalize.ts");
-const { buzzBrainSource } = await import("../src/lib/profile/brain-graph-sources/buzz.ts");
-const { DEFAULT_BRAIN_GRAPH_LIMITS } = await import(
-  "../src/lib/profile/brain-graph-types.ts"
-);
+const { organizationPublicId } = await import("../src/lib/profile/brain-graph-ids.ts");
 
 after(() => {
   singletonDb.close();
@@ -135,92 +128,3 @@ test("scope authorization is session-derived, opaque, and revoked immediately", 
   db.close();
 });
 
-test("Buzz channels, private threads, DMs, and group DMs keep their effective access", () => {
-  const db = database();
-  const publicChannel = buzz.createRoom(db, 10, 1, { name: "general" });
-  const privateAda = buzz.createRoom(db, 10, 1, { name: "owner-room", visibility: "private" });
-  const privateGrace = buzz.createRoom(db, 10, 2, { name: "member-room", visibility: "private" });
-  const dmAda = buzz.createRoom(db, 10, 1, { name: "ada-dm", kind: "dm", visibility: "public" });
-  const groupDm = buzz.createRoom(db, 10, 1, { name: "project-dm", kind: "dm", visibility: "private" });
-  const outside = buzz.createRoom(db, 20, 3, { name: "outside" });
-
-  const publicAda = buzz.addMember(db, publicChannel.id, { kind: "human", userId: 1, displayName: "Ada" });
-  const privateAdaMember = buzz.addMember(db, privateAda.id, { kind: "human", userId: 1, displayName: "Ada" });
-  buzz.addMember(db, privateGrace.id, { kind: "human", userId: 2, displayName: "Grace" });
-  buzz.addMember(db, dmAda.id, { kind: "human", userId: 1, displayName: "Ada" });
-  buzz.addMember(db, groupDm.id, { kind: "human", userId: 1, displayName: "Ada" });
-  buzz.addMember(db, groupDm.id, { kind: "human", userId: 2, displayName: "Grace" });
-  buzz.addMember(db, outside.id, { kind: "human", userId: 3, displayName: "Lin" });
-
-  const root = buzz.postMessage(db, privateAda.id, {
-    clientMessageId: "private-root",
-    memberId: privateAdaMember.id,
-    authorKind: "human",
-    authorName: "Ada",
-    body: "Private decision thread",
-  });
-  buzz.postMessage(db, privateAda.id, {
-    clientMessageId: "private-reply",
-    memberId: privateAdaMember.id,
-    authorKind: "human",
-    authorName: "Ada",
-    body: "Bounded reply",
-    parentId: root.id,
-  });
-  buzz.postMessage(db, publicChannel.id, {
-    clientMessageId: "public-root",
-    memberId: publicAda.id,
-    authorKind: "human",
-    authorName: "Ada",
-    body: "Public room root",
-    metadata: { pinned: true },
-  });
-
-  const ada = buildBrainGraphAccessContext(1, db);
-  const grace = buildBrainGraphAccessContext(2, db);
-  const all = { kind: "all" };
-  const org = { kind: "organization", organizationId: organizationPublicId(10) };
-  const adaAll = buzzBrainSource.buildOverview(ada, all, DEFAULT_BRAIN_GRAPH_LIMITS);
-  const graceAll = buzzBrainSource.buildOverview(grace, all, DEFAULT_BRAIN_GRAPH_LIMITS);
-  const adaOrg = buzzBrainSource.buildOverview(ada, org, DEFAULT_BRAIN_GRAPH_LIMITS);
-
-  const adaIds = new Set(adaAll.nodes.map((node) => node.id));
-  const graceIds = new Set(graceAll.nodes.map((node) => node.id));
-  const orgIds = new Set(adaOrg.nodes.map((node) => node.id));
-  assert.ok(adaIds.has(buzzRoomNodeId(publicChannel.publicId)));
-  assert.ok(adaIds.has(buzzRoomNodeId(privateAda.publicId)));
-  assert.ok(!graceIds.has(buzzRoomNodeId(privateAda.publicId)), "private channel and its thread are absent");
-  assert.ok(graceIds.has(buzzRoomNodeId(privateGrace.publicId)));
-  assert.ok(adaIds.has(buzzRoomNodeId(dmAda.publicId)), "DM creator is a participant even if legacy visibility says public");
-  assert.ok(!graceIds.has(buzzRoomNodeId(dmAda.publicId)), "organization membership cannot reveal a DM");
-  assert.ok(adaIds.has(buzzRoomNodeId(groupDm.publicId)));
-  assert.ok(graceIds.has(buzzRoomNodeId(groupDm.publicId)));
-  assert.ok(!adaIds.has(buzzRoomNodeId(outside.publicId)));
-  assert.ok(!orgIds.has(buzzRoomNodeId(dmAda.publicId)), "organization scope does not absorb personal DMs");
-  assert.ok(adaAll.nodes.some((node) => node.kind === "buzz_thread" && node.label.includes("Private decision")));
-  assert.ok(!graceAll.nodes.some((node) => node.label.includes("Private decision")));
-
-  const normalized = normalizeBrainGraph(
-    [
-      adaAll,
-      {
-        nodes: [],
-        edges: [
-          {
-            id: "cross-org-secret",
-            source: buzzRoomNodeId(publicChannel.publicId),
-            target: buzzRoomNodeId(outside.publicId),
-            relation: "related_to",
-            origin: "buzz",
-            explicit: true,
-          },
-        ],
-      },
-    ],
-    { maxNodes: 2_000, maxEdges: 5_000 },
-  );
-  assert.ok(!normalized.edges.some((edge) => edge.id === "cross-org-secret"));
-  assert.equal(normalized.counts.total, normalized.nodes.length);
-  assert.equal(normalized.nodes.some((node) => node.label === "outside"), false);
-  db.close();
-});

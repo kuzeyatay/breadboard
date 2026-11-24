@@ -10,7 +10,7 @@ import postcss from "postcss";
 import tailwindcss from "@tailwindcss/postcss";
 import { summarizeCapabilityUse } from "../src/lib/hermes/capability-usage.ts";
 
-test("skills install with explicit access, remain removable in drafts, and keep response usage in evidence", { timeout: 90_000 }, async t => {
+test("skills install with explicit access and keep response usage in evidence", { timeout: 90_000 }, async t => {
   const root = fileURLToPath(new URL("..", import.meta.url));
   const capabilities = summarizeCapabilityUse({
     selection: { inventory: { skills: 300, connections: 4, workflows: 2 }, skills: [
@@ -25,19 +25,13 @@ test("skills install with explicit access, remain removable in drafts, and keep 
   const bundle = await build({ absWorkingDir: root, stdin: { resolveDir: root, loader: "tsx", contents: `
     import React, { useState } from 'react'; import { createRoot } from 'react-dom/client';
     import SkillsCatalogPanel from './src/app/components/hermes/skills-catalog-panel';
-    import SelectedSkills from './src/app/components/hermes/selected-skills';
     import AssistantMessageActions from './src/app/components/assistant-message-actions';
     function App() {
       const [value, setValue] = useState(() => localStorage.getItem('draft') ?? 'Improve this paragraph.');
-      const [hints, setHints] = useState([]);
       const update = value => { setValue(value); localStorage.setItem('draft', value); };
       return <>
-        <SkillsCatalogPanel runtimeSessionId="chat-1" onUse={skill => {
-          const hint = { id: 'skill:' + skill.slug, slug: skill.slug, name: skill.name, token: skill.slashCommand };
-          setHints([hint]); update(skill.command + ' Improve this paragraph.');
-        }} />
+        <SkillsCatalogPanel runtimeSessionId="chat-1" onUse={skill => update(skill.command + ' Improve this paragraph.')} />
         <section style={{padding:12, borderTop:'1px solid var(--line)'}} aria-label="Draft message">
-          <SelectedSkills value={value} onChange={update} sessionId="chat-1" surface="dashboard_terminal" hints={hints} />
           <textarea aria-label="Message" value={value} onChange={e => update(e.target.value)} style={{width:'100%', padding:8}} />
         </section>
         <article style={{padding:12}} aria-label="Saved response">
@@ -147,22 +141,13 @@ test("skills install with explicit access, remain removable in drafts, and keep 
   assert.equal(await page.getByLabel("Access the network", { exact: true }).isChecked(), true);
   await install.click();
   await page.getByRole("status").filter({ hasText: "Installed. Use this skill" }).waitFor();
-  assert.equal(await page.getByLabel("Selected skills", { exact: true }).count(), 0, "installing does not silently select a skill");
   const promotion = requests.filter(r => r.body?.decision === "promote").at(-1);
   assert.deepEqual(promotion.body.approvedPermissions, ["filesystem-read", "network"]);
   assert.equal(promotion.body.runtimeSessionId, "chat-1");
   await page.getByRole("button", { name: "Use /writing", exact: true }).click();
   const message = page.getByRole("textbox", { name: "Message", exact: true });
-  await page.getByRole("button", { name: "Remove Writing helper skill", exact: true }).waitFor();
   assert.equal(await message.inputValue(), "/writing Improve this paragraph.");
-  await page.getByRole("button", { name: "Remove Writing helper skill", exact: true }).click();
-  assert.equal(await message.inputValue(), "Improve this paragraph.");
-  await message.fill("/agents:codex /writing /watch Explain /writing in prose.");
-  await page.getByRole("button", { name: "Remove Watch skill", exact: true }).waitFor();
-  await page.getByRole("button", { name: "Remove Writing helper skill", exact: true }).click();
-  assert.equal(await message.inputValue(), "/agents:codex /watch Explain /writing in prose.");
   await page.reload();
-  await page.getByRole("button", { name: "Remove Watch skill", exact: true }).waitFor();
   assert.equal(await page.getByLabel("Skills for this response", { exact: true }).count(), 0, "responses do not display a skill usage footer");
   const response = page.getByRole("article", { name: "Saved response", exact: true });
   assert.equal(await response.getByText("Breadboard use", { exact: true }).count(), 0);
@@ -173,10 +158,6 @@ test("skills install with explicit access, remain removable in drafts, and keep 
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "chat fits mobile");
   await page.setViewportSize({ width: 900, height: 850 });
   await page.screenshot({ path: path.join(output, "skill-chat-desktop.png"), fullPage: true });
-  await message.fill("A plain message /watch is prose.");
-  assert.equal(await page.getByLabel("Selected skills", { exact: true }).count(), 0);
-  await message.fill("");
-  assert.equal(await page.getByLabel("Selected skills", { exact: true }).count(), 0);
   missingFiles = true;
   await page.reload();
   await page.getByRole("button", { name: /^\/writing\s/ }).click();

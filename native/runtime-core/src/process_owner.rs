@@ -143,6 +143,7 @@ pub struct ProcessOwnerLimits {
 pub(crate) struct ProcessOwnerSystemCommitGuard {
     expected_commit_bytes: u64,
     trusted_reserve_bytes: u64,
+    core_service: bool,
 }
 
 impl ProcessOwnerSystemCommitGuard {
@@ -158,7 +159,18 @@ impl ProcessOwnerSystemCommitGuard {
         Ok(Self {
             expected_commit_bytes,
             trusted_reserve_bytes: trusted_reserve_bytes.max(SYSTEM_COMMIT_RESERVE_FLOOR_BYTES),
+            core_service: false,
         })
+    }
+
+    /// Dashboard and Hermes keep their configured cap under low commit
+    /// (borrowing the reserve, never the guard band) instead of being killed
+    /// into a restart loop; see the supervisor's `--core-service`.
+    pub(crate) fn core_service(self) -> Self {
+        Self {
+            core_service: true,
+            ..self
+        }
     }
 
     fn expected_commit_bytes(self) -> u64 {
@@ -2191,6 +2203,9 @@ impl RunningProcessOwner {
                 .arg(guard.expected_commit_bytes().to_string())
                 .arg("--system-commit-reserve-bytes")
                 .arg(guard.trusted_reserve_bytes().to_string());
+            if guard.core_service {
+                command.arg("--core-service");
+            }
         }
         for (name, _) in &environment {
             command.arg("--inherit-env").arg(name);
@@ -4393,6 +4408,22 @@ impl ProcessTreeExit {
             .then(|| safe_supervisor_failure("WAIT_FAILED", "test-only service failure"));
         receipt.stop_outcome = (classification == ProcessExitClassification::Stopped)
             .then_some(ProcessStopOutcome::Forced);
+        receipt
+    }
+
+    #[cfg(test)]
+    pub(crate) fn service_supervision_lost_for_test_in_scope(
+        scope: RuntimeGenerationScope,
+        service_id: &str,
+        generation: u64,
+    ) -> Self {
+        let mut receipt = Self::service_release_for_test_in_scope(scope, service_id, generation);
+        receipt.started_boundary_accepted = true;
+        receipt.classification = ProcessExitClassification::SupervisorFailure;
+        receipt.failure = Some(safe_supervisor_failure(
+            "SUPERVISION_LOST",
+            "supervisor exited before its terminal record",
+        ));
         receipt
     }
 

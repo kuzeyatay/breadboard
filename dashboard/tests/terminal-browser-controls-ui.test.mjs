@@ -72,16 +72,19 @@ test('Terminal matches browser control placement and opens the shared libraries'
         await page.goto(origin+route);
         const downloads=page.getByRole('button',{name:'Downloads',exact:true});
         const menu=page.getByRole('button',{name:'Browser menu',exact:true});
-        await expect(downloads).toBeVisible();await expect(menu).toBeVisible();
-        boxes.push([await downloads.boundingBox(),await menu.boundingBox()]);
+        const settings=page.getByLabel('Settings',{exact:true});
+        await expect(downloads).toBeVisible();await expect(menu).toBeVisible();await expect(settings).toBeVisible();
+        boxes.push([await downloads.boundingBox(),await menu.boundingBox(),await settings.boundingBox()]);
       }
-      for(let i=0;i<2;i++)for(const key of ['x','y','width','height']){
+      assert.ok(boxes[1][2].x>boxes[1][1].x+boxes[1][1].width,'Settings sits to the right of the menu');
+      for(let i=0;i<3;i++)for(const key of ['x','y','width','height']){
         assert.ok(Math.abs(boxes[0][i][key]-boxes[1][i][key])<=1,`${width}px control ${i} ${key} matches browser: ${JSON.stringify(boxes)}`);
       }
     }
+    await expect(page.getByRole('link',{name:'Settings',exact:true})).toHaveAttribute('href','/settings');
     await page.getByRole('button',{name:'Downloads',exact:true}).click();
     await page.getByRole('button',{name:'Browser menu',exact:true}).click();
-    assert.deepEqual(await page.evaluate(()=>commands.map(c=>c.type)),['browser-downloads-popover','browser-menu']);
+    assert.deepEqual(await page.evaluate(()=>commands.filter(c=>c.type!=='browser-toolbar-error').map(c=>c.type)),['browser-downloads-popover','browser-menu']);
     for(const [action,label] of [['history','Browser history'],['visited-pages','Visited pages'],['bookmarks','Starred pages'],['downloads','Downloads']]){
       await page.evaluate(action=>window.dispatchEvent(new CustomEvent('breadboard:browser-menu-action',{detail:action})),action);
       await expect(page.getByRole('dialog',{name:label,exact:true})).toBeVisible();
@@ -118,5 +121,8 @@ test('Terminal matches browser control placement and opens the shared libraries'
     await page.getByRole('button',{name:'Clear',exact:true}).click();
     await expect(page.getByText('No browsing history yet')).toBeVisible();
     assert.deepEqual(await page.evaluate(()=>recentSearches),['fixture search','visited query'],'clearing visited pages preserves saved search terms');
+    await page.goto(origin+'/browser');
+    await page.getByRole('button',{name:'Settings',exact:true}).click();
+    assert.equal(await page.evaluate(()=>commands.at(-1).type),'browser-open-settings');
   }finally{await browser.close();await new Promise(r=>server.close(r));}
 });

@@ -41,6 +41,7 @@
   background-color: transparent;
   border: 3px solid transparent;
   border-radius: 999px;
+  corner-shape: round;
 }
 
 .buzz-root .buzz-sidebar-scrollbar:hover::-webkit-scrollbar-thumb {
@@ -69,6 +70,7 @@
   background-color: hsl(var(--buzz-foreground) / 0.15);
   border: 2px solid transparent;
   border-radius: 999px;
+  corner-shape: round;
 }
 
 /*
@@ -106,6 +108,7 @@
   background-color: transparent;
   border: 3px solid transparent;
   border-radius: 999px;
+  corner-shape: round;
 }
 
 /* Scrollbar-part pseudo-classes are resolved by the scrollbar itself, so
@@ -3229,6 +3232,7 @@
 
   .buzz-root .buzz-huddle-mic-meter-bar {
     border-radius: 9999px;
+    corner-shape: round;
     height: var(--buzz-huddle-meter-height, 0.25rem);
     transition: none;
     width: 0.25rem;
@@ -4333,6 +4337,7 @@
 .buzz-root .video-volume-slider::-webkit-slider-runnable-track {
   height: 4px;
   border-radius: 9999px;
+  corner-shape: round;
   background: linear-gradient(
     to right,
     white var(--video-volume-fill, 100%),
@@ -4347,6 +4352,7 @@
   height: 12px;
   width: 12px;
   border-radius: 9999px;
+  corner-shape: round;
   background: white;
   box-shadow: 0 1px 3px rgb(0 0 0 / 0.3);
 }
@@ -4354,12 +4360,14 @@
 .buzz-root .video-volume-slider::-moz-range-track {
   height: 4px;
   border-radius: 9999px;
+  corner-shape: round;
   background: rgb(255 255 255 / 0.3);
 }
 
 .buzz-root .video-volume-slider::-moz-range-progress {
   height: 4px;
   border-radius: 9999px;
+  corner-shape: round;
   background: white;
 }
 
@@ -4368,6 +4376,7 @@
   height: 12px;
   width: 12px;
   border-radius: 9999px;
+  corner-shape: round;
   background: white;
   box-shadow: 0 1px 3px rgb(0 0 0 / 0.3);
 }
@@ -4424,6 +4433,7 @@
   width: 4px;
   border: 0;
   border-radius: 9999px;
+  corner-shape: round;
   background: hsl(var(--buzz-foreground) / 0.14);
   transform: translate(-50%, -50%);
   transition: background 180ms ease;
@@ -4484,6 +4494,7 @@
   width: 3px;
   height: calc(100% + 8px);
   border-radius: 9999px;
+  corner-shape: round;
   background: hsl(var(--buzz-foreground));
   opacity: 0;
   pointer-events: none;
@@ -4542,12 +4553,14 @@
 .buzz-root .image-zoom-slider:focus-visible {
   outline: none;
   border-radius: 9999px;
+  corner-shape: round;
   box-shadow: 0 0 0 2px hsl(var(--ring) / 0.7);
 }
 
 .buzz-root .image-zoom-slider::-webkit-slider-runnable-track {
   height: 4px;
   border-radius: 9999px;
+  corner-shape: round;
   background: linear-gradient(
     to right,
     currentColor var(--image-zoom-fill, 0%),
@@ -4562,6 +4575,7 @@
   height: 12px;
   width: 12px;
   border-radius: 9999px;
+  corner-shape: round;
   background: currentColor;
   box-shadow: 0 1px 3px rgb(0 0 0 / 0.3);
 }
@@ -4575,12 +4589,14 @@
 .buzz-root .image-zoom-slider::-moz-range-track {
   height: 4px;
   border-radius: 9999px;
+  corner-shape: round;
   background: color-mix(in srgb, currentColor 30%, transparent);
 }
 
 .buzz-root .image-zoom-slider::-moz-range-progress {
   height: 4px;
   border-radius: 9999px;
+  corner-shape: round;
   background: currentColor;
 }
 
@@ -4589,6 +4605,7 @@
   height: 12px;
   width: 12px;
   border-radius: 9999px;
+  corner-shape: round;
   background: currentColor;
   box-shadow: 0 1px 3px rgb(0 0 0 / 0.3);
 }

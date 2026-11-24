@@ -101,6 +101,7 @@ import { parseChatReferenceCommand } from "./chat-reference.ts";
 import { scheduleMemoryProfileSynthesisForConversation } from "./memory-profile.ts";
 import { loadConversationMemoryBundle } from "./memory.ts";
 import { personalTurnPrompt } from "../personal-context/resolve.ts";
+import { answerFeedbackContext } from "../hermes/answer-signals.ts";
 import { recallEarlierConversations } from "./earlier-chats.ts";
 import {
   findAgencyAgent,
@@ -156,6 +157,7 @@ import {
 import { humanizeCommandText } from "../hermes/humanize-intent.ts";
 import type { BrowserTerminalAccess } from "../browser-terminal.ts";
 import { browserTerminalPrompt, setBrowserTerminalContext } from "../hermes/browser-terminal-context.ts";
+import { codeOriginPrompt } from "./origin-label.ts";
 import {
   computerUseCommandText,
   COMPUTER_USE_SKILL,
@@ -204,6 +206,7 @@ import {
   type TerminalGardenGrounding,
 } from "../hermes/terminal-garden-grounding.ts";
 import { connectedAppRegistryForTurn } from "../hermes/unified-tool-registry.ts";
+import { renderConnectionShortlistDirective, shortlistConnections } from "../hermes/connection-routing.ts";
 import { connectedRepositoryForTurn } from "../code-index/chat-turn.ts";
 import { voiceCapabilitiesContext } from "../speech/voice-capabilities.ts";
 import {
@@ -312,6 +315,8 @@ export interface StartConversationTurnInput {
   goalContinuation?: { sourceRunId: string; goalId: string };
   /** Server-owned recovery, never accepted from a browser request. */
   taskContinuation?: { sourceRunId: string };
+  /** Server-owned framing for a scheduled run; model-only, never shown. */
+  scheduledRunContext?: string;
   /** Schedule the app already created for this user-authored turn. */
   scheduledChatReceipt?: ScheduledChatReceipt;
   /** Client-observed beginning of the response, persisted for restored clocks. */
@@ -322,6 +327,8 @@ export interface StartConversationTurnInput {
    * and it is given the catalogue to choose from. Per-message, never stored.
    */
   superAgent?: boolean;
+  /** No person is watching this turn (scheduled run, server hand-back). */
+  unattended?: boolean;
   /** Optional context for the first reply to a voice opening invitation. */
   voiceOpener?: unknown;
   /** Spoken conversation: use ordinary agent capabilities with concise speech. */
@@ -484,9 +491,10 @@ export async function startConversationTurn(
     superAgent: input.superAgent,
     deliveryChannel: context.deliveryChannel,
     yoloMode: input.yoloMode,
-    savedYoloMode: context.deliveryChannel
+    savedYoloMode: context.deliveryChannel || input.unattended
       ? getHermesUserSettings(input.conversation.user_id).composerSwitches.yoloMode
       : undefined,
+    unattended: input.unattended,
   });
   let preparedBranchSession: AuthorizedRuntimeSession | null = null;
   if (input.branchHistory) {
@@ -1493,6 +1501,7 @@ export async function startConversationTurn(
           tools: {},
           systemContext: "",
           toolCount: 0,
+          catalog: [],
         }
       : await connectedAppRegistryForTurn({
           runtime,
@@ -1817,6 +1826,8 @@ export async function startConversationTurn(
       connectedApps.systemContext,
     ].filter(Boolean).join("\n\n"),
     additional: [
+      input.internalAgentContinuation || input.chatCoordination ? "" :
+        answerFeedbackContext(input.conversation, currentConversationMessages, input.textSelection?.sourceMessageId),
       await personalTurnPrompt({ userId: input.conversation.user_id, conversationId: input.conversation.id, query: input.text,
         focus:context.pageTitle || input.textSelection?.sourceTitle,
         gardenId: session.row.cluster_id, surface: input.surface, temporary: input.conversation.temporary, personalize: input.personalize, internal: Boolean(input.internalAgentContinuation || input.chatCoordination) }),
@@ -1838,6 +1849,10 @@ export async function startConversationTurn(
           : "",
       // Empty unless this agent-mode turn was offered a shortlist above.
       renderSkillShortlistDirective(skillShortlist),
+      // Which of the turn's connections this request is about, and the order to try them in.
+      input.internalAgentContinuation === true
+        ? ""
+        : renderConnectionShortlistDirective(shortlistConnections(resolved.userText || input.text, connectedApps.catalog)),
       codexDrive ? codexDriveDirective() : codingRequest ? codeWithoutRepositoryDirective(Boolean(codeGardenSlug)) : "",
       composeMemoryContext(
         memory,
@@ -1985,7 +2000,7 @@ export async function startConversationTurn(
   });
   voicePhase("context");
   const systemWithProducts = [baseSystem, productSearchTurnContext(productSearch)].filter(Boolean).join("\n\n");
-  const runtimeSystem = [systemWithProducts, currentLocationContext, browserContext].filter(Boolean).join("\n\n");
+  const runtimeSystem = [systemWithProducts, currentLocationContext, browserContext, codeOriginPrompt(input.conversation.origin_label)].filter(Boolean).join("\n\n");
   const defaultRuntimeText = voiceReplyWithOpener(
     resolved.text || "Acknowledge the persona selection briefly and ask how you can help.",
     input.voice && input.personalize !== false && input.surface !== 'quartz_ai' && !input.conversation.temporary && !input.internalAgentContinuation
@@ -1999,6 +2014,8 @@ export async function startConversationTurn(
         input.textSelection,
         selectionSourceMessage,
       )
+    : input.scheduledRunContext
+    ? `${input.scheduledRunContext}\n\n${defaultRuntimeText}`
     : defaultRuntimeText;
   const requiredVisualizerSkill = selectedInteractiveVisualizerSkill(
     new Set(

@@ -228,6 +228,17 @@ test("Settings treats the legacy Profile route as the same page", () => {
   assert.equal(withProfileReturnTo('/settings', '/profile?tab=knowledge'), '/settings');
 });
 
+test("switching between Settings and Screen Time preserves the back destination", () => {
+  trail('/new-tab', '/settings', '/screen-time', '/settings', '/screen-time');
+  assert.equal(resolveBackHref('/screen-time', '/dashboard'), '/new-tab');
+  assert.equal(resolveBackHref('/settings', '/dashboard'), '/new-tab');
+
+  trail();
+  const source = '/gardens/plants?note=roses#heading';
+  const href = withProfileReturnTo('/settings', source);
+  assert.equal(resolveBackHref(href.replace('/settings', '/screen-time'), '/dashboard'), source);
+});
+
 test("Profile return links reject external, auth, malformed and self destinations", () => {
   trail();
   for (const source of ['https://example.com/', '//example.com/', '/auth/login', '/api/profile', 'javascript:alert(1)', '/profile?tab=knowledge']) {

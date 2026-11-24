@@ -137,3 +137,13 @@ test('unfinished runs, missing artifacts and failed writes retain real recovery'
   }
   assert.equal(taskRecoveryCheckpoint({status:'cancelled',turn:0,completedTextAnswer:true,tools:[lookup]}).stopped,'cancelled');
 });
+
+test('a delivered artifact made after a failed write is not replayed as a second answer', () => {
+  const failed = {toolName:'office_run',success:false,failure:{code:'task_tool_failed',message:'Tool failed'}};
+  const exported = {toolName:'office_export',success:true};
+  assert.deepEqual(taskRecoveryCheckpoint({status:'idle',turn:0,completedTextAnswer:true,
+    tools:[{toolName:'office_run',success:true},failed,failed,exported],artifacts:['art_1:1']}),{});
+  // No artifact, or nothing succeeded after the failure: still unfinished.
+  assert.ok(taskRecoveryCheckpoint({status:'idle',turn:0,completedTextAnswer:true,tools:[failed,exported]}).checkpoint);
+  assert.ok(taskRecoveryCheckpoint({status:'idle',turn:0,completedTextAnswer:true,tools:[exported,failed],artifacts:['art_1:1']}).checkpoint);
+});

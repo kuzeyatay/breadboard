@@ -42,7 +42,14 @@ export async function POST(request: Request) {
     const { requestViewedPage } = await import("@/lib/web-page-context");
     const page = await requestViewedPage(body);
     const completion = await generateSentenceCompletion({ userId, draft, messages, learned, page, baseUrl: baseURL, signal: request.signal });
-    return NextResponse.json({ completion }, { headers: { 'Cache-Control': 'no-store' } });
+    const context: string[] = [];
+    if (page) context.push(`the open page “${page.title}”`);
+    if (messages.length) context.push('recent messages in this chat');
+    if (learned.length) context.push(body.roomId ? 'saved context from this room' : 'relevant saved context');
+    const reason = context.length
+      ? `This continues your draft. Available context included ${new Intl.ListFormat('en').format(context)}.`
+      : 'This completes the sentence you started typing.';
+    return NextResponse.json({ completion, ...(completion ? { reason } : {}) }, { headers: { 'Cache-Control': 'no-store' } });
   } catch (error) {
     return apiErrorResponse(error);
   }

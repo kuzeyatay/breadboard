@@ -2165,6 +2165,11 @@ impl EnvironmentProfile {
 struct SystemCommitGuardConfig {
     expected_commit_bytes: u64,
     trusted_reserve_bytes: u64,
+    /// Dashboard and Hermes: everything else depends on them, so killing them
+    /// to protect the reserve only turns low memory into a crash loop. A core
+    /// tree keeps its configured cap while that fits in free commit minus the
+    /// guard band (it may borrow the reserve, never the guard band).
+    core_service: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -2179,6 +2184,8 @@ enum SystemCommitGuardTerminationReason {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SystemCommitGuardEvidence {
+    #[serde(skip)]
+    core_service: bool,
     architecture_reserve_floor_bytes: u64,
     launch_derived_reserve_bytes: u64,
     trusted_reserve_bytes: u64,
@@ -2233,6 +2240,7 @@ fn live_job_limit_action(
     effective_reserve_bytes: u64,
     guard_band_bytes: u64,
     dynamic_burst_authorized: bool,
+    core_floor_bytes: u64,
 ) -> LiveJobLimitAction {
     let protected = effective_reserve_bytes.saturating_add(guard_band_bytes);
     if free_system_commit_bytes <= protected {
@@ -2241,8 +2249,13 @@ fn live_job_limit_action(
         }
         // A non-borrowing tree is not selected as the reserve victim. Remove
         // any stale growth allowance anyway so it cannot worsen the pressure.
-        let fence = current_job_commit_bytes.saturating_add(1);
-        return if fence < current_effective_hard_limit_bytes {
+        // A core tree is never fenced below its floor.
+        let fence = current_job_commit_bytes
+            .saturating_add(1)
+            .max(core_floor_bytes);
+        return if fence < current_effective_hard_limit_bytes
+            || core_floor_bytes > current_effective_hard_limit_bytes
+        {
             LiveJobLimitAction::Apply(fence)
         } else {
             LiveJobLimitAction::Keep
@@ -2254,7 +2267,9 @@ fn live_job_limit_action(
     } else {
         configured_hard_limit_bytes
     };
-    let desired = ceiling.min(current_job_commit_bytes.saturating_add(safe_growth));
+    let desired = ceiling
+        .min(current_job_commit_bytes.saturating_add(safe_growth))
+        .max(core_floor_bytes);
     // A valid Continue sample always leaves positive growth. Keep the explicit
     // fence for saturated arithmetic and for deterministic fail-closed tests.
     if desired <= current_job_commit_bytes {
@@ -2379,8 +2394,16 @@ impl SystemCommitGuardEvidence {
         let safe_tree_allowance = launch_free_commit_bytes.saturating_sub(
             launch_effective_reserve_bytes.saturating_add(SYSTEM_COMMIT_RESERVE_GUARD_BAND_BYTES),
         );
-        let effective_hard_limit_bytes = configured_hard_limit_bytes.min(safe_tree_allowance);
+        let mut effective_hard_limit_bytes = configured_hard_limit_bytes.min(safe_tree_allowance);
+        if config.core_service {
+            effective_hard_limit_bytes = effective_hard_limit_bytes.max(
+                configured_hard_limit_bytes.min(
+                    launch_free_commit_bytes.saturating_sub(SYSTEM_COMMIT_RESERVE_GUARD_BAND_BYTES),
+                ),
+            );
+        }
         Self {
+            core_service: config.core_service,
             architecture_reserve_floor_bytes: SYSTEM_COMMIT_RESERVE_FLOOR_BYTES,
             launch_derived_reserve_bytes,
             trusted_reserve_bytes: config.trusted_reserve_bytes,
@@ -2403,6 +2426,19 @@ impl SystemCommitGuardEvidence {
         }
     }
 
+    /// The cap a core tree keeps: its configured limit, bounded by what it
+    /// holds plus free commit minus the guard band. Zero for other trees.
+    fn core_floor_bytes(&self, free_commit_bytes: u64, current_job_commit_bytes: u64) -> u64 {
+        if !self.core_service {
+            return 0;
+        }
+        self.configured_hard_limit_bytes.min(
+            current_job_commit_bytes
+                .saturating_add(free_commit_bytes)
+                .saturating_sub(self.guard_band_bytes),
+        )
+    }
+
     fn expected_commit_fits(self) -> bool {
         self.effective_hard_limit_bytes > self.expected_commit_bytes
     }
@@ -2416,17 +2452,25 @@ impl SystemCommitGuardEvidence {
         self.pre_resume_system_commit_bytes = Some(system_commit_bytes);
         self.pre_resume_system_commit_limit_bytes = Some(system_commit_limit_bytes);
         self.pre_resume_free_commit_bytes = Some(free_commit_bytes);
+        let core_floor = self.core_floor_bytes(free_commit_bytes, 0);
         if self.observe(system_commit_bytes, system_commit_limit_bytes)
             == SystemCommitGuardAction::Terminate
         {
-            return Err(SystemCommitGuardAction::Terminate);
+            if core_floor <= self.expected_commit_bytes {
+                return Err(SystemCommitGuardAction::Terminate);
+            }
+            // The core tree borrows the reserve instead of being killed.
+            self.termination_reason = None;
         }
-        let tightened_hard_limit = self.effective_hard_limit_bytes.min(
-            free_commit_bytes.saturating_sub(
-                self.maximum_observed_effective_reserve_bytes
-                    .saturating_add(self.guard_band_bytes),
-            ),
-        );
+        let tightened_hard_limit = self
+            .effective_hard_limit_bytes
+            .min(
+                free_commit_bytes.saturating_sub(
+                    self.maximum_observed_effective_reserve_bytes
+                        .saturating_add(self.guard_band_bytes),
+                ),
+            )
+            .max(core_floor.min(self.effective_hard_limit_bytes));
         if tightened_hard_limit <= self.expected_commit_bytes {
             self.mark_expected_commit_denial();
             return Err(SystemCommitGuardAction::Terminate);
@@ -2559,6 +2603,7 @@ where
     let mut hard_limit_bytes = 0;
     let mut expected_commit_bytes = None;
     let mut system_commit_reserve_bytes = None;
+    let mut core_service = false;
     let mut graceful_timeout_ms = 5_000;
     let mut cwd = None;
     let mut environment_profile = EnvironmentProfile::Worker;
@@ -2583,6 +2628,7 @@ where
                     );
                 }
             }
+            "--core-service" => core_service = true,
             "--graceful-timeout-ms" => graceful_timeout_ms = parse_u64(&value, values.next())?,
             "--cwd" => {
                 let value = values
@@ -2660,6 +2706,7 @@ where
             Some(SystemCommitGuardConfig {
                 expected_commit_bytes,
                 trusted_reserve_bytes,
+                core_service,
             })
         }
         _ => return Err(
@@ -5486,7 +5533,9 @@ mod windows_runtime {
                             usage.current_private_commit_bytes,
                         ) {
                             let free_commit = limit.saturating_sub(commit);
+                            let core_floor = guard.core_floor_bytes(free_commit, current_job_commit);
                             if !dynamic_commit_burst_lease.held()
+                                && core_floor == 0
                                 && should_request_dynamic_commit_burst(
                                     options.hard_limit_bytes,
                                     effective_hard_limit_bytes,
@@ -5509,6 +5558,7 @@ mod windows_runtime {
                                 guard.maximum_observed_effective_reserve_bytes,
                                 guard.guard_band_bytes,
                                 dynamic_commit_burst_lease.held(),
+                                core_floor,
                             ) {
                                 LiveJobLimitAction::Keep => {}
                                 LiveJobLimitAction::Apply(updated_limit) => {
@@ -6671,6 +6721,7 @@ mod tests {
         let expected = Some(SystemCommitGuardConfig {
             expected_commit_bytes: 3_072 * MEBIBYTE_BYTES,
             trusted_reserve_bytes: 4_096 * MEBIBYTE_BYTES,
+            core_service: false,
         });
         for profile in ["dashboard", "worker", "gbrain", "chatmock-worker"] {
             assert_eq!(
@@ -6694,6 +6745,7 @@ mod tests {
         let config = SystemCommitGuardConfig {
             expected_commit_bytes: 3_072 * mib,
             trusted_reserve_bytes: 4_096 * mib,
+            core_service: false,
         };
         let configured = 8_192 * mib;
         let mut ordinary = SystemCommitGuardEvidence::at_launch(
@@ -6730,6 +6782,79 @@ mod tests {
     }
 
     #[test]
+    fn core_service_keeps_its_cap_under_low_commit_instead_of_crash_looping() {
+        // The 2026-11-24 dashboard loop: 3 GiB cap, ~3.1 GiB free, so the
+        // ordinary guard left it 0.9-2 GiB and it died every ~30 s.
+        let mib = MEBIBYTE_BYTES;
+        let config = |core_service| SystemCommitGuardConfig {
+            expected_commit_bytes: 1_536 * mib,
+            trusted_reserve_bytes: 2_048 * mib,
+            core_service,
+        };
+        let launch = |core| {
+            SystemCommitGuardEvidence::at_launch(
+                config(core),
+                3_072 * mib,
+                (40_000 - 3_200) * mib,
+                40_000 * mib,
+            )
+        };
+        assert!(!launch(false).expected_commit_fits());
+        let mut core = launch(true);
+        assert_eq!(core.effective_hard_limit_bytes, 2_944 * mib);
+        assert!(core.expected_commit_fits());
+
+        let mut ordinary = launch(false);
+        assert!(ordinary
+            .observe_before_resume((40_000 - 3_100) * mib, 40_000 * mib)
+            .is_err());
+        assert_eq!(
+            core.observe_before_resume((40_000 - 3_100) * mib, 40_000 * mib),
+            Ok(2_844 * mib)
+        );
+        assert_eq!(core.termination_reason, None);
+
+        // Live: free commit at the reserve fences an ordinary tree at its
+        // usage, but a core tree keeps its floor (guard band never borrowed).
+        let live = |floor| {
+            live_job_limit_action(
+                3_072 * mib,
+                2_844 * mib,
+                2_100 * mib,
+                1_000 * mib,
+                2_048 * mib,
+                256 * mib,
+                false,
+                floor,
+            )
+        };
+        assert_eq!(live(0), LiveJobLimitAction::Apply(2_100 * mib + 1));
+        assert_eq!(
+            live(core.core_floor_bytes(1_000 * mib, 2_100 * mib)),
+            LiveJobLimitAction::Keep
+        );
+        assert_eq!(launch(false).core_floor_bytes(1_000 * mib, 2_100 * mib), 0);
+    }
+
+    #[test]
+    fn core_service_flag_is_parsed_with_the_guard() {
+        let options = parse_options(
+            [
+                "--soft-limit-bytes", "2147483648",
+                "--hard-limit-bytes", "3221225472",
+                "--expected-commit-bytes", "1610612736",
+                "--system-commit-reserve-bytes", "2147483648",
+                "--core-service",
+                "--environment-profile", "dashboard",
+                "--cwd", "C:\\trusted", "--", "node.exe",
+            ]
+            .map(str::to_string),
+        )
+        .unwrap();
+        assert!(options.system_commit_guard.unwrap().core_service);
+    }
+
+    #[test]
     fn live_guard_tracks_external_commit_without_ratchet_permission() {
         let mib = MEBIBYTE_BYTES;
         let calculate = |effective, job, free| {
@@ -6741,6 +6866,7 @@ mod tests {
                 4_096 * mib,
                 256 * mib,
                 false,
+                0,
             )
         };
 
@@ -6779,6 +6905,7 @@ mod tests {
                 4_096 * mib,
                 256 * mib,
                 false,
+                0,
             ),
             LiveJobLimitAction::Keep,
             "a sub-256 MiB change must not churn the Job Object",
@@ -6792,6 +6919,7 @@ mod tests {
                 4_096 * mib,
                 256 * mib,
                 false,
+                0,
             ),
             LiveJobLimitAction::Apply(3_248 * mib),
             "a shrinking limit stays strictly above observed usage",
@@ -6805,6 +6933,7 @@ mod tests {
                 4_096 * mib,
                 256 * mib,
                 true,
+                0,
             ),
             LiveJobLimitAction::Terminate,
         );
@@ -6817,6 +6946,7 @@ mod tests {
                 4_096 * mib,
                 256 * mib,
                 false,
+                0,
             ),
             LiveJobLimitAction::Apply(3_000 * mib + 1),
             "a non-borrowing tree is fenced at observed usage instead of joining a kill-all storm",
@@ -6835,6 +6965,7 @@ mod tests {
                 4_096 * mib,
                 256 * mib,
                 authorized,
+                0,
             )
         };
 
@@ -6850,6 +6981,7 @@ mod tests {
                 4_096 * mib,
                 256 * mib,
                 true,
+                0,
             ),
             LiveJobLimitAction::Apply(7_648 * mib),
             "a borrower returning below its manifest cap must release without hysteresis",
@@ -6878,6 +7010,7 @@ mod tests {
         let config = SystemCommitGuardConfig {
             expected_commit_bytes: 3_072 * mib,
             trusted_reserve_bytes: 4_096 * mib,
+            core_service: false,
         };
         let make_guard = || {
             let mut guard = SystemCommitGuardEvidence::at_launch(
@@ -6913,6 +7046,7 @@ mod tests {
         let config = SystemCommitGuardConfig {
             expected_commit_bytes: 3_072 * mib,
             trusted_reserve_bytes: 4_096 * mib,
+            core_service: false,
         };
         let mut guard = SystemCommitGuardEvidence::at_launch(
             config,
@@ -6951,6 +7085,7 @@ mod tests {
             SystemCommitGuardConfig {
                 expected_commit_bytes: 3_072 * mib,
                 trusted_reserve_bytes: 4_096 * mib,
+                core_service: false,
             },
             8_192 * mib,
             (40_000 - 13_000) * mib,
@@ -6987,6 +7122,7 @@ mod tests {
             SystemCommitGuardConfig {
                 expected_commit_bytes: 3_072 * mib,
                 trusted_reserve_bytes: 4_096 * mib,
+                core_service: false,
             },
             8_192 * mib,
             (40_000 - 13_000) * mib,
@@ -7052,6 +7188,7 @@ mod tests {
             SystemCommitGuardConfig {
                 expected_commit_bytes: 3_072 * mib,
                 trusted_reserve_bytes: 2_048 * mib,
+                core_service: false,
             },
             configured,
             (100_000 - 20_000) * mib,
@@ -7065,6 +7202,7 @@ mod tests {
             SystemCommitGuardConfig {
                 expected_commit_bytes: 3_072 * mib,
                 trusted_reserve_bytes: 7_000 * mib,
+                core_service: false,
             },
             configured,
             (40_000 - 13_000) * mib,

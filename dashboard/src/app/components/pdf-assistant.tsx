@@ -95,6 +95,8 @@ interface Props {
   temporary?: boolean;
   /** Bumped by the toolbar's Pins button: drop a new pin on the page in view. */
   pinRequest?: number;
+  /** Ask in chat goes to this chat instead of the PDF assistant, which then shows no panel or launcher. */
+  onAskInChat?: (selection: ChatTextSelectionReference) => void;
 }
 
 type SentPdfView = Promise<{ snapshot: PdfViewportSnapshot; error?: never } | { snapshot?: never; error: unknown }>;
@@ -114,6 +116,7 @@ export default function PdfAssistant({
   getBytes,
   temporary = false,
   pinRequest = 0,
+  onAskInChat,
 }: Props) {
   const [open, setOpen] = useState(false);
   const [chatQuestionTarget, setChatQuestionTarget] = useState<StarredMessageTarget | null>(null);
@@ -351,6 +354,7 @@ export default function PdfAssistant({
     }
     if (mode === "chat") setHighlights(current => current.map(item =>
       item.selection.id === highlight.selection.id ? { ...item, chatQuestion: true } : item));
+    if (mode === "chat" && onAskInChat) { onAskInChat(highlight.selection); setSelectionMenu(null); return; }
     setComposerSelection(highlight.selection);
     setHistoryOpen(false);
     setOpen(true);
@@ -761,6 +765,9 @@ export default function PdfAssistant({
         onOpenHighlight={openHighlight}
         onMovePin={movePin}
       />
+      {/* With an outside chat (the Garden reader) the launcher and panel stay out of sight; the panel stays
+          mounted because it runs Ask here and draws its answer popup (portalled over the page). */}
+      {!onAskInChat && <>
       {!open && (
         <button
           type="button"
@@ -776,12 +783,15 @@ export default function PdfAssistant({
           Assistant
         </button>
       )}
+      </>}
       <aside
         id="pdf-assistant-panel"
         data-pdf-assistant-panel
         aria-label="PDF assistant"
         style={
-          open
+          onAskInChat
+            ? { display: "none" }
+            : open
             ? { width: `min(${panelWidth}px, calc(100vw - 24px))` }
             : undefined
         }

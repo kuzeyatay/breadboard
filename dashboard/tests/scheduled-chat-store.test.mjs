@@ -406,3 +406,31 @@ test("the per-user schedule cap is enforced", () => {
   // The cap is per user, so another account is unaffected.
   assert.ok(store.create(2, terminalJob).id > 0);
 });
+
+test("a run that could not start retries soon and remembers how late it is", () => {
+  const store = createStore();
+  const row = store.create(1, terminalJob, at(2026, 11, 23, 8, 0));
+  // Breadboard was off at 09:00; it comes up at 10:26 with the runtime still booting.
+  const [claimed] = store.claimDue(at(2026, 11, 23, 10, 26));
+  assert.deepEqual(new Date(claimed.due_at), at(2026, 11, 23, 9, 0));
+  store.recordRun(row.id, { status: "failed", conversationId: "chat-1", error: "runtime unavailable" });
+  assert.equal(store.retrySoon(row.id, claimed.due_at, at(2026, 11, 23, 10, 28)), true);
+
+  const [retry] = store.claimDue(at(2026, 11, 23, 10, 28));
+  assert.equal(retry.id, row.id);
+  assert.deepEqual(new Date(retry.due_at), at(2026, 11, 23, 9, 0), "lateness counts from the missed occurrence");
+  assert.deepEqual(new Date(retry.next_run_at), at(2026, 11, 24, 9, 0), "cadence resumes after the retry");
+
+  store.recordRun(row.id, { status: "ok", conversationId: null });
+  const after = store.get(1, row.id);
+  assert.equal(after.missed_due_at, null);
+  assert.equal(after.last_conversation_id, "chat-1", "a run without a new chat keeps the chat later runs continue in");
+});
+
+test("a retry never pushes past the next regular occurrence", () => {
+  const store = createStore();
+  const row = store.create(1, { ...terminalJob, cron: "* * * * *" }, at(2026, 11, 23, 8, 0));
+  const [claimed] = store.claimDue(at(2026, 11, 23, 8, 1));
+  store.recordRun(row.id, { status: "failed" });
+  assert.equal(store.retrySoon(row.id, claimed.due_at, at(2026, 11, 23, 8, 5)), false);
+});

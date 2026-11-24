@@ -4,6 +4,7 @@ import Link from "next/link";
 import { Search } from "lucide-react";
 import DashboardAgentTerminal from "@/app/components/hermes/dashboard-agent-terminal";
 import BrowserNavigation from "./browser-navigation";
+import BrowserAiFlag from "./browser-ai-flag";
 import BrowserOrganizationPanel from "./browser-organization-panel";
 import CrumbsIcon from "@/app/components/crumbs-icon";
 import { BROWSER_REVEAL_TERMINAL_EVENT } from "@/lib/browser-inline-answer";
@@ -736,6 +737,7 @@ function BrowserContent({
         >
           <CrumbsIcon size={20} strokeWidth={1.6} />
         </button>}
+        {browser && !privateBrowsing && <BrowserAiFlag url={hasNativePage && !browser.pdfViewer ? browser.address : ""} askFirst={tabs?.browserPreferences?.aiFlagConfirm !== false} />}
         <button
           type="button"
           className={privateHome ? homeControls.destinationButton : "browser-terminal-launcher"}

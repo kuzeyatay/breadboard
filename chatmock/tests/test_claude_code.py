@@ -4,6 +4,8 @@ import base64
 import json
 import os
 import subprocess
+import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -43,6 +45,40 @@ def _cli_body(*, content: str = "ok", tool_calls=None):
 
 
 class ClaudeCodeBridgeTests(unittest.TestCase):
+    def setUp(self):
+        directory = self.enterContext(tempfile.TemporaryDirectory())
+        self.enterContext(patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": directory}))
+        self.profile_root = Path(directory)
+
+    def test_quota_retries_the_same_turn_and_remembers_the_cooldown(self):
+        sibling = "12345678-1234-4123-8123-123456789abc"
+        store = self.profile_root / ".breadboard" / "accounts"
+        store.mkdir(parents=True)
+        (store / (sibling + ".json")).write_text(json.dumps({"loggedIn": True, "email": "two@example.test"}))
+        (store / "preferred.json").write_text(json.dumps("default"))
+        reset = int(time.time()) + 5000
+        frames = [{"type": "rate_limit_event", "rate_limit_info": {"status": "rejected", "resetsAt": reset}},
+                  {"type": "result", "is_error": True, "result": "Capacity unavailable"}]
+        limited = SimpleNamespace(returncode=1, stdout="\n".join(map(json.dumps, frames)), stderr="")
+        success = SimpleNamespace(returncode=0, stdout=json.dumps(_cli_body(content="handled")), stderr="")
+        payload = {"messages": [{"role": "user", "content": "test"}]}
+        with (patch.object(claude_code, "_claude_executable", return_value="claude"),
+              patch.object(subprocess, "run", side_effect=[limited, success, success, success]) as launch):
+            for _ in range(2):
+                self.assertEqual(claude_code._run_cli(payload, "claude-sonnet-5")["structured_output"]["content"], "handled")
+            self.assertEqual(json.loads((store / "default.reset").read_text()), reset * 1000)
+            (store / "default.reset").write_text("0")
+            claude_code._run_cli(payload, "claude-sonnet-5")
+        self.assertEqual([c.kwargs["env"]["CLAUDE_CONFIG_DIR"] for c in launch.call_args_list],
+                         list(map(str, [self.profile_root, store / sibling, store / sibling, self.profile_root])))
+        self.assertEqual(len({c.kwargs["input"] for c in launch.call_args_list}), 1)
+
+    def test_authentication_failure_leaves_preferences_and_cooldowns_alone(self):
+        with self.assertRaises(ProviderError) as error:
+            claude_code._parse_cli_result('{"is_error":true,"result":"Invalid API key"}', "", 1)
+        self.assertNotEqual(error.exception.status_code, 429)
+        self.assertFalse((self.profile_root / ".breadboard" / "accounts").exists())
+
     def test_only_claude_subscription_models_are_intercepted(self) -> None:
         self.assertTrue(claude_code.is_claude_model("claude-sonnet-5"))
         self.assertTrue(claude_code.is_claude_model("cliproxy/claude-opus-5"))

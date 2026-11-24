@@ -33,7 +33,7 @@ export function useSentenceCompletion({ messages = NO_MESSAGES, conversationKey,
   const transcript = JSON.stringify(context);
   const scope = JSON.stringify([conversationKey, transcript, revision,personalize,gardenSlug,pageTitle,page?.title,page?.browser,page?.text?.length,roomId,threadId,documentConversationId]);
   const key = JSON.stringify([scope, value]);
-  const [result, setResult] = useState<{ scope: string; draft: string; text: string } | null>(null);
+  const [result, setResult] = useState<{ scope: string; draft: string; text: string; reason: string } | null>(null);
   const [dismissedKey, setDismissedKey] = useState<string | null>(null);
   const pending = useRef<AbortController | null>(null);
   const eligible = enabled && focused && !composing && cursor.value === value && cursor.atEnd &&
@@ -71,7 +71,10 @@ export function useSentenceCompletion({ messages = NO_MESSAGES, conversationKey,
         if (!response.ok) return;
         const payload = await response.json();
         const completion = normalizeSentenceCompletion(payload.completion, value);
-        if (!controller.signal.aborted && completion) setResult({ scope, draft: value, text: completion });
+        if (!controller.signal.aborted && completion) setResult({
+          scope, draft: value, text: completion,
+          reason: typeof payload.reason === 'string' ? payload.reason : 'This completes the sentence you started typing.',
+        });
       } catch {
         // Leave typing, sending and ordinary keyboard navigation available.
       } finally {
@@ -120,7 +123,7 @@ export function useSentenceCompletion({ messages = NO_MESSAGES, conversationKey,
   }
 
   return {
-    text, descriptionId, handleKeyDown,
+    text, reason: result?.reason ?? '', descriptionId, handleKeyDown,
     onInput(input: HTMLTextAreaElement) { pending.current?.abort(); trackCursor(input); },
     onSelect: trackCursor,
     onFocus(input: HTMLTextAreaElement) { setFocused(true); trackCursor(input); },

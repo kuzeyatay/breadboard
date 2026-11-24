@@ -2,6 +2,7 @@
 // .next-desktop) with the right environment on any platform.
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
+import { availableParallelism } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -98,6 +99,9 @@ if (quartzReader.status !== 0) process.exit(quartzReader.status ?? 1);
 // bounded, and dev-fast's commit monitor still protects the Windows reserve.
 const maxDashboardBuildAttempts = 2;
 const capturedOutputLimit = 256 * 1024;
+// Limit simultaneous native compiler work during the Windows build peak.
+// Next's page-data workers run later and have a separate limit in next.config.ts.
+const nativeThreads = String(Math.min(4, availableParallelism()));
 
 function appendCapturedOutput(current, chunk) {
   const combined = current + chunk.toString();
@@ -120,6 +124,10 @@ function runDashboardBuildAttempt() {
       stdio: ["inherit", "pipe", "pipe"],
       env: {
         ...process.env,
+        ...(process.platform === "win32" ? {
+          RAYON_NUM_THREADS: process.env.RAYON_NUM_THREADS ?? nativeThreads,
+          TOKIO_WORKER_THREADS: process.env.TOKIO_WORKER_THREADS ?? nativeThreads,
+        } : {}),
         BREADBOARD_DESKTOP_BUILD: "1",
         BREADBOARD_BUILD_DATA_ROOT: buildDataRoot,
         BREADBOARD_NEXT_DIST_DIR: ".next-desktop",

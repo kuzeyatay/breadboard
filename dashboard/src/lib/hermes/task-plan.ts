@@ -165,6 +165,14 @@ const DESTRUCTIVE_FS_VERB =
 const RUN_VERB =
   /\b(run|execute|invoke|launch|start|kick\s+off|rerun|re-run)\b/i;
 
+// Installing software is running an installer: any named target counts.
+const INSTALL_VERB = /\b(install|reinstall)\b/i;
+
+// A bare acknowledgement ("downloaded", "done, go on") is the user answering
+// the assistant's own request to do a step, so the work is the previous ask.
+const ACKNOWLEDGED_CONTINUATION =
+  /^(?:(?:ok(?:ay)?|yes|yep|sure|alright|now)[,\s]+)*(?:(?:it'?s|i'?ve|i\s+have|i)\s+)?(?:done|downloaded|installed|finished|ready|did\s+it|got\s+it|go(?:\s+ahead|\s+on)?|continue|proceed|there|ok(?:ay)?|yes)(?:[,\s]+(?:go(?:\s+ahead|\s+on)?|continue|proceed|now|please|it'?s\s+in\s+downloads))*[.!\s]*$/i;
+
 const CONVERT_VERB =
   /\b(convert|export|render|transform|turn\s+(?:it\s+)?into|save\s+as|output\s+as)\b/i;
 
@@ -195,9 +203,12 @@ const WEB_VERB =
 // notice. Attached material is the documents signal's business: an object
 // that points at an upload, or a turn that names a local path, is excluded.
 const PUBLISHED_SOURCE_VERB =
-  /\b(read|open|review|analy[sz]e|examine|inspect|assess|audit|interpret|summari[sz]e|find|locate|look\s+up|fetch|grab)\b/i;
+  /\b(read|open|review|analy[sz]e|examine|inspect|assess|audit|interpret|summari[sz]e|find|locate|look\s+up|fetch|grab|search|check)\b/i;
+// A named public index ("search official arXiv listings", "check the PubMed
+// abstracts") is only reachable online. Scheduled arXiv briefings parsed as
+// conversation and ran with web_search switched off.
 const PUBLISHED_SOURCE_OBJECT =
-  /\b(papers?|studies|study|articles?|publications?|preprints?|literature|journals?|citations?|trials?|meta-?analys[ie]s|research)\b|\bsources?\b(?!\s+(?:code|files?|tree|maps?))/i;
+  /\b(papers?|studies|study|articles?|publications?|preprints?|literature|journals?|citations?|trials?|meta-?analys[ie]s|research|arxiv|biorxiv|medrxiv|pubmed|ssrn|semantic\s+scholar|google\s+scholar)\b|\bsources?\b(?!\s+(?:code|files?|tree|maps?))/i;
 const SUPPLIED_SOURCE_OBJECT =
   /\b(attached|attachments?|uploaded|uploads?|pasted|this\s+file|these\s+files|pdfs?|docx?)\b/i;
 const LIVE_INFORMATION = /\b(?:latest|recent|up[- ]to[- ]date)\s+\w|\bcurrent\s+(?:time|date|weather|forecast|prices?|costs?|rates?|scores?|standings?|results?|availability|versions?|releases?|president|ceo|government)\b|\bnews\b/i;
@@ -675,7 +686,8 @@ function readSignals(text: string, resources: ResourceReference[], resolvedResou
     fsMutate,
     fsCreate,
     destructiveFs,
-    run: has(RUN_VERB, (action) => COMMAND_OBJECT.test(action.objectSource) || namesPath(action) || /^`[^`]+`/.test(action.objectSource)),
+    run: has(RUN_VERB, (action) => COMMAND_OBJECT.test(action.objectSource) || namesPath(action) || /^`[^`]+`/.test(action.objectSource)) ||
+      has(INSTALL_VERB, (action) => action.object.trim().length > 0),
     convert,
     documents,
     media,
@@ -748,6 +760,21 @@ export function planTask(input: TaskPlanInput): TaskPlan {
     input.resolvedResources ?? [],
   );
   const signals = readSignals(prose, resources, input.resolvedResources);
+  // The one exception to "prior turns never widen capability": a bare
+  // acknowledgement carries the user's own previous request forward, so
+  // "install X" → "downloaded" keeps the install capability instead of
+  // leaving the model with no tools and a "I can't access that" answer.
+  const continued = ACKNOWLEDGED_CONTINUATION.test(prose.trim())
+    ? input.priorRequests?.at(-1)?.trim()
+    : undefined;
+  if (continued) {
+    const priorProse = requestWithoutSelectors(requestProse(continued)).slice(0, 8_000);
+    const inherited = readSignals(priorProse, extractResources(priorProse));
+    for (const key of Object.keys(inherited) as (keyof Signals)[]) {
+      signals[key] = signals[key] || inherited[key];
+    }
+    resources.push(...extractResources(priorProse));
+  }
   // Prior text can continue a low-risk recommendation query, but it can never
   // grant web capability by itself. A current correction/reference marker is
   // required, preventing a stale restaurant question from making an unrelated

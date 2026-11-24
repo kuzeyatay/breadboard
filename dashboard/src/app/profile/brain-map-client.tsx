@@ -27,13 +27,11 @@ function scopeQuery(scopeKey: string): URLSearchParams {
     query.set("scope", "organization");
     query.set("organization", scopeKey);
   }
-  query.set("mode", "full");
   return query;
 }
 
 function rememberScope(scopeKey: string): void {
   const url = new URL(window.location.href);
-  url.searchParams.set("tab", "knowledge");
   if (scopeKey === "all") {
     url.searchParams.set("scope", "all");
     url.searchParams.delete("organization");
@@ -44,13 +42,7 @@ function rememberScope(scopeKey: string): void {
   window.history.replaceState(window.history.state, "", url);
 }
 
-export default function BrainMapClient({
-  initialScope,
-  onScopeChange,
-}: {
-  initialScope: string;
-  onScopeChange?: (scope: string) => void;
-}) {
+export default function BrainMapClient({ initialScope }: { initialScope: string }) {
   const router = useRouter();
   const [scopeKey, setScopeKey] = useState(() => normalizedScope(initialScope));
   const [graph, setGraph] = useState<BrainGraphResponse | null>(null);
@@ -124,11 +116,10 @@ export default function BrainMapClient({
 
   const changeScope = useCallback((nextScope: string) => {
     rememberScope(nextScope);
-    onScopeChange?.(nextScope);
     setRendererFailed(false);
     revisionRef.current = null;
     setScopeKey(nextScope);
-  }, [onScopeChange]);
+  }, []);
 
   if (loading && !graph) return <BrainMapSkeleton />;
   if (error && !graph) {

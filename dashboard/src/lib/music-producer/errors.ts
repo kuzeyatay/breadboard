@@ -19,6 +19,8 @@ export function musicError(error: unknown): {
     "fetch failed": "Could not reach ACE-Step. Check that the server is running and the endpoint URL is correct.",
   };
   if (connectionErrors[raw]) return { code: raw === "fetch failed" ? "provider_unreachable" : raw, message: connectionErrors[raw] };
+  if (raw === "provider_receipt_lost")
+    return { code: raw, message: "ACE-Step no longer has this track: the local music service restarted after it was submitted, and it keeps unfinished results only in memory. Regenerate to make it again." };
   if (raw === "provider_out_of_memory")
     return { code: raw, message: "ACE-Step reported GPU out of memory. Reduce the requested duration or free GPU capacity, then explicitly retry." };
   if (/[A-Za-z]:[\\/]|\/(?:Users|home|tmp|var)\/|Bearer |api.?key\s*[:=]/i.test(raw))

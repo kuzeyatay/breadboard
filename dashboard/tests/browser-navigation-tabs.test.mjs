@@ -56,8 +56,8 @@ test("the desktop tab store recovers when preload or its first state read arrive
 
 test("browser navigation coalesces its optimistic state with Chromium's loading event", () => {
   assert.match(tabManager, /const loadingChanged = !tab\.loading/);
-  assert.match(tabManager, /if \(suggestionsWereOpen\) this\.layout\(owner\)/);
-  assert.match(tabManager, /if \(loadingChanged \|\| suggestionsWereOpen \|\| faviconChanged\) this\.broadcast\(owner\)/);
+  // Chromium's echo of an address-bar navigation publishes nothing new, so only a real change broadcasts.
+  assert.match(tabManager, /if \(loadingChanged\) this\.broadcast\(owner\)/);
 });
 
 test("the caption strip draws the window's tabs and stays the drag handle", () => {
@@ -104,14 +104,15 @@ test("a tab is named after the place it shows, not the product", async () => {
   assert.equal(tabLabel("breadboard", at("/buzz")), "Organization");
   assert.equal(tabLabel("breadboard", at("/gardens/breadboard-dev")), "Breadboard dev");
   assert.equal(tabLabel("breadboard", at("/garden/electronic-circuits")), "Electronic circuits");
-  assert.equal(tabLabel("breadboard", at("/new-tab")), "New tab");
+  // Ctrl+T opens the combined home, which is the Terminal.
+  assert.equal(tabLabel("breadboard", at("/new-tab")), "Terminal");
   assert.equal(tabLabel("Quantum notes", at("/gardens/quantum")), "Quantum notes");
   assert.equal(describeTabUrl(at("/gardens/quantum")).kind, "workspace");
   assert.equal(describeTabUrl(at("/garden/quantum")).kind, "lessons");
   assert.equal(describeTabUrl(at("/plan")).kind, "plan");
   assert.equal(describeTabUrl(at("/pdf?src=%2Fapi%2Ffiles%2Fnotes.pdf")).kind, "pdf");
   assert.equal(tabLabel("notes.pdf", at("/pdf?src=%2Fapi%2Ffiles%2Fnotes.pdf")), "notes.pdf");
-  assert.equal(describeTabUrl("not a url").label, "New tab");
+  assert.equal(describeTabUrl("not a url").label, "Terminal");
 });
 
 test("Settings names both current and legacy desktop tabs consistently", async () => {
@@ -143,20 +144,16 @@ test("Ctrl+T opens on the places there are to go, not on a copy of the page", ()
   );
   assert.match(lifecycle, /setBrowserUrl\(new URL\(BROWSER_TAB_PATH, ready\.dashboardUrl\)/);
   assert.match(tabManager, /net\.fetch\(url, \{ redirect: "manual" \}\)/);
+  // /new-tab is the combined home (the Terminal) since 11-06: its places are the launcher's links and its search.
   const page = read("../src/app/new-tab/page.tsx");
-  assert.match(page, /title: "New tab — breadboard"/);
-  assert.match(page, /getClusters\(userId\)/);
-  const client = read("../src/app/new-tab/new-tab-client.tsx");
-  for (const href of ['"/dashboard"', '"/plan"', '"/buzz"', '"/settings"']) {
-    assert.ok(client.includes(href), `new tab offers ${href}`);
+  assert.match(page, /title: "Terminal — breadboard"/);
+  assert.match(page, /<DashboardPageShell combinedHome/);
+  assert.match(read("../src/app/dashboard/dashboard-page-shell.tsx"), /getClusters\(userId\)/);
+  const launcher = read("../src/app/new-tab/combined-home-launcher.tsx");
+  for (const href of ['"/plan"', '"/buzz"', '"/settings"']) {
+    assert.ok(launcher.includes(href), `the home offers ${href}`);
   }
-  assert.match(client, /\/gardens\/\$\{garden\.slug\}/);
-  assert.match(client, /\/garden\/\$\{garden\.slug\}/);
-  assert.match(
-    client,
-    /openBrowserInDesktop\(\{ replaceCurrent: true \}\)/,
-    "the Browser card turns this tab into the browser instead of opening another tab",
-  );
+  assert.match(read("../src/app/new-tab/new-tab-search.tsx"), /href: `\/gardens\/\$\{encodeURIComponent\(garden\.slug\)\}`/);
   assert.match(
     tabManager,
     /command\.replaceCurrent[\s\S]*?tab\.id === host\.activeId && tab\.contents\.id === sender\.id/,
@@ -170,25 +167,24 @@ test("Ctrl+T opens on the places there are to go, not on a copy of the page", ()
 });
 
 test("a new tab greets the user with a stable, randomly selected addressee", () => {
-  const page = read("../src/app/new-tab/page.tsx");
-  const client = read("../src/app/new-tab/new-tab-client.tsx");
+  const page = read("../src/app/dashboard/dashboard-page-shell.tsx");
+  const client = read("../src/app/new-tab/combined-home-launcher.tsx");
   const greeting = read("../src/app/new-tab/new-tab-greeting.tsx");
 
   assert.match(page, /pickNewTabAddressee/);
-  assert.match(client, /useNewTabAddressee\(initialAddressee, greetingOwnerKey\)/);
+  assert.match(client, /useNewTabAddressee\(data\.addressee, data\.greetingOwnerKey\)/);
   assert.match(client, /<NewTabGreeting addressee=\{addressee\}/);
   assert.match(greeting, /const PREFIX = "Where to, "/);
   assert.match(greeting, /useGreetingTypewriter\(target, target, /);
 });
 
 test("the app New tab shares the Browser home quote and dock", () => {
-  const page = read("../src/app/new-tab/page.tsx");
-  const client = read("../src/app/new-tab/new-tab-client.tsx");
+  const page = read("../src/app/dashboard/dashboard-page-shell.tsx");
+  const client = read("../src/app/new-tab/combined-home-launcher.tsx");
   const accessories = read("../src/app/browser/browser-home-accessories.tsx");
 
-  assert.match(client, /<BrowserHomeAccessories ownerKey=\{widgetOwnerKey\}/);
-  assert.match(client, /browser-home-widget-surface/);
-  assert.match(page, /widgetOwnerKey=\{\(email \|\| String\(userId\)\)\.trim\(\)\.toLowerCase\(\)\}/);
+  assert.match(client, /<BrowserHomeAccessories ownerKey=\{data\.widgetOwnerKey\}/);
+  assert.match(page, /widgetOwnerKey: \(userEmail \|\| String\(userId\)\)\.trim\(\)\.toLowerCase\(\)/);
   assert.match(accessories, /<BrowserDailyQuote ownerKey=\{ownerKey\}/);
-  assert.match(accessories, /<BrowserDock openConnections=/);
+  assert.match(accessories, /<BrowserDock [^>]*openConnections=/);
 });

@@ -169,6 +169,7 @@ test("the build entry point locks before resource admission and releases only ow
     // point has secured a lease. No Next build or provisioning runs in this test.
     fs.writeFileSync(path.join(scripts, "commit-preflight.mjs"), `
       import fs from 'node:fs';
+      export function dashboardBuildMemoryPlan() { return { heapMb: 8192, estimateMb: 11264 }; }
       export function assertWindowsCommitHeadroom() {
         const lease = JSON.parse(fs.readFileSync(new URL('../../.runtime/dashboard-build.lock.json', import.meta.url)));
         console.log('admitted:' + lease.pid);

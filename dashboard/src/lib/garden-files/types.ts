@@ -1,6 +1,6 @@
 /** Client-safe contracts for original files kept alongside a Garden's notes. */
-export type GardenFileViewer = "text" | "markdown" | "table" | "json" | "html" | "image" | "pdf" | "document" | "spreadsheet" | "presentation" | "audio" | "video" | "model" | "archive" | "binary";
-export type GardenFileEditor = "text" | "docx" | "cells" | "blocks" | "pdf";
+export type GardenFileViewer = "text" | "markdown" | "table" | "json" | "html" | "image" | "pdf" | "document" | "spreadsheet" | "presentation" | "audio" | "video" | "model" | "archive" | "binary" | "affine";
+export type GardenFileEditor = "text" | "docx" | "cells" | "blocks" | "pdf" | "affine";
 
 export interface FileCapabilities {
   viewer: GardenFileViewer;
@@ -55,6 +55,8 @@ export function gardenFileCapabilities(name: string, size = 0): FileCapabilities
   const textEditor = size <= GARDEN_FILE_TEXT_LIMIT ? "text" : null;
   const office = size <= GARDEN_FILE_OFFICE_LIMIT;
   const capability = (viewer: GardenFileViewer, mimeType: string, editor: GardenFileEditor | null = null, canIndex = false): FileCapabilities => ({ viewer, mimeType, editor, canIndex });
+  // AFFiNE page + whiteboard: a zip of the BlockSuite snapshot and its markdown, edited by /affine-editor.
+  if (ext === "affine") return capability("affine", "application/zip", office ? "affine" : null, false);
   if (ext === "pdf") return capability("pdf", "application/pdf", office ? "pdf" : null, true);
   if (ext === "docx") return capability("document", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", office ? "docx" : null, true);
   if (ext === "xlsx") return capability("spreadsheet", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", office ? "cells" : null, true);

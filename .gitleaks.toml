@@ -147,3 +147,27 @@ regexes = ['''^\s*output_key = "top10_diagrams"\s*$''']
 description = "Doory upstream snapshot: placeholder tokens in its tests, the RFC 6455 sample WebSocket key in CI, and a localStorage key name"
 targetRules = ["generic-api-key"]
 paths = ['''^doory/(\.github/workflows/ci\.yml|backend/apps/[^/]+/tests/.*|frontend/src/features/settings/ApiTokensSection\.test\.tsx|frontend/src/lib/contrast\.ts)$''']
+
+[[allowlists]]
+description = "AFFiNE upstream entitlement test key pair"
+targetRules = ["private-key"]
+condition = "AND"
+paths = ['''^affine/packages/backend/native/src/entitlement\.rs$''']
+regexTarget = "line"
+regexes = ['''TEST_PRIVATE_KEY''']
+
+[[allowlists]]
+description = "AFFiNE upstream expected upload token in a storage test"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^affine/packages/backend/native/src/runtime/object_storage/tests\.rs$''']
+regexTarget = "line"
+regexes = ['''^\s*assert_eq!\(token, "NXaxFbKQjOOnqo5ggDsuK1jf8w5LlM7tLRWRoj_EmtY"\);\s*$''']
+
+[[allowlists]]
+description = "Browser AI flag UI test session secret"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^dashboard/tests/browser-ai-flag-ui\.test\.mjs$''']
+regexTarget = "match"
+regexes = ['''aiflag-ui-test-secret-0123456789''']

@@ -9,6 +9,10 @@ import {
 import { authorizeRuntimeReference } from "@/lib/hermes/session-service.ts";
 import { getAgentRuntimeByKind } from "@/lib/agent-runtime/runtime.ts";
 import { recordAuditEvent } from "@/lib/hermes/runtime-store.ts";
+import {
+  addTerminalCommandRule,
+  takePendingTerminalCommand,
+} from "@/lib/hermes/terminal-command-rules.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -44,15 +48,26 @@ export async function POST(
       requestId,
       decision: decision as "once" | "always" | "reject",
     });
+    // "Always" on a terminal card saves a Codex-style prefix rule from the
+    // command the server refused, never from text the browser sends.
+    const pendingCommand = takePendingTerminalCommand(session.row.id);
+    const savedRule =
+      decision === "always" && pendingCommand
+        ? addTerminalCommandRule(userId, pendingCommand)
+        : null;
     recordAuditEvent({
       eventType: "permission.decided",
       runtimeSessionId: session.row.id,
       userId,
       gardenId: session.row.garden_id,
-      payload: { requestId, decision },
+      payload: {
+        requestId,
+        decision,
+        ...(savedRule ? { savedTerminalRule: savedRule.join(" ") } : {}),
+      },
     });
 
-    return NextResponse.json({ ok: true });
+    return NextResponse.json({ ok: true, ...(savedRule ? { savedRule } : {}) });
   } catch (error) {
     return apiErrorResponse(error);
   }

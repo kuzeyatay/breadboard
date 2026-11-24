@@ -14,6 +14,7 @@ import { readPdfAttachment } from "../src/lib/pdf-attachment-reader.ts";
 import * as gardenReading from "../src/lib/pdf-garden-reading.ts";
 import { ApiError } from "../src/lib/hermes/route-core.ts";
 import { isSpiceNetlistArtifact } from "../src/lib/netlist-viewer/format.ts";
+import { explainFailure } from "../src/lib/failure-explanations.ts";
 
 const STORE_ONLY_HEADER = "x-document-store-only";
 
@@ -210,6 +211,7 @@ test("failed response persistence retains the actionable cause and original part
     getActiveRuntimeRun: () => ({ started_at: new Date().toISOString() }),
     parseRuntimeRunDispatch: () => ({ clientMessageId: "turn-1" }),
     failAssistantMessage: input => written.push(input),
+    explainFailure,
   });
   persistAssistantOnce({ row: { id: 2, conversation_id: 3 } }, "Partial answer", [], [], [], {}, "failed", [], undefined, undefined,
     { code: "interrupted_turn", message: "The agent was interrupted. Retry with the saved attachment." });

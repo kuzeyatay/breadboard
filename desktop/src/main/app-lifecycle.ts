@@ -1265,31 +1265,43 @@ export class AppLifecycle {
           return this.retryRuntimeRoot();
         }
         const runtime = this.runtime;
-        const snapshot = runtime?.snapshot();
-        if (typeof serviceId !== "string" || !runtime || !snapshot)
+        const log = (message: string) =>
+          this.logs?.forService("desktop").write(`[desktop] service retry ${String(serviceId).slice(0, 64)}: ${message}`);
+        if (typeof serviceId !== "string" || !runtime || runtime.state !== "ready") {
+          log("refused: Runtime is not ready");
           return false;
-        const known = snapshot.services.some(
-          (status) =>
-            status.id === serviceId &&
-            ["failed", "resource-blocked", "installation-unavailable"].includes(
-              status.state,
-            ),
-        );
-        if (!known) return false;
+        }
+        // Judge against a fresh status, not the 2 s poll cache: a service that
+        // failed moments ago must be retryable from the Retry it was offered.
+        const snapshot = await runtime.status().catch(() => runtime.snapshot());
+        const current = snapshot?.services.find((status) => status.id === serviceId);
+        if (
+          !snapshot || !current ||
+          !["failed", "resource-blocked", "installation-unavailable"].includes(current.state)
+        ) {
+          log(`refused: service state is ${current?.state ?? "unknown"}`);
+          return false;
+        }
         this.lastRuntimeStatusSignature = null;
         this.setStartupState({
           phase: "starting",
           message: "Retrying",
           services: this.runtimeServices(snapshot),
         });
+        let accepted: boolean;
         try {
-          const result = await runtime.retryService(serviceId);
-          await this.applyRuntimeSnapshot(await runtime.status());
-          return result.accepted;
-        } catch {
+          accepted = (await runtime.retryService(serviceId)).accepted;
+        } catch (error) {
+          log(`failed: ${error instanceof Error ? error.message : String(error)}`);
           await this.refreshRuntimeStatus();
           return false;
         }
+        log(accepted ? "accepted" : "not accepted by Runtime");
+        // The retry already happened; a failed window refresh must not report it as refused.
+        await runtime.status()
+          .then((status) => this.applyRuntimeSnapshot(status))
+          .catch(() => this.refreshRuntimeStatus());
+        return accepted;
       },
     );
     ipcMain.handle(IPC_CHANNELS.openLogs, async () => {

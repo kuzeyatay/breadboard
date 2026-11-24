@@ -2884,6 +2884,23 @@ fn service_exit_disposition(
             ServiceLeaseReleaseReason::Failure,
             Some("Service process exhausted its enforced resource limit"),
         ),
+        // The supervisor gets 500 ms to hand back its terminal record; a busy
+        // runtime reader can miss that window during an idle or shutdown stop
+        // it asked for (exit 74). The owner reaped the supervisor before
+        // minting SUPERVISION_LOST, and its job object takes the tree with it,
+        // so the stop the runtime requested did happen. Recording it as a
+        // crash burned the restart budget and left on-demand services
+        // (voicebox, money-printer) failed until an explicit Retry.
+        (
+            ProcessExitClassification::SupervisorFailure,
+            _,
+            Some(ServiceStopCause::Idle | ServiceStopCause::Shutdown),
+        ) if tree_exit.failure().map(|failure| failure.code()) == Some("SUPERVISION_LOST") => (
+            ServiceLifecycleState::AvailableButStopped,
+            false,
+            ServiceLeaseReleaseReason::Cancellation,
+            None,
+        ),
         (ProcessExitClassification::SupervisorFailure, _, _) => (
             ServiceLifecycleState::Failed,
             true,
@@ -3234,6 +3251,26 @@ mod tests {
     use std::sync::{Arc, Barrier};
     use std::thread;
     use tempfile::tempdir;
+
+    #[test]
+    fn supervision_lost_during_a_requested_stop_is_a_clean_stop_not_a_crash() {
+        let (_directory, store) = store();
+        let lost = ProcessTreeExit::service_supervision_lost_for_test_in_scope(
+            store.generation_scope.clone(),
+            "search",
+            1,
+        );
+        for cause in [ServiceStopCause::Idle, ServiceStopCause::Shutdown] {
+            let (state, retry, _, error) = service_exit_disposition(&lost, Some(cause));
+            assert_eq!(state, ServiceLifecycleState::AvailableButStopped);
+            assert!(!retry);
+            assert_eq!(error, None);
+        }
+        // Without a stop the runtime asked for, a lost supervisor is still a failure.
+        let (state, _, _, error) = service_exit_disposition(&lost, None);
+        assert_eq!(state, ServiceLifecycleState::Failed);
+        assert_eq!(error, Some("Service process tree supervision failed"));
+    }
 
     fn store() -> (tempfile::TempDir, JobStore) {
         let directory = tempdir().unwrap();

@@ -144,10 +144,18 @@ function executeAutomationTool(
       return { schedules: schedules.list(userId).map((row) => presentScheduledChatJob(row)) };
     case "schedule_create": {
       const runAt = text(args.runAt) || null;
+      // Asking twice (or a scheduled run re-reading its own "every Monday…"
+      // prompt) must not stack identical schedules.
+      const prompt = text(args.prompt);
+      const cron = text(args.cron);
+      const existing = runAt ? undefined : schedules.list(userId).find((row) =>
+        row.enabled === 1 && row.cron_expression === cron && row.prompt.trim() === prompt &&
+        row.garden_slug === gardenSlug);
+      if (existing) return { schedule: presentScheduledChatJob(existing), alreadyExisted: true };
       const created = schedules.create(userId, {
-        prompt: text(args.prompt),
+        prompt,
         // A one-shot still needs a syntactically valid cron; runAt decides when.
-        cron: text(args.cron) || (runAt ? "0 0 * * *" : ""),
+        cron: cron || (runAt ? "0 0 * * *" : ""),
         oneShot: runAt !== null,
         runAt,
         surface: gardenSlug ? "garden_chat" : "dashboard_terminal",

@@ -20,7 +20,6 @@ const loadingSurfaces = [
   "components/speech-dictation-button.tsx",
   "components/garden-video-import.tsx",
   "components/hermes/dashboard-agent-terminal.tsx",
-  "components/hermes/inline-artifact-cards.tsx",
   "components/hermes/inline-deep-research-run.tsx",
   "components/hermes/inline-spotify-player.tsx",
   "buzz/components/message-row.tsx",

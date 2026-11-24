@@ -51,3 +51,10 @@ test("public Quartz cannot acquire PC access through delivery or YOLO flags", ()
     assert.equal(tools[name], false, name);
   }
 });
+
+test("a scheduled run offers no tool whose approval nobody can answer", () => {
+  assert.equal(turnApprovalPolicy({ surface: "dashboard_terminal", unattended: true }).interactiveApprovals, false);
+  // A saved standing approval still lets it act, as on the phone.
+  assert.equal(turnApprovalPolicy({ surface: "dashboard_terminal", unattended: true, savedYoloMode: true }).interactiveApprovals, true);
+  assert.equal(turnApprovalPolicy({ surface: "dashboard_terminal" }).interactiveApprovals, true);
+});

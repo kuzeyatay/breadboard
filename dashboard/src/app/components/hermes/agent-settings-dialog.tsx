@@ -11,6 +11,7 @@ import MusicProducerSetup from "@/app/components/agents/music-producer-setup";
 import dynamic from "next/dynamic";
 import { useEffect } from "react";
 import AgentRunDefaults from "@/app/components/agents/agent-run-defaults";
+import ServiceProblems from "@/app/components/agents/service-problems";
 import { findConfigurableAgent } from "@/lib/agent-settings/catalog.ts";
 
 // Several agents here also have setup only the user can authorize — Career Ops
@@ -121,6 +122,7 @@ export default function AgentSettingsDialog({
         </header>
 
         <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
+          <ServiceProblems />
           {agent.id === "career-ops" ? (
             <section className="space-y-2">
               <h3 className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--ink-muted)]">

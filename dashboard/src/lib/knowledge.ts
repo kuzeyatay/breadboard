@@ -3013,10 +3013,9 @@ export async function writeDocumentKnowledge({
     const sourceSlug = uniqueSlug(slugify(sourceTitle), usedSlugs);
     let sourceMediaUrl = "";
     if (sourceMedia) {
-      const extension = path.extname(sourceFileName).toLowerCase();
-      const safeExtension = /^\.[a-z0-9]{1,8}$/.test(extension)
-        ? extension
-        : ".bin";
+      // A YouTube source is named by its link, so the kept file's own extension is used.
+      const extension = [sourceFileName, sourceMedia.filePath].map(name => path.extname(name).toLowerCase()).find(ext => /^\.[a-z0-9]{1,8}$/.test(ext));
+      const safeExtension = extension ?? ".bin";
       const mediaAssetName = `${sourceSlug}-media-${sourceMedia.sha256.slice(0, 12)}${safeExtension}`;
       const mediaAssetDir = ensureKnowledgeDirectory(
         path.join(clusterDir, "assets"),

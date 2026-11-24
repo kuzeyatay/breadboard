@@ -32,7 +32,9 @@
 .media { display:grid; place-items:center; height:100%; padding:20px; }
 .media video { max-width:100%; max-height:100%; }
 .media audio { width:min(600px,100%); }
-.pdf,.pdf > div { height:100% !important; min-height:0 !important; }
+.pdf,.pdf > div { height:100% !important; min-height:0 !important; display:flex; flex-direction:column; }
+/* The viewer sizes itself with flex-1, so its wrapper must be a flex column or it collapses to its toolbar. */
+.pdf > div > main { flex:1 1 auto; min-height:0; }
 .unavailable { padding:32px 24px; color:var(--ink-muted, #777); font-size:14px; }
 .unavailable a { display:inline-block; margin-top:12px; text-decoration:underline; color:var(--ink, #333); }
 .error,.hint { font-size:12px; padding:10px 14px; margin:0; }
@@ -48,7 +50,20 @@
 .history span,.history strong { flex:1; }
 .history button { display:flex; gap:4px; align-items:center; }
 .saveStatus { padding:5px 14px; font-size:11px; color:var(--ink-muted, #777); border-top:1px solid var(--line, #ddd); }
-.overlay { position:fixed; z-index:22; border:1px solid var(--line, #ddd); border-radius:6px; overflow:hidden; }
+.overlay { position:fixed; z-index:22; border-left:1px solid var(--line, #ddd); overflow:hidden; }
+/* A viewer inside Quartz (PDF, player, video editor frame, Office editors) wears Quartz's own palette, so it
+   reads as part of the page: its ground, borders and accent, in both themes (quartz.config.ts). */
+.overlay {
+  --paper-bg:#e6f0e6; --paper-surface:#e6f0e6; --paper-raised:#eef5ee; --line:#bccfc2; --line-strong:#a6bdad;
+  --color-gray-950:#e6f0e6; --color-gray-900:#e6f0e6; --color-gray-800:#c9d8cd; --color-gray-700:#a6bdad;
+  --botanical:#4f6f68; --accent:#4f6f68;
+  background:var(--paper-bg);
+}
+:global(:root[data-theme="dark"]) .overlay {
+  --paper-bg:#18181a; --paper-surface:#18181a; --paper-raised:#222225; --line:#2c302d; --line-strong:#353d37;
+  --color-gray-950:#18181a; --color-gray-900:#18181a; --color-gray-800:#2c302d; --color-gray-700:#353d37;
+  --botanical:#91b7a1; --accent:#91b7a1;
+}
 .uploadStatus { position:fixed; z-index:60; bottom:14px; left:14px; max-width:min(420px,calc(100vw - 28px)); padding:10px 14px; border:1px solid var(--line, #ddd); border-radius:8px; background:var(--paper-surface, #fff); color:var(--ink, #262626); box-shadow:0 4px 20px #0002; font-size:12px; }
 .uploadStatus > div { display:flex; align-items:center; gap:10px; padding:3px 0; }
 .uploadStatus span { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -60,3 +75,28 @@
 .folderRow button { display:flex; align-items:center; gap:6px; }
 .empty { padding:30px 18px; color:var(--ink-muted, #777); font-size:13px; }
 @media(max-width:600px) { .toolbar { gap:3px; padding:7px; } .labeled { font-size:11px; } .title span { max-width:180px; } .action { flex-wrap:wrap; } .prose { padding:16px; } }
+
+.sourcePlayer { display:grid; place-items:center; margin:0 auto 20px; max-width:960px; }
+.sourcePlayer video { width:100%; max-height:70vh; border-radius:6px; background:#000; }
+.sourcePlayer audio { width:min(600px,100%); }
+
+.mediaSource { position:relative; height:100%; overflow:hidden; }
+.transcriptTab { position:absolute; inset:0 auto 0 0; z-index:3; display:flex; flex-direction:column; width:min(380px,48%); background:var(--paper-surface, #fafafa); border-right:1px solid var(--line, #ddd); box-shadow:8px 0 24px rgb(0 0 0 / .12); transform:translateX(-102%); transition:transform .22s cubic-bezier(.2,.8,.2,1); }
+.transcriptTab[data-open] { transform:none; }
+.transcriptTab header { display:flex; align-items:center; justify-content:space-between; padding:10px 12px; border-bottom:1px solid var(--line, #ddd); font-size:13px; }
+.transcriptTab header button { display:inline-flex; padding:4px; border:0; border-radius:5px; background:transparent; color:inherit; cursor:pointer; }
+.transcriptTab header button:hover { background:var(--paper-raised, #ececec); }
+.transcriptTab ol { flex:1; overflow:auto; margin:0; padding:6px; list-style:none; }
+.transcriptTab li button { display:grid; grid-template-columns:auto 1fr; gap:10px; width:100%; padding:6px 8px; border:0; border-radius:6px; background:transparent; color:inherit; text-align:left; font-size:13px; line-height:1.45; cursor:pointer; }
+.transcriptTab li button:hover { background:var(--paper-raised, #ececec); }
+.transcriptTab li button[aria-current] { background:color-mix(in srgb, var(--botanical, #578462) 18%, transparent); }
+.transcriptTab time { padding:1px 6px; border-radius:4px; background:var(--paper-raised, #ececec); color:var(--botanical, #578462); font:600 11px/1.6 var(--codeFont, ui-monospace, monospace); align-self:start; }
+.transcriptTab p { padding:16px; font-size:13px; color:var(--ink-muted, #777); }
+@media (prefers-reduced-motion: reduce) { .transcriptTab { transition:none; } }
+
+/* Save and notice lines float over the editor so they never shift its layout. */
+.viewer:has(> .saveStatus), .viewer:has(> .hint[role="status"]) { position: relative; }
+.saveStatus, .hint[role="status"] { position: absolute; left: 50%; bottom: 14px; z-index: 20; translate: -50% 0; margin: 0; padding: 6px 12px; border-radius: 999px; corner-shape: round;
+  background: var(--paper-raised, #f2f2f2); border: 1px solid var(--line, #ddd); box-shadow: 0 6px 18px rgb(0 0 0 / .14); pointer-events: none; white-space: nowrap; }
+.mediaSource > .prose { height:100%; overflow:auto; transition:margin-left .22s cubic-bezier(.2,.8,.2,1); }
+@media (min-width: 900px) { .mediaSource:has(> .transcriptTab[data-open]) > .prose { margin-left:min(380px,48%); } }

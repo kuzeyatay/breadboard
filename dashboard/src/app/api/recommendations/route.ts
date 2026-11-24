@@ -22,9 +22,11 @@ export async function POST(request: Request) {
     }
     const date = cleanRecommendationText(body.localDate, 10);
     const recommendations = await recommendationsForUser(userId, {
-      gardenSlug: cleanRecommendationText(body.gardenSlug, 180) || undefined,
-      pageTitle: cleanRecommendationText(body.pageTitle, 180) || undefined,
-      documentConversationId:cleanRecommendationText(body.documentConversationId,160) || undefined,
+      ...(body.surface === 'web-search' ? { surface: 'web-search' as const } : {
+        gardenSlug: cleanRecommendationText(body.gardenSlug, 180) || undefined,
+        pageTitle: cleanRecommendationText(body.pageTitle, 180) || undefined,
+        documentConversationId:cleanRecommendationText(body.documentConversationId,160) || undefined,
+      }),
       localDate: /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : undefined,
       localTime: cleanRecommendationText(body.localTime, 5) || undefined,
       timeZone: cleanRecommendationText(body.timeZone, 100) || undefined,

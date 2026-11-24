@@ -230,6 +230,23 @@ function sharedTerms(
     .slice(0, 4);
 }
 
+/** Longest shared title phrase, keeping terminology such as “channel-length
+ * modulation” together. Exclude numbering, boilerplate and filename suffixes. */
+function sharedTitlePhrase(a: string, b: string): string | undefined {
+  const tokens = (s: string) => s.toLocaleLowerCase().match(/[\p{L}][\p{L}\p{N}-]*/gu) ?? [];
+  const left = tokens(a), right = " " + tokens(b).join(" ") + " ";
+  const filler = new Set(["of","and","in","the","for","with","to","from","chapter","lecture","slides","recording","introduction","edition","pdf","part","transcript"]);
+  for (let n = Math.min(6,left.length); n >= 2; n--) {
+    for (let i = 0; i <= left.length-n; i++) {
+      const part = left.slice(i,i+n);
+      if (filler.has(part[0]) || filler.has(part[n-1])) continue;
+      if (part.filter(w => !filler.has(w) && !CROSS_GARDEN_EVIDENCE_STOP_WORDS.has(w)).length < 2) continue;
+      const phrase = part.join(" ");
+      if (right.includes(" " + phrase + " ")) return phrase;
+    }
+  }
+}
+
 function explanation(
   left: CrossGardenDocument,
   right: CrossGardenDocument,
@@ -240,12 +257,16 @@ function explanation(
 } {
   const concepts = sharedConcepts(left, right);
   const terms = sharedTerms(left, right, lexicalVectors);
-  const shared = [...concepts, ...terms.filter((term) => !concepts.includes(term))].slice(0, 5);
-  const because = shared.length > 0
-    ? ` Shared evidence includes ${shared.join(", ")}.`
-    : " Their latest semantic representations identify the same topic beyond either Garden's general subject.";
+  const names = new Intl.ListFormat("en", { style: "long", type: "conjunction" });
+  const termsOnly = terms.filter(term => !concepts.some(concept => concept.toLowerCase() === term.toLowerCase()));
+  const phrase = sharedTitlePhrase(left.label,right.label);
+  const text = phrase ? "Both pages discuss " + phrase + "." : concepts.length
+    ? "Both pages cover " + names.format(concepts.slice(0, 3)) + "."
+    : termsOnly.length
+      ? "Both pages use " + names.format(termsOnly.slice(0, 3).map(term => "“" + term + "”")) + "."
+      : "Their passages discuss similar ideas, even though they use different words.";
   return {
-    text: `“${left.label}” in ${left.gardenTitle} and “${right.label}” in ${right.gardenTitle} form a cross-Garden semantic match.${because} This link is recalculated from the latest Thought Topology builds.`,
+    text,
     evidence: [
       `Cross-Garden match: ${left.gardenTitle} ↔ ${right.gardenTitle}`,
       ...concepts.map((concept) => `Shared concept: ${concept}`),
@@ -358,8 +379,10 @@ export function buildCrossGardenEdges(
     const left = byId.get(candidate.source);
     const right = byId.get(candidate.target);
     if (!left || !right) return [];
-    const detail = explanation(left, right, lexicalVectors);
-    const [source, target] = left.id < right.id ? [left.id, right.id] : [right.id, left.id];
+    const [sourcePage, targetPage] = left.id < right.id ? [left, right] : [right, left];
+    const detail = explanation(sourcePage, targetPage, lexicalVectors);
+    const source = sourcePage.id;
+    const target = targetPage.id;
     return [{
       id: brainEdgeId(source, target, "related_to", "thought-topology"),
       source,

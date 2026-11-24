@@ -22,6 +22,7 @@ import { parseUnifiedWorkflowCommand } from "../src/lib/workflows/unified-comman
 import { renderUnifiedWorkflowGuidance } from "../src/lib/workflows/unified-guidance.ts";
 import { parseBrowserTerminalAccess } from "../src/lib/browser-terminal.ts";
 import { computerUseSkillChoices, renderSkillShortlistDirective } from "../src/lib/hermes/skill-shortlist.ts";
+import { renderConnectionShortlistDirective, shortlistConnections } from "../src/lib/hermes/connection-routing.ts";
 
 const prompt = "do max research on muscle hypertrophy, hjow its triggered, what needs to be done to achieve maximum muscle growth, how much and what muscle groups must be targeted for a lean and proportional physique, I want a lean physique like in the movies, have time until august 2027 but i am willing to be agressive in my diet, i am definetly skinny fat and 87kg, 183cm with 26,5 percent body fat estimate using the navy method. so i need a gym program to get me in shape and a diet with specified calories or how much calorie per day type of thing, i can also use creatine and proteine powder. however i am week like i can only curl like 6kg and can do like only 2 pushups?";
 const read = (file) => fs.readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8");
@@ -77,7 +78,7 @@ function request(superAgent, internalAgentContinuation = false) {
   }, "body"));
 }
 
-async function dispatch(payload, { title = 'New chat', orderIndex = 0, commandResolution = null, workflowContinuation = null, availableSkills = [] } = {}) {
+async function dispatch(payload, { title = 'New chat', orderIndex = 0, commandResolution = null, workflowContinuation = null, availableSkills = [], connectionCatalog = [] } = {}) {
   const captured = { audits: [], inventoryLoads: [], registry: [], shortlistCalls: 0, titlePrompts: [] };
   const conversation = { id: 266, public_id: "conv_regression", title, surface: "garden_chat", active_agency_agent_slug: null };
   const session = {
@@ -131,7 +132,7 @@ async function dispatch(payload, { title = 'New chat', orderIndex = 0, commandRe
     getAgentRuntimeByKind: () => ({ health: noop, applyCapabilityDecision: ({ decision }) => { captured.decision = decision; }, startRun: (input) => { captured.start = input; } }),
     connectedAppRegistryForTurn: async (input) => {
       captured.registry.push(input);
-      return { connectionNames: [], tools: {}, systemContext: "" };
+      return { connectionNames: [], tools: {}, systemContext: "", catalog: connectionCatalog };
     },
     connectedRepositoryForTurn: async () => null,
     persistCapabilityDecision: () => ({ id: 1 }), recordAuditEvent: (event) => captured.audits.push(event), markStatus: noop,
@@ -140,7 +141,7 @@ async function dispatch(payload, { title = 'New chat', orderIndex = 0, commandRe
     prepareDocumentContext: async () => ({ context: "", inlineAttachments: [] }),
     retrieveTerminalGardenGrounding: async () => ({ context: "" }),
     suppliedEvidenceText: empty, gardenInstructionsContext: empty, gardenSourceInventoryContext: async () => "",
-    composeMemoryContext: empty, renderSkillShortlistDirective, codexDriveDirective, codeWithoutRepositoryDirective, isCodeWritingRequest, gardenHasRepository: () => false, modelLaunchableRuntimeAgents, renderWatchVideoContext: empty,
+    composeMemoryContext: empty, renderSkillShortlistDirective, renderConnectionShortlistDirective, shortlistConnections, codexDriveDirective, codeWithoutRepositoryDirective, isCodeWritingRequest, gardenHasRepository: () => false, modelLaunchableRuntimeAgents, renderWatchVideoContext: empty,
     gardenTurnContext: empty, ...quartzSelection,
     composeHermesSystemPrompt: ({ stableAdditional, additional }) => [stableAdditional, additional].filter(Boolean).join("\n\n"),
     beginRuntimeRun: (input) => { captured.run = input; return { id: "run_regression" }; },
@@ -353,4 +354,19 @@ test("worker hand-back retains its continuation flag and delegation evidence", a
   assert.equal(result.shortlistCalls, 0);
   assert.equal(result.run.dispatch.capabilities.superAgent, true);
   assert.equal(result.run.dispatch.delegatedAgents[0].agentId, "max-research");
+});
+
+test("a Garden turn names the connections its request is about, in the order to try them", async () => {
+  const connectionCatalog = [
+    { slug: 'github', name: 'GitHub', tools: ['search_issues', 'create_issue', 'list_commits'] },
+    { slug: 'notion', name: 'Notion', tools: ['notion_search', 'notion_create_page'] },
+  ];
+  const ask = async (text) => (await dispatch({ ...request(false), messages: [{ role: 'user', content: text }] }, {
+    connectionCatalog, commandResolution: { userText: text, text, invocations: [] },
+  })).run.dispatch.system;
+  const routed = await ask('open an issue on github about the login crash');
+  assert.match(routed, /# relevant_connections/);
+  assert.ok(routed.includes('1. github (GitHub)'), 'GitHub is offered first');
+  assert.match(routed, /move to the next one/);
+  assert.doesNotMatch(await ask('thanks, that helps a lot'), /# relevant_connections/);
 });

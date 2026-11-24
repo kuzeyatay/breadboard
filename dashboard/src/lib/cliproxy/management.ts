@@ -10,13 +10,14 @@ import {
   type CliproxyAccount,
 } from "./config.ts";
 import {
-  CLAUDE_CODE_ACCOUNT_FILE,
+  claudeProfileFile,
+  claudeProfileId,
   CLAUDE_CODE_MODELS,
   isClaudeCodeLoginComplete,
   isClaudeCodeLoginState,
   isClaudeCodeModel,
   linkClaudeCodeLogin,
-  logoutClaudeCode,
+  changeClaudeProfile,
   readClaudeCodeStatus,
 } from "../claude-code.ts";
 import { RuntimeJobControlError } from "../supervisor-control.ts";
@@ -104,9 +105,9 @@ async function managementFetch(
 
 export interface CliproxyLoginStart {
   provider: string;
-  url: string;
+  url: string | null;
   state: string;
-  flow: "redirect" | "device";
+  flow: "redirect" | "device" | "local";
   userCode?: string;
   expiresIn?: number;
   interval?: number;
@@ -118,21 +119,14 @@ export async function startLogin(
   providerId: string,
   signal?: AbortSignal,
 ): Promise<CliproxyLoginStart> {
+  signal?.throwIfAborted();
   const spec = cliproxyProvider(providerId);
   if (!spec) throw new CliproxyRequestError(400, "Unknown subscription provider.");
 
   if (spec.id === "claude") {
     try {
-      const linked = await linkClaudeCodeLogin(userId, signal);
-      return {
-        provider: spec.id,
-        // The settings UI requires a safe URL for every redirect flow. Linking
-        // itself is already complete; this page only lets the user inspect the
-        // Claude account whose CLI-owned credential Breadboard detected.
-        url: "https://claude.ai/settings/profile",
-        state: linked.state,
-        flow: "redirect",
-      };
+      const linked = await linkClaudeCodeLogin(userId);
+      return { provider: spec.id, url: null, state: linked.state, flow: "local" };
     } catch (error) {
       if (isClaudeRuntimeAuthorityError(error)) throw error;
       throw new CliproxyRequestError(
@@ -176,9 +170,10 @@ export async function isLoginComplete(
   state: string,
   signal?: AbortSignal,
 ): Promise<boolean> {
+  signal?.throwIfAborted();
   if (!state.trim()) return false;
   if (isClaudeCodeLoginState(state)) {
-    return isClaudeCodeLoginComplete(userId, state, signal);
+    return isClaudeCodeLoginComplete(userId, state);
   }
   try {
     const payload = (await managementFetch(
@@ -212,9 +207,10 @@ export async function deleteAccount(
   signal?: AbortSignal,
 ): Promise<void> {
   const name = file.trim();
-  if (name === CLAUDE_CODE_ACCOUNT_FILE) {
+  const profile = claudeProfileId(name);
+  if (profile) {
     try {
-      await logoutClaudeCode(userId, signal);
+      await changeClaudeProfile(userId, "logout", profile, signal);
       return;
     } catch (error) {
       if (isClaudeRuntimeAuthorityError(error)) throw error;
@@ -246,12 +242,15 @@ export async function deleteAccount(
  * enables the chosen file first, so a failure part-way leaves the provider
  * with at least one credential serving, and then disables its siblings.
  *
- * Claude is signed in through Claude Code and holds one account, which is
- * always the active one; there is nothing to toggle there.
+ * Claude profile preferences are handled by its account worker.
  */
-export async function activateAccount(file: string): Promise<void> {
+export async function activateAccount(file: string, userId?: number, signal?: AbortSignal): Promise<void> {
   const name = file.trim();
-  if (name === CLAUDE_CODE_ACCOUNT_FILE) return;
+  const profile = claudeProfileId(name);
+  if (profile) {
+    if (!userId) throw new CliproxyRequestError(401, "Sign in to switch Claude accounts.");
+    return changeClaudeProfile(userId, "activate", profile, signal);
+  }
   if (
     !name ||
     name !== basename(name) ||
@@ -384,6 +383,7 @@ export async function listModels(userId: number, signal?: AbortSignal): Promise<
 
 export interface CliproxyStatus {
   installed: boolean;
+  claudeInstalled: boolean;
   running: boolean;
   baseUrl: string;
   providers: Array<{
@@ -428,15 +428,13 @@ export async function readStatus(userId: number, signal?: AbortSignal): Promise<
   }
 
   const claudeStatus = await claudeStatusPromise;
-  if (claudeStatus.loggedIn) {
+  const serving = claudeStatus.accounts.find(account => account.resetAt <= Date.now());
+  for (const [index, profile] of claudeStatus.accounts.entries()) {
     accounts.push({
-      provider: "claude",
-      label: "Claude",
-      vendorLabel: "Anthropic",
-      file: CLAUDE_CODE_ACCOUNT_FILE,
-      account: claudeStatus.email ?? claudeStatus.subscriptionType ?? "Signed in",
-      connectedAt: null,
-      active: true,
+      provider: "claude", label: "Claude", vendorLabel: "Anthropic",
+      file: claudeProfileFile(profile.id), account: profile.email ?? "Signed in",
+      connectedAt: profile.connectedAt, active: serving?.id === profile.id,
+      preferred: index === 0, resetAt: profile.resetAt,
     });
   }
 
@@ -447,6 +445,7 @@ export async function readStatus(userId: number, signal?: AbortSignal): Promise<
 
   return {
     installed,
+    claudeInstalled: claudeStatus.installed,
     running,
     baseUrl: cliproxyBaseUrl(),
     providers: CLIPROXY_PROVIDERS.map((provider) => ({

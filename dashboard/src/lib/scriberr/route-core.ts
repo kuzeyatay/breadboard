@@ -277,7 +277,8 @@ export async function handleCreateVideoTranscription(
       const url = body.youtubeUrl ?? body.url;
       retranscribe = body.retranscribe === true;
       analysis = body.analysis === "watch" ? "watch" : "transcript";
-      retainMedia = body.retainMedia !== false;
+      // A link keeps its video only when asked ("Keep the media files"): it is a download of its own.
+      retainMedia = body.retainMedia === true;
       if (body.video !== undefined || body.media !== undefined) {
         throw new VideoTranscriptionError("invalid_input", {
           userMessage: "Media uploads must use multipart/form-data.",

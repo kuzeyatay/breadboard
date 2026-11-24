@@ -262,8 +262,7 @@ test("activating an account enables it before disabling its siblings", async () 
       { name: "xai-two.json", disabled: true },
     ],
   );
-  // Another vendor is not touched, and the Claude Code account has no toggle.
-  await management.activateAccount(claudeCode.CLAUDE_CODE_ACCOUNT_FILE);
+  await assert.rejects(() => management.activateAccount(claudeCode.CLAUDE_CODE_ACCOUNT_FILE), /Sign in/);
   await assert.rejects(
     () => management.activateAccount("../escape.json"),
     /not a credential this panel manages/,
@@ -499,22 +498,12 @@ test("each vendor is offered once, by the account list's rows", () => {
   assert.doesNotMatch(accounts, />\s*Refresh\s*</);
 });
 
-test("a single-account vendor shows but disables the second-account action", () => {
-  // Claude's credential belongs to the Claude Code CLI, which keeps a single
-  // login. The row keeps the same action layout as every provider, but does not
-  // pretend that clicking Add another can create a sibling credential.
-  assert.equal(config.cliproxyProvider("claude").singleAccount, true);
-  for (const id of ["antigravity", "kimi", "xai"]) {
-    assert.notEqual(config.cliproxyProvider(id).singleAccount, true, id);
-  }
-
-  const management = source("src/lib/cliproxy/management.ts");
-  assert.match(management, /singleAccount: provider\.singleAccount === true/);
-
-  const accounts = source("src/app/components/settings-accounts.tsx");
-  assert.match(accounts, /provider\?\.singleAccount !== true/);
-  assert.match(accounts, /disabled=\{!supportsMultiple \|\| busy !== null \|\| pendingSignIn\}/);
-  assert.match(accounts, /supports one account at a time/);
+test("Claude accounts support adding and selecting a named CLI profile", () => {
+  assert.notEqual(config.cliproxyProvider("claude").singleAccount, true);
+  const id = "9c8f8a56-7b7e-48c4-835e-0aa256c0df0b";
+  assert.equal(claudeCode.claudeProfileId(claudeCode.claudeProfileFile(id)), id);
+  assert.equal(claudeCode.claudeProfileId(claudeCode.CLAUDE_CODE_ACCOUNT_FILE), "default");
+  assert.equal(claudeCode.claudeProfileId("claude-code-profile-../foo.json"), null);
 });
 
 test("connectedness is stated once per page, by the account list's dots", () => {

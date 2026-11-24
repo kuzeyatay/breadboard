@@ -86,6 +86,7 @@ const KNOWLEDGE_TOOLS = [
   "garden_get_recent_events",
   "garden_list_files",
   "garden_save_note",
+  "garden_save_file",
   "garden_decide_proposals",
   "garden_create_folder",
   "garden_move_page",

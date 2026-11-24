@@ -35,6 +35,8 @@ test('typed predictions append with Tab, cancel safely, and wrap with the real c
       import {createRoot} from 'react-dom/client';
       import {useSentenceCompletion} from '@/app/components/use-sentence-completion';
       import PromptSuggestionOverlay from '@/app/components/prompt-suggestion-overlay';
+      import SuggestionInfo from '@/app/components/suggestion-info';
+      import {splitMentions,mentionQueryAt} from '@/lib/bots/mentions';
       import {composerSegments} from '@/lib/composer-links';
       import {splitLeadingCommandTokens} from '@/app/components/hermes/command-text';
       ${constants}
@@ -45,6 +47,7 @@ test('typed predictions append with Tab, cancel safely, and wrap with the real c
         const promptSuggestion={text:null,dismiss:()=>{},handleKeyDown:()=>false};
         const internalTextareaRef=useRef(null),commandBackdropRef=useRef(null);
         const slashCommandMenuRef=useRef(null),commandHubRef=useRef(null),addMenuRef=useRef(null);
+        const botMentionMenuRef=useRef(null),setMentionQuery=()=>{};
         slashCommandMenuRef.current={handleKeyDown:event=>{if(state.menu&&event.key==='Tab'){event.preventDefault();window.menuAccepted=true;return true;}return false;}};
         const pendingWorkflowPrompt=null,setPendingWorkflow=()=>{},showSlashCommands=false;
         const menuSearch=null,setMenuSearch=()=>{};
@@ -101,6 +104,12 @@ test('typed predictions append with Tab, cancel safely, and wrap with the real c
   await expect(ghost).toHaveText(responseText);
   assert.equal(requests.length, 1, 'typing is debounced');
   assert.equal(requests[0].draft, 'Can you explain');
+  const explanation = page.getByRole('dialog', { name: 'Why this suggestion?' });
+  await page.getByRole('button', { name: 'Why this suggestion?' }).click();
+  await expect(explanation).toContainText('sentence you started typing');
+  await expect(textarea).toBeFocused();
+  await textarea.press('Escape');
+  await expect(explanation).toHaveCount(0);
   await expect(textarea).toHaveValue('Can you explain');
   await textarea.pressSequentially(' how');
   await expect(ghost).toHaveText(' an RLC circuit works?');

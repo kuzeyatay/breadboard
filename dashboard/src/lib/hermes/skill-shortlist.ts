@@ -159,7 +159,7 @@ export function renderSkillShortlistDirective(
   if (shortlist.length === 0) return "";
   return [
     "# relevant_skills",
-    "Reviewed skills available for this turn. None is in play yet. When one covers the task better than a procedure of your own, call `skill_open` with its slug, read the guidance, and follow it before acting; open more than one only when the work spans them. Discover deferred tools with tool_search. When none fits, ignore this section — do not mention it, list it, or explain why you did not use it.",
+    "Reviewed skills available for this turn. None is in play yet. When one covers the task better than a procedure of your own, call `skill_open` with its slug, read the guidance, and follow it before acting; open more than one only when the work spans them. If the skill you opened cannot complete the task, or its tool fails, open the next one that fits instead of stopping. Discover deferred tools with tool_search. When none fits, ignore this section — do not mention it, list it, or explain why you did not use it.",
     ...(shortlist.some(skill => skill.slug === "breadboard-use" || skill.slug === "computer-use") ? [
       "Computer-control skills listed here are possible instruments, not instructions to operate anything: breadboard-use controls Breadboard pages and its built-in browser; computer-use operates another native app when a direct tool cannot complete the task.",
     ] : []),

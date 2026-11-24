@@ -35,3 +35,7 @@
 .versionMenu button[aria-current] { font-weight: 600; }
 .versionMenu small { color: var(--ink-muted); font-size: 11px; }
 .versionMenu span, .versionMenu small { white-space: nowrap; }
+
+/* In a Garden sidebar the archive sits on the sidebar's ground: no cream panel behind its controls. */
+.archive[data-in-sidebar] .listHeading select { background: transparent; }
+.archive[data-in-sidebar] .filters button[aria-pressed="true"] { background: color-mix(in srgb, var(--botanical) 10%, transparent); }

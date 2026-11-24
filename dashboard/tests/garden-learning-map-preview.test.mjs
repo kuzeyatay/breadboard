@@ -14,7 +14,7 @@ test("the learning map owns the single Explore action", () => {
   const workspace = read("src/app/gardens/[clusterSlug]/workspace-client.tsx");
 
   assert.match(graph, />\s*Explore\s*</);
-  assert.match(graph, /aria-label="Explore"/);
+  assert.match(graph, /className="absolute bottom-2 right-2"\s+aria-label="Explore"/);
   assert.match(
     graph,
     /import LinkContextMenu from ['"]\.\/link-context-menu['"]/,
@@ -94,7 +94,9 @@ test("the Quartz preview preserves the browser host and reports real canvas read
   assert.match(graph, /style=\{\{ height: previewHeight \}\}/);
   assert.match(graph, /new ResizeObserver\(resizePreview\)/);
   assert.doesNotMatch(graph, /block h-64/);
-  assert.match(graph, /pointer-events-none/);
+  const previewFrame = graph.match(/<iframe\b[^>]*\btitle="Garden learning map preview"[\s\S]*?\/>/)?.[0];
+  assert.ok(previewFrame);
+  assert.doesNotMatch(previewFrame, /pointer-events-none/);
   assert.match(graph, /colorScheme: previewTheme \?\? 'light'/);
   assert.match(
     graph,

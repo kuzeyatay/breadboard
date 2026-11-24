@@ -295,6 +295,7 @@
   width: 6px;
   height: 6px;
   border-radius: 50%;
+  corner-shape: round;
 }
 
 .gardenInfo {
@@ -472,6 +473,7 @@
 
 .inlineCompletion {
   position: absolute;
+  z-index: 1;
   inset: 0;
   display: flex;
   align-items: center;
@@ -485,6 +487,10 @@
 
 .inlineTyped {
   color: transparent;
+}
+
+.searchField > [data-prompt-suggestion] {
+  padding-inline: 0;
 }
 
 .inlineCompletion kbd {

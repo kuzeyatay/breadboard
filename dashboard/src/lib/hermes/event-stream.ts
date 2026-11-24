@@ -1,3 +1,4 @@
+import { explainFailure } from "../failure-explanations.ts";
 import { appendWeatherToolDisplays } from "../weather/tool-display.ts";
 import { isBareProviderError } from "../provider-error.ts";
 // Shared SSE relay: turns an authorized runtime session's Hermes event
@@ -162,7 +163,7 @@ function persistAssistantOnce(
         status: runtimeStatus === "aborted" ? "aborted" : "failed",
         content,
         metadata,
-        error: failure?.message ?? (runtimeStatus === "aborted"
+        error: (failure?.message ? explainFailure(failure.message) : undefined) ?? (runtimeStatus === "aborted"
           ? "Response stopped."
           : "The agent stopped before delivering a complete response. Retry this response with its saved attachments."),
         // The turn burned these tokens whether or not it ended well, and the
@@ -1438,8 +1439,7 @@ function driveSessionEventPump(
           payload: {
             code: resourceFailure?.code ?? "stream_error",
             message:
-              resourceFailure?.message ??
-              (error instanceof Error ? error.message : "stream error"),
+              resourceFailure?.message ?? explainFailure(error, "The answer stream failed."),
             recoverable: !resourceFailure,
           },
         });

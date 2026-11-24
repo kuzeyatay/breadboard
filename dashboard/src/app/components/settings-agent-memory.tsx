@@ -325,7 +325,6 @@ export default function SettingsAgentMemory() {
 
   return (
     <div className="space-y-4">
-      <LearnedContextSettings />
       <section className="neu-surface-subtle space-y-3 rounded-2xl border border-[var(--line)] bg-[var(--paper-surface)] p-4">
         <div className="flex flex-wrap items-start gap-3">
           <div>
@@ -696,6 +695,8 @@ export default function SettingsAgentMemory() {
           {error}
         </p>
       ) : null}
+
+      <LearnedContextSettings />
     </div>
   );
 }

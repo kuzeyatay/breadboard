@@ -135,7 +135,7 @@ test("the permission handshake is symmetric between plugin and route", () => {
   assert.ok(route.includes("body.permissionGranted === true"));
 });
 
-test("each recorded day keeps a summary that outlives the engine's two weeks", async () => {
+test("days Recall deleted before it stopped deleting answer from stored summaries", async () => {
   const { default: Database } = await import("better-sqlite3");
   const { storeRecallDailySummaries, recallEarlierDays } = await import("../src/lib/recall/daily-summaries.ts");
   const db = new Database(":memory:");
@@ -150,13 +150,16 @@ test("each recorded day keeps a summary that outlives the engine's two weeks", a
   assert.equal(asked.length, 13, "every finished day the engine still holds is asked for once");
   assert.equal(stored, 7, "days with nothing captured are not stored");
   assert.equal(await storeRecallDailySummaries(db, client, now), 0);
-  // A month on, the engine holds none of it; the stored days answer instead.
+  assert.equal(db.prepare("SELECT typeof(summary) AS type FROM recall_daily_summaries LIMIT 1").get().type, "blob");
+  db.prepare("UPDATE recall_daily_summaries SET summary=? WHERE day='2026-11-03'")
+    .run(JSON.stringify({ apps: [{ name: "Code" }], total_active_minutes: 30, total_frames: 900 }));
+  // Days from before Recall stopped deleting answer from their summaries.
   const later = new Date(2026, 11, 16, 15, 0);
   const days = recallEarlierDays(db, "2026-11-01", "now", later);
-  assert.deepEqual(days.map((entry) => entry.day), ["2026-11-03", "2026-11-05", "2026-11-07", "2026-11-09", "2026-11-11", "2026-11-13", "2026-11-15"]);
+  assert.deepEqual(days.map((entry) => entry.day), ["2026-11-03", "2026-11-05", "2026-11-07", "2026-11-09"]);
   assert.deepEqual(Object.keys(days[0].summary).sort(), ["apps", "total_active_minutes", "total_frames"]);
-  // Days the engine still holds in full are left to the engine.
-  assert.equal(recallEarlierDays(db, "14d ago", "now", now).length, 0);
+  // From then on the engine holds every day in full.
+  assert.equal(recallEarlierDays(db, "2026-11-11", "now", later).length, 0);
   assert.equal(recallEarlierDays(db, "whenever", "now", later).length, 0);
 });
 
@@ -173,13 +176,15 @@ test("engine arguments carry the privacy choices through to the recorder", () =>
   );
   assert.equal(args[0], "record");
   assert.ok(args.includes("--disable-audio"), "audio off must reach the recorder");
-  assert.deepEqual(args.slice(args.indexOf("--retention-days"), args.indexOf("--retention-days") + 4),
-    ["--retention-days", "14", "--retention-mode", "all"], "recordings must not be kept forever");
+  assert.deepEqual(args.slice(args.indexOf("--retention-days"), args.indexOf("--retention-days") + 2),
+    ["--retention-days", "0"], "Recall never deletes; compact-history.ts shrinks past data instead");
+  assert.ok(!args.includes("--retention-mode"));
   // The Runtime starts the recorder from the manifest, not from this function.
   const launch = JSON.parse(fs.readFileSync(path.join(repoRoot, "desktop", "runtime-v2", "manifests", "services.json"), "utf8"))
     .services.find((service) => service.id === "recall").launchProfiles[0].arguments.map((argument) => argument.value);
-  assert.deepEqual(launch.slice(launch.indexOf("--retention-days"), launch.indexOf("--retention-days") + 4),
-    ["--retention-days", "14", "--retention-mode", "all"], "the manifest must carry the same retention");
+  assert.deepEqual(launch.slice(launch.indexOf("--retention-days"), launch.indexOf("--retention-days") + 2),
+    ["--retention-days", "0"], "the manifest must carry the same retention");
+  assert.ok(!launch.includes("--retention-mode"));
   // One flag per exclusion, each as its own argv item (never shell-joined).
   const flags = args.filter((arg) => arg === "--ignored-windows");
   assert.equal(flags.length, 2);

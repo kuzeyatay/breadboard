@@ -1752,15 +1752,7 @@
             },
             {
               "kind": "literal",
-              "value": "14"
-            },
-            {
-              "kind": "literal",
-              "value": "--retention-mode"
-            },
-            {
-              "kind": "literal",
-              "value": "all"
+              "value": "0"
             },
             {
               "kind": "runtime-arguments",

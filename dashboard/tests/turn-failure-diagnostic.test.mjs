@@ -4,6 +4,7 @@ import test from "node:test";
 import ts from "typescript";
 import { unexpectedErrorDiagnostic } from "../src/lib/hermes/error-diagnostic.ts";
 import { ApiError, describeError } from "../src/lib/hermes/route-core.ts";
+import { FAILURE_EXPLANATIONS } from "../src/lib/failure-explanations.ts";
 
 test("stack diagnostics retain compiled code positions without the payload or private paths", () => {
   const error = new RangeError("private PDF text and bearer token");
@@ -76,7 +77,7 @@ test("a PDF preparation crash is recorded and the same attachment can be retried
   }), { params: Promise.resolve({ sessionId: "conv_pdf" }) });
   const failed = await send(false);
   assert.equal(failed.status, 500);
-  assert.deepEqual(await failed.json(), { error: "Internal server error" });
+  assert.deepEqual(await failed.json(), { error: FAILURE_EXPLANATIONS.server_error });
   assert.equal(audits[0].eventType, "conversation.turn_failed");
   assert.equal(audits[0].payload.kind, "RangeError");
   assert.equal(audits[0].payload.clientMessageId, "original-turn");

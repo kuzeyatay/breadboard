@@ -2,25 +2,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  artifactNodeId,
   brainEdgeId,
-  memoryNodeId,
+  knowledgeNodeId,
   organizationPublicId,
 } from "../src/lib/profile/brain-graph-ids.ts";
 import {
-  mergeBrainGraphResponse,
   normalizeBrainGraph,
   safeBrainHref,
 } from "../src/lib/profile/brain-graph-normalize.ts";
 import { brainGraphRevision } from "../src/lib/profile/brain-graph-revision.ts";
-import { adaptBrainGraph } from "../src/lib/quartz-brain-graph/adapter.ts";
-import {
-  graphSearchMatches,
-  quartzFocusState,
-  quartzLabelAlpha,
-  quartzLayoutStorageKey,
-} from "../src/lib/quartz-brain-graph/state.ts";
-import { quartzBrainNodeStyle } from "../src/lib/quartz-brain-graph/theme.ts";
 
 function node(id, kind = "page", extra = {}) {
   return {
@@ -45,42 +35,13 @@ function edge(id, source, target, extra = {}) {
   };
 }
 
-function response(nodes, edges, revision = "brain_a") {
-  return {
-    revision,
-    layoutKey: "layout_private",
-    generatedAt: "2026-01-01T00:00:00.000Z",
-    scope: { kind: "personal" },
-    nodes,
-    edges,
-    counts: {},
-    truncated: false,
-    warnings: [],
-    scopeOptions: [{ id: "personal", kind: "personal", label: "Personal" }],
-    capabilities: {
-      buzz: true,
-      thoughtTopology: true,
-      organization: true,
-      expansion: true,
-      pathFinding: true,
-    },
-    diagnostics: {
-      buildMs: 1,
-      adapterMs: {},
-      overviewNodeCount: nodes.length,
-      overviewEdgeCount: edges.length,
-      truncated: false,
-    },
-  };
-}
 
 test("opaque IDs are stable, namespaced, and do not reveal numeric rows", () => {
   process.env.BRAIN_GRAPH_ID_SECRET = "deterministic-test-secret";
   assert.equal(organizationPublicId(42), organizationPublicId(42));
   assert.notEqual(organizationPublicId(42), organizationPublicId(43));
   assert.doesNotMatch(organizationPublicId(42), /42/);
-  assert.doesNotMatch(memoryNodeId(987654), /987654/);
-  assert.equal(artifactNodeId("art_public"), "artifact:art_public");
+  assert.equal(knowledgeNodeId("alpha", "page", "a"), "garden:alpha:page:a");
   assert.equal(
     brainEdgeId("a", "b", "links_to", "canonical"),
     brainEdgeId("a", "b", "links_to", "canonical"),
@@ -114,7 +75,6 @@ test("normalization merges provenance, sanitizes URLs, prunes dangling edges, an
         ],
       },
     ],
-    { maxNodes: 20, maxEdges: 20 },
   );
   const merged = normalized.nodes.find((entry) => entry.id === "a");
   assert.deepEqual(new Set(merged.origins), new Set(["canonical", "gbrain-derived"]));
@@ -126,20 +86,13 @@ test("normalization merges provenance, sanitizes URLs, prunes dangling edges, an
   assert.ok((merged.metrics.importance ?? 0) > 0);
 });
 
-test("caps are deterministic and always leave an endpoint-closed graph", () => {
-  const nodes = Array.from({ length: 12 }, (_, index) =>
-    node(`n${index}`, index === 0 ? "user" : "page", {
-      updatedAt: `2026-01-${String(index + 1).padStart(2, "0")}T00:00:00.000Z`,
-    }),
-  );
+test("the Knowledge map is never cut off: every node and edge survives normalization", () => {
+  const nodes = Array.from({ length: 5_000 }, (_, index) => node(`n${index}`));
   const edges = nodes.slice(1).map((entry, index) => edge(`e${index}`, "n0", entry.id));
-  const normalized = normalizeBrainGraph([{ nodes, edges }], { maxNodes: 5, maxEdges: 3 });
-  const ids = new Set(normalized.nodes.map((entry) => entry.id));
-  assert.equal(normalized.nodes.length, 5);
-  assert.equal(normalized.edges.length, 3);
-  assert.equal(normalized.truncated, true);
-  assert.ok(normalized.edges.every((entry) => ids.has(entry.source) && ids.has(entry.target)));
-  assert.ok(ids.has("n0"), "the viewer anchor survives importance selection");
+  const normalized = normalizeBrainGraph([{ nodes, edges }]);
+  assert.equal(normalized.nodes.length, 5_000);
+  assert.equal(normalized.edges.length, 4_999);
+  assert.equal("truncated" in normalized, false);
 });
 
 test("safe navigation accepts only allowlisted internal Breadboard routes", () => {
@@ -165,37 +118,3 @@ test("revision is order independent and changes only with visible graph material
   );
 });
 
-test("Breadboard response adapts to Quartz data without changing authorization semantics", () => {
-  const source = response(
-    [
-      node("a", "garden", { gardenId: "garden:a", metrics: { importance: 0.8 } }),
-      node("b", "page", { gardenId: "garden:a", subtitle: "Needle phrase" }),
-    ],
-    [edge("ab", "a", "b")],
-  );
-  const graph = adaptBrainGraph(source);
-  assert.equal(graph.nodes[0].cluster, "garden:a");
-  assert.equal(graph.links[0].metadata, source.edges[0]);
-  assert.deepEqual(quartzFocusState(graph, "a").activeNodes, new Set(["a", "b"]));
-  assert.deepEqual(graphSearchMatches(graph, "needle"), new Set(["b"]));
-  assert.ok(quartzLabelAlpha(3) > quartzLabelAlpha(0.5));
-  assert.equal(quartzLabelAlpha(0.25, { selected: true }), 1);
-  assert.ok(quartzBrainNodeStyle("user").radius > quartzBrainNodeStyle("page").radius);
-  assert.match(
-    quartzLayoutStorageKey("private", "revision", "personal"),
-    /thought-topology-layout:v2:private:personal$/,
-  );
-});
-
-test("incremental expansion merges nodes and removes dangling expansion edges", () => {
-  const current = response([node("a", "garden")], []);
-  const expansion = response(
-    [node("a", "garden"), node("b", "page")],
-    [edge("ab", "a", "b"), edge("bad", "b", "hidden")],
-    "brain_b",
-  );
-  const merged = mergeBrainGraphResponse(current, expansion);
-  assert.deepEqual(merged.nodes.map((entry) => entry.id), ["a", "b"]);
-  assert.deepEqual(merged.edges.map((entry) => entry.id), ["ab"]);
-  assert.equal(merged.revision, "brain_b");
-});

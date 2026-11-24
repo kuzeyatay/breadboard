@@ -502,7 +502,7 @@ function bindCreateFolderResultListener() {
           relPath?: string
           complete?: boolean
           folders?: Array<{ folder: string; name: string }>
-          documents?: Array<{ relPath: string; title: string; type?: string; sourceType?: string }>
+          documents?: Array<{ relPath: string; title: string; type?: string; sourceType?: string; sourceFile?: string }>
           reveal?: string
           ok?: boolean
           error?: string
@@ -599,6 +599,7 @@ function bindCreateFolderResultListener() {
           title: entry.title,
           knowledgeType: entry.type,
           sourceType: entry.sourceType,
+          sourceFile: typeof entry.sourceFile === "string" ? entry.sourceFile : undefined,
           links: [],
           tags: [],
           content: "",
@@ -1086,6 +1087,23 @@ function createFileNode(currentSlug: FullSlug, node: FileTrieNode): HTMLLIElemen
   const flagMenu = document.createElement("div")
   flagMenu.className = "explorer-flag-menu"
 
+  // An uploaded document, recording or video is listed as its original file (name and type, like a
+  // Spaces file); its page opens the original. The extracted Markdown stays for search and the assistant.
+  const original = sourceKind ? String(node.data?.sourceFile ?? "").trim() : ""
+  const originalType = /\.(pdf|docx?|pptx?|mp4|webm|mov|mkv|m4v|mp3|m4a|wav|ogg|oga|flac|aac|opus)$/i.exec(original)?.[1]
+  if (originalType) {
+    li.classList.add("explorer-managed-file", "source-original")
+    a.textContent = original
+    a.title = original
+    const icon = document.createElement("span")
+    icon.className = "explorer-file-type"
+    icon.textContent = originalType.toUpperCase()
+    icon.setAttribute("aria-hidden", "true")
+    icon.dataset.type = originalType.toLowerCase()
+    a.prepend(icon)
+    return li
+  }
+
   if (sourceKind) {
     // Source boxes carry their kind's fixed color; no palette, no understanding repaint.
     const fixed = document.createElement("button")
@@ -1476,6 +1494,9 @@ async function setupExplorer(currentSlug: FullSlug) {
       if (entry.gardenFileKind === "folder" && documents.has(entry.slug)) continue
       documents.set(entry.slug, entry)
     }
+    // A Spaces document is listed as itself; its generated text note is not listed beside it.
+    const listedFiles = new Set([...documents.values()].map(entry => entry.gardenFileId).filter(Boolean))
+    for (const [slug, entry] of documents) if (entry.gardenFileMirror && listedFiles.has(entry.gardenFileMirror)) documents.delete(slug)
     const trie = FileTrieNode.fromEntries([...documents].map(([slug, entry]) => [slug, {
       ...entry, title: savedTitles.get(slug) ?? entry.title,
     }]))

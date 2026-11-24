@@ -11,7 +11,7 @@ import {
   pollCliproxyLogin,
   releaseCliproxyLogin,
 } from "@/lib/cliproxy/runtime-lease";
-import { isClaudeCodeLoginState } from "@/lib/claude-code";
+import { isClaudeCodeLoginComplete, isClaudeCodeLoginState } from "@/lib/claude-code";
 import { runtimeAuthorityErrorResponse } from "@/lib/runtime-v2/authority-errors.ts";
 import { requireUserId, routeErrorResponse, RouteError } from "@/lib/server-auth";
 
@@ -94,7 +94,9 @@ export async function DELETE(request: Request) {
   try {
     const userId = await requireUserId();
     const state = loginState(request);
-    if (!isClaudeCodeLoginState(state)) {
+    if (isClaudeCodeLoginState(state)) {
+      await isClaudeCodeLoginComplete(userId, state, true);
+    } else {
       await releaseCliproxyLogin(userId, state);
     }
     return NextResponse.json({ ok: true }, { headers: { "Cache-Control": "no-store" } });

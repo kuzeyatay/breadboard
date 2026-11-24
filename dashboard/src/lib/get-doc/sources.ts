@@ -76,7 +76,15 @@ async function readJson(url: string, init?: RequestInit): Promise<unknown> {
 }
 
 async function readText(url: string): Promise<string> {
-  const response = await fetchWithTimeout(url, { headers: { accept: "application/atom+xml" } });
+  let response = await fetchWithTimeout(url, { headers: { accept: "application/atom+xml" } });
+  // arXiv (the only caller) rate-limits bursts with 429/503 + Retry-After.
+  for (let attempt = 0; attempt < 3 && (response.status === 429 || response.status === 503); attempt += 1) {
+    const retryAfter = Number(response.headers.get("retry-after"));
+    await response.body?.cancel();
+    await new Promise(resolve => setTimeout(resolve,
+      Math.min(15_000, retryAfter > 0 ? retryAfter * 1000 : 3_000 * 2 ** attempt)));
+    response = await fetchWithTimeout(url, { headers: { accept: "application/atom+xml" } });
+  }
   if (!response.ok) {
     throw new Error(`${new URL(url).host} returned ${response.status}`);
   }

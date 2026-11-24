@@ -3356,6 +3356,7 @@ mod tests {
                 desired_state: RuntimeDesiredState::Running,
                 service_state: breadboard_runtime_protocol::RuntimeServiceState::Ready,
                 owned_by_requester: true,
+                storage_issue: None,
                 log_tail: Vec::new(),
             })
         }

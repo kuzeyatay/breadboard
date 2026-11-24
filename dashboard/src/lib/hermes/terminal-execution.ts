@@ -288,6 +288,7 @@ const SAFE_COMMANDS: Array<{
   { category: "inspect", pattern: /^(?:ls|dir|Get-ChildItem)(?:\s+[^\r\n]*)?$/i },
   { category: "inspect", pattern: /^(?:cat|type|Get-Content)(?:\s+[^\r\n]+)$/i },
   { category: "inspect", pattern: /^rg(?:\s+[^\r\n]+)$/i },
+  { category: "inspect", pattern: /^(?:Test-Path|Resolve-Path|Get-Item|Select-String|findstr)(?:\s+[^\r\n]+)$/i },
   {
     category: "git_read",
     pattern: /^git\s+(?:status|diff|log|show|rev-parse|branch\s+--show-current)(?:\s+[^\r\n]*)?$/i,
@@ -300,9 +301,11 @@ const SAFE_COMMANDS: Array<{
   { category: "verification", pattern: /^npx\s+tsc\s+--noEmit(?:\s+[^\r\n]*)?$/i },
 ];
 
+// Each stage is judged on its own, as Codex's Windows safelist does
+// (codex-rs/shell-command/src/command_safety/windows_safe_commands.rs).
 const SAFE_READ_PIPELINE_STAGES = [
-  /^(?:Get-ChildItem|dir|ls)(?:\s+[^\r\n]*)?$/i,
-  /^(?:Sort-Object|Select-Object|Measure-Object|Format-Table)(?:\s+[^\r\n]*)?$/i,
+  /^(?:Get-ChildItem|gci|dir|ls|Get-Content|gc|cat|type|Get-Item|Select-String|sls)(?:\s+[^\r\n]*)?$/i,
+  /^(?:Sort-Object|Select-Object|Measure-Object|Format-Table|Format-List|Select-String|sls|findstr)(?:\s+[^\r\n]*)?$/i,
 ];
 
 function resolvedRoot(value: string): string | null {
@@ -490,7 +493,7 @@ export function authorizeTerminalCommand(
       allowed: false,
       category: "denied",
       approvalRequired: true,
-      reason: "Only Get-ChildItem read pipelines with sorting, selection, measurement, or table formatting are allowed.",
+      reason: "Only read pipelines (listing, reading or searching, then sorting, selection, measurement, filtering or formatting) run automatically.",
       workspaceRoot,
     };
   }

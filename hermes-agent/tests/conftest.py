@@ -396,6 +396,9 @@ def _hermetic_environment(tmp_path, monkeypatch):
     # should never perform that implicit network/bootstrap path; Tirith-specific
     # tests opt back in by patching the security config directly.
     monkeypatch.setenv("TIRITH_ENABLED", "false")
+    # Breadboard plugin: tests that point at a dead port expect the
+    # "unavailable" error at once, not a 90 s wait for a dashboard restart.
+    monkeypatch.setenv("BREADBOARD_TOOL_RESTART_WAIT_SECONDS", "0")
 
     # 5. Reset plugin singleton so tests don't leak plugins from
     #    ~/.hermes/plugins/ (which, per step 3, is now empty — but the

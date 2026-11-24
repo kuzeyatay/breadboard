@@ -22,6 +22,7 @@ async function fixture(t) {
   delete globalThis.breadboardRecommendationsV1;
   t.after(() => { delete globalThis.voiceOpenerCacheFixture; delete globalThis.breadboardRecommendationOpeners; delete globalThis.breadboardRecommendationsV1; });
   const mocks = {
+    '../personal-context/suggestions.ts': 'export const learnedEvidence=async()=>[];',
     '../system-prompts/service.ts': 'export const systemPromptRevision=()=>0;',
     'server-only': '',
     '../db.ts': 'export default {prepare:()=>({get:()=>true})};',
@@ -46,6 +47,17 @@ async function fixture(t) {
   const api = await another();
   return { state, ...api, another };
 }
+
+test('opening web search uses its own board and preserves the prepared voice opener', async t => {
+  const f = await fixture(t);
+  await f.recommendationsForUser(1, {});
+  const prepared = f.preparedVoiceOpenersForUser(1);
+  f.state.completed = true;
+  const searches = await f.recommendationsForUser(1, { surface: 'web-search' });
+  assert.deepEqual(searches, []);
+  assert.equal(f.state.reads, 2);
+  assert.deepEqual(f.preparedVoiceOpenersForUser(1), prepared);
+});
 
 test('voice reads only prepared cards and never starts or awaits source/model work', async t => {
   const f = await fixture(t);

@@ -14,6 +14,7 @@ import {
   completeAssistantMessage,
   createConversation,
   deleteConversation,
+  getConversationForUser,
   getConversationMessageByClientId,
   reserveConversationTurn,
   type ConversationMessageRow,
@@ -29,7 +30,7 @@ import {
   waitForSessionEventPump,
 } from "../hermes/event-stream.ts";
 import { getRuntimeRun } from "../hermes/run-store.ts";
-import { requireEnabled } from "../hermes/route-core.ts";
+import { ApiError, requireEnabled } from "../hermes/route-core.ts";
 import {
   authorizeGardenAccess,
   resolveConversationRuntime,
@@ -51,6 +52,8 @@ export interface ScheduledChatRunResult {
   /** Null for ordinary tasks; conditional watches report the private decision. */
   objectiveDecision: ScheduledObjectiveDecision | null;
   error?: string;
+  /** The run never reached the agent because the runtime was not up yet. */
+  retryable?: boolean;
 }
 
 export interface ScheduledChatRunOptions {
@@ -60,6 +63,50 @@ export interface ScheduledChatRunOptions {
 
 function chatTitle(job: ScheduledChatJobRow): string {
   return `${job.prompt}`.trim().slice(0, 120) || "Scheduled chat";
+}
+
+/** Late by more than this and the agent is told so. */
+const LATE_AFTER_MS = 5 * 60_000;
+
+/**
+ * Model-only framing for a scheduled turn. The saved prompt often reads like a
+ * scheduling request ("Every Monday at 16:00, check…"); without this the agent
+ * schedules it again instead of doing it, and every run adds a duplicate.
+ */
+export function scheduledRunContext(
+  job: Pick<ScheduledChatJobRow, "id" | "cron_expression" | "one_shot">,
+  dueAt: string,
+  now: Date,
+  continuing: boolean,
+): string {
+  const lines = [
+    `[Scheduled run] This message is the saved prompt of an existing schedule (#${job.id}${job.one_shot === 1 ? ", one-time" : `, cron "${job.cron_expression}"`}) firing now. The schedule already exists: do the task now, and do not create, change or delete schedules for it.`,
+  ];
+  if (continuing) lines.push("Earlier runs of this schedule are above in this chat; build on them and report what changed since the last run.");
+  const lateMs = now.getTime() - Date.parse(dueAt);
+  if (lateMs > LATE_AFTER_MS) {
+    const hours = lateMs / 3_600_000;
+    const late = hours >= 1 ? `${hours.toFixed(1)} hours` : `${Math.round(lateMs / 60_000)} minutes`;
+    lines.push(`This run is late: it was due at ${dueAt} and is running at ${now.toISOString()} (${late} late), because Breadboard was off or its agent runtime was unavailable. Account for that: cover the time since it was due, and say briefly that it ran late.`);
+  }
+  return lines.join("\n");
+}
+
+/** The chat earlier runs of this schedule used, when it still exists. */
+function previousRunConversation(job: ScheduledChatJobRow): ConversationRow | null {
+  if (!job.last_conversation_id) return null;
+  try {
+    const row = getConversationForUser(job.last_conversation_id, job.user_id);
+    return row.temporary || row.archived_at ? null : row;
+  } catch {
+    return null;
+  }
+}
+
+function runtimeNotReady(cause: unknown): boolean {
+  // AgentRuntimeError is duck-typed: importing it breaks the strip-only worker.
+  return (cause instanceof Error && "runtime" in cause && "recoverable" in cause) ||
+    (cause instanceof ApiError && cause.status === 503);
 }
 
 function parsedJson(value: string | null): unknown {
@@ -178,6 +225,8 @@ export async function runScheduledChatJob(
 
   let conversationId: string | null = null;
   let workingConversation: ConversationRow | null = null;
+  let freshConversation: ConversationRow | null = null;
+  let dispatched = false;
   const waitsForObjective = scheduledChatOpensOnlyWhenMet(
     job.conversation_policy,
   );
@@ -245,7 +294,10 @@ export async function runScheduledChatJob(
     // moment a schedule is created and the moment it fires.
     const garden = gardenSlug ? authorizeGardenAccess(job.user_id, gardenSlug) : null;
 
-    const conversation = createConversation({
+    // A recurring task keeps one chat: each run continues where the last left
+    // off. Private objective checks always start clean.
+    const previous = waitsForObjective ? null : previousRunConversation(job);
+    const conversation = previous ?? createConversation({
       userId: job.user_id,
       title: chatTitle(job),
       surface: job.surface,
@@ -254,6 +306,7 @@ export async function runScheduledChatJob(
       scheduledChatJobId: job.id,
       temporary: waitsForObjective,
     });
+    if (!previous) freshConversation = conversation;
     workingConversation = conversation;
     conversationId = conversation.public_id;
 
@@ -278,7 +331,15 @@ export async function runScheduledChatJob(
       surfaceContext: garden ? { activeGardenSlug: garden.slug } : undefined,
       model: job.model,
       reasoningEffort: job.reasoning_effort,
+      unattended: true,
+      scheduledRunContext: scheduledRunContext(
+        job,
+        job.due_at ?? new Date().toISOString(),
+        new Date(),
+        previous !== null,
+      ),
     });
+    dispatched = true;
 
     if (result.accepted) {
       if (options.waitForCompletion || waitsForObjective) {
@@ -354,9 +415,23 @@ export async function runScheduledChatJob(
     if ("clarified" in result) return failed(result.message);
     return failed("The runtime did not accept this turn.");
   } catch (cause) {
-    return failed(
-      cause instanceof Error ? cause.message : "The scheduled chat could not start.",
-    );
+    const retryable = !dispatched && runtimeNotReady(cause);
+    if (retryable && freshConversation) {
+      // Nothing reached the agent: don't leave an empty chat per attempt.
+      try {
+        deleteConversation(freshConversation);
+      } catch {
+        // Keep the real failure.
+      }
+      if (workingConversation === freshConversation) workingConversation = null;
+      conversationId = null;
+    }
+    return {
+      ...failed(
+        cause instanceof Error ? cause.message : "The scheduled chat could not start.",
+      ),
+      ...(retryable ? { retryable } : {}),
+    };
   }
 
   function failed(error: string): ScheduledChatRunResult {

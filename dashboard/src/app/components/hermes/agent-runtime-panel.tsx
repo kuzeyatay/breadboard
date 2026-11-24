@@ -184,6 +184,7 @@ import {
   ChatSelectionMenu,
   InlineSelectionAnswerPopover,
   QuotedChatSelection,
+  readRegionSelection,
   SelectableAssistantMarkdown,
   SelectionComposerContext,
   type ChatTextSelectionCandidate,
@@ -522,6 +523,8 @@ interface InlineSelectionThread {
   answerMessageId?: string;
   starMessageId?: string;
   artifactMessageId?: string;
+  /** Every question asked on this highlight, oldest first (the last is this one). */
+  attempts?: InlineSelectionThread[];
 }
 
 function normalizeInlineSelections(parsed: unknown): ChatTextSelectionReference[] {
@@ -947,7 +950,10 @@ export default function AgentRuntimePanel({
   const [openInlineAnswers, setOpenInlineAnswers] = useState<Array<{
     id: string;
     anchor: FloatingAnchorRect;
+    newQuestion?: number;
   }>>([]);
+  // Which earlier question/answer pair a highlight shows; absent = the newest.
+  const [inlineAttemptChoice, setInlineAttemptChoice] = useState<Record<string, number>>({});
   const [inlineSelectionRunId, setInlineSelectionRunId] = useState<
     string | null
   >(null);
@@ -1393,11 +1399,16 @@ export default function AgentRuntimePanel({
       ) {
         return;
       }
-      const current = byId.get(selection.id) ?? {
+      let current = byId.get(selection.id) ?? {
         selection,
         pending: false,
       };
       if (message.role === "user") {
+        // Asking again keeps the earlier pair as a branch, like chat edits.
+        if (current.question !== undefined || current.answer !== undefined) {
+          const { attempts = [], ...previous } = current;
+          current = { selection: current.selection, pending: false, attempts: [...attempts, previous] };
+        }
         current.question = message.content;
         current.attachments = reusableChatAttachments(message.attachments).filter(item => !item.context);
         // The turn is pending from the moment the question is sent, not from
@@ -1433,6 +1444,9 @@ export default function AgentRuntimePanel({
       }
       byId.set(selection.id, current);
     });
+    for (const thread of byId.values()) {
+      if (thread.attempts) thread.attempts = [...thread.attempts, thread];
+    }
     return byId;
   }, [activeRun, onAbortInline, deletedInlineSelectionIds, messages, savedInlineSelections, webSelection, sessionId]);
   const chatSelections = useMemo(() => chatQuestionSelections(messages, composerSelection), [messages, composerSelection]);
@@ -2159,14 +2173,19 @@ export default function AgentRuntimePanel({
     window.setTimeout(() => composerTextareaRef.current?.focus(), 0);
   }
 
-  function replyToInlineAnswer(selection: ChatTextSelectionReference, anchor: FloatingAnchorRect) {
-    setSavedInlineSelections((current) => [...current, selection]);
+  function replyToInlineAnswer(reply: ChatTextSelectionReference, anchor: FloatingAnchorRect) {
+    // Replying again to the same answer asks another question on the one
+    // whole-answer highlight, so its replies switch like chat branches.
+    const existing = [...inlineSelectionThreads.values()].find(thread =>
+      thread.selection.wholeMessage && thread.selection.sourceMessageId === reply.sourceMessageId)?.selection;
+    const selection = existing ?? reply;
+    if (!existing) setSavedInlineSelections((current) => [...current, selection]);
     setSelectionMenu(null);
     setOpenInlineAnswers((current) => {
       const parent = current.findIndex((open) =>
         inlineSelectionThreads.get(open.id)?.answerMessageId === selection.sourceMessageId,
       );
-      return [...current.slice(0, parent + 1), { id: selection.id, anchor }];
+      return [...current.slice(0, parent + 1), { id: selection.id, anchor, newQuestion: existing ? Date.now() : undefined }];
     });
     window.getSelection()?.removeAllRanges();
   }
@@ -2312,6 +2331,12 @@ export default function AgentRuntimePanel({
     // A question the composer is still holding for some other highlight is
     // left alone: it belongs to that highlight, not to this turn.
     setComposerSelection((current) => current?.id === selection.id ? null : current);
+    setInlineAttemptChoice((current) => {
+      if (!(selection.id in current)) return current;
+      const next = { ...current };
+      delete next[selection.id];
+      return next;
+    });
     setInlineSelectionRunId(selection.id);
     void onAskSelection(trimmed, selection, attachments).catch(() => {
       setInlineSelectionRunId((current) =>
@@ -2913,6 +2938,7 @@ export default function AgentRuntimePanel({
                       )
                     ) : isExternalAgentRunMessage(message) ? (
                       <div
+                        onPointerUp={(event) => readRegionSelection(event.currentTarget, messageSelectionSourceId(message, index), receiveTextSelection)}
                         className={
                           message.delegatedAgentRun &&
                           !message.godsEyeRun
@@ -4230,14 +4256,24 @@ export default function AgentRuntimePanel({
       ) : null}
       {visibleInlineAnswers.map((openAnswer) => {
         const source = sourceAnswer?.selection.id === openAnswer.id ? sourceAnswer : undefined;
-        const thread: InlineSelectionThread | undefined = source?.loading || source?.error
+        const latest: InlineSelectionThread | undefined = source?.loading || source?.error
           ? { selection: source.selection, pending: false, answer: source.error || "Loading saved answer…" }
           : inlineSelectionThreads.get(openAnswer.id) ?? (source ? { selection: source.selection, pending: false } : undefined);
-        if (!thread) return null;
+        if (!latest) return null;
+        const attempts = latest.pending ? undefined : latest.attempts;
+        const attemptIndex = attempts ? Math.min(inlineAttemptChoice[openAnswer.id] ?? attempts.length - 1, attempts.length - 1) : 0;
+        const thread = attempts?.[attemptIndex] ?? latest;
+        const showAttempt = (index: number) => setInlineAttemptChoice(current => ({ ...current, [openAnswer.id]: index }));
         return (
           <InlineSelectionAnswerPopover
             key={openAnswer.id}
             anchor={openAnswer.anchor}
+            branch={attempts && attempts.length > 1 ? {
+              current: attemptIndex + 1, total: attempts.length,
+              onPrevious: () => showAttempt(Math.max(0, attemptIndex - 1)),
+              onNext: () => showAttempt(Math.min(attempts.length - 1, attemptIndex + 1)),
+            } : undefined}
+            newQuestionRequest={openAnswer.newQuestion}
             selection={thread.selection}
             suggestionSelection={thread.selection}
             suggestionModel={model}

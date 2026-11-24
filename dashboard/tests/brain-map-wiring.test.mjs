@@ -7,6 +7,13 @@ const root = path.resolve(import.meta.dirname, "..");
 const read = (relative) => fs.readFileSync(path.join(root, relative), "utf8");
 
 const profilePage = read("src/app/profile/page.tsx");
+const knowledgePage = read("src/app/knowledge/page.tsx");
+const shortcuts = read("src/app/components/office-shortcut.tsx");
+const terminalLaunchers = [
+  read("src/app/new-tab/new-tab-client.tsx"),
+  read("src/app/new-tab/combined-home-launcher.tsx"),
+];
+const tabLabels = read("src/lib/desktop-browser-tabs.ts");
 const profileClient = read("src/app/profile/profile-client.tsx");
 const brainClient = read("src/app/profile/brain-map-client.tsx");
 const brainCanvas = read("src/app/profile/brain-map-canvas.tsx");
@@ -26,14 +33,25 @@ const graphAuth = read("src/lib/profile/brain-graph-auth.ts");
 const gardenSource = read("src/lib/profile/brain-graph-sources/gardens.ts");
 const crossGardenSource = read("src/lib/profile/brain-graph-cross-garden.ts");
 const overviewRoute = read("src/app/api/profile/brain-graph/route.ts");
-const expandRoute = read("src/app/api/profile/brain-graph/expand/route.ts");
+
 const publicProfile = read("src/app/profile/[username]/page.tsx");
 
-test("the private profile deep-links a lazy Thought Topology without touching the public profile", () => {
-  assert.match(profilePage, /initialBrainScope/);
+test("Knowledge has its own page and Terminal shortcut; Settings has no switcher", () => {
+  assert.match(knowledgePage, /<BrainMapPanel initialScope=\{initialScope\} \/>/);
+  assert.match(knowledgePage, />Knowledge<\/h1>/);
+  assert.match(knowledgePage, /callbackUrl=\/knowledge/);
   assert.match(profilePage, /rawTab === "knowledge" \|\| rawTab === "brain"/);
-  assert.match(profileClient, /\["profile", "knowledge"\]/);
-  assert.match(profileClient, /<BrainMapPanel/);
+  assert.match(profilePage, /redirect\(query\.size \? `\/knowledge\?\$\{query\}` : "\/knowledge"\)/);
+  assert.doesNotMatch(profileClient, /BrainMapPanel|\["profile", "knowledge"\]|selectTab/);
+  assert.match(shortcuts, /href="\/knowledge" label="Knowledge"/);
+  for (const launcher of terminalLaunchers) {
+    assert.match(
+      launcher,
+      /<OfficeShortcut [^\n]*\/>\s*<KnowledgeShortcut /,
+      "Knowledge sits right after Spaces",
+    );
+  }
+  assert.match(tabLabels, /knowledge: \{ label: "Knowledge", kind: "knowledge" \}/);
   // An organization-scoped map is still reachable — by link, and from the
   // map's own scope picker — but the profile no longer carries a third tab
   // that points at one.
@@ -45,9 +63,9 @@ test("the private profile deep-links a lazy Thought Topology without touching th
   assert.match(brainCanvas, />Thought Topology</);
   assert.match(brainCanvas, /Private Thought Topology/);
   assert.match(
-    profilePage,
+    knowledgePage,
     /: "all";/,
-    "the Knowledge tab opens at All accessible",
+    "Knowledge opens at All accessible",
   );
   assert.doesNotMatch(publicProfile, /BrainMap|brain-graph|Knowledge Map/);
 });
@@ -55,7 +73,7 @@ test("the private profile deep-links a lazy Thought Topology without touching th
 test("Thought Topology fetches start only inside the mounted tab and stale work is aborted", () => {
   assert.match(brainClient, /fetch\(`\/api\/profile\/brain-graph\?/);
   assert.match(brainClient, /fetchRef\.current\?\.abort\(\)/);
-  assert.match(brainClient, /query\.set\("mode", "full"\)/);
+  assert.doesNotMatch(brainClient, /"mode"/, "the map is never cut off, so there is one mode");
   assert.match(brainClient, /setRendererFailed\(false\)/);
   assert.doesNotMatch(
     brainClient,
@@ -92,15 +110,14 @@ test("Knowledge derives and refreshes semantic links across Garden boundaries", 
 });
 
 test("authenticated APIs fail closed and forbid public caching", () => {
-  for (const route of [overviewRoute, expandRoute]) {
+  for (const route of [overviewRoute]) {
     assert.match(route, /requireUserId\(\)/);
     assert.match(route, /buildBrainGraphAccessContext\(userId\)/);
     assert.match(route, /Cache-Control": "private, no-store/);
     assert.match(route, /Vary: "Cookie"/);
     assert.doesNotMatch(route, /searchParams\.get\(["']user(?:Id)?["']\)/);
   }
-  assert.match(expandRoute, /rawDepth < 1 \|\| rawDepth > 2/);
-  assert.doesNotMatch(expandRoute, /sourceId|authorizedSourceIds/);
+
 });
 
 test("Knowledge mounts the exact Quartz Thought Topology renderer and hierarchy", () => {
@@ -117,7 +134,7 @@ test("Knowledge mounts the exact Quartz Thought Topology renderer and hierarchy"
   assert.match(JSON.parse(packageJson).scripts.prebuild, /(?:^|&& )npm run sync:quartz-topology(?: &&|$)/);
   assert.match(
     topologyAdapter,
-    /Quartz's Thought Topology deliberately describes Gardens/,
+    /Quartz's Thought Topology\s+\*\s+deliberately describes Gardens/,
   );
   assert.match(topologyAdapter, /"internal-concept"/);
   assert.match(topologyAdapter, /STRUCTURAL_RELATIONS/);
@@ -223,4 +240,17 @@ test("the divergent profile controls are absent and only accessible scopes remai
     /Show everything|Explicit only|Find path|GraphList|brain-search/,
   );
   assert.doesNotMatch(brainClient, /Inspector/);
+});
+
+test("Knowledge shows every page, topic chips, a path finder, and a keyboard page list", () => {
+  assert.doesNotMatch(graphService, /maxNodes|maxKnowledgeNodesPerGarden|limitsForMode|expandBrainGraph/);
+  assert.doesNotMatch(gardenSource, /pageBudget|perGardenLimit|maxGardens/);
+  assert.match(gardenSource, /withViewerChats\(stored/);
+  assert.match(brainCanvas, /aria-label="Topics"/);
+  assert.match(brainCanvas, /var\(--topology-topic-\$\{topic\.index\}\)/);
+  assert.match(brainCanvas, /shortestTopologyPath\(projection\.payload\.edges/);
+  assert.match(brainCanvas, />Find path</);
+  assert.match(brainCanvas, /Browse all \{pages\.length\} pages as a list/);
+  assert.match(globals, /vendor\/quartz-thought-topology\/viewer\.css/);
+  assert.match(read("src/vendor/quartz-thought-topology/viewer.css"), /--topology-topic-7:/);
 });

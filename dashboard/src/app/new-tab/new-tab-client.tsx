@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState, type AriaAttributes, type ComponentType } from "react";
-import { ChevronDown, Compass, Globe2, LayoutGrid, ListTodo, PanelsTopLeft, Settings, Timer, UsersRound } from "lucide-react";
+import { ChevronDown, Compass, Globe2, LayoutGrid, ListTodo, PanelsTopLeft, UsersRound } from "lucide-react";
 import VSCodeIcon from "@/app/components/vscode-icon";
 import BrowserHomeAccessories from "@/app/browser/browser-home-accessories";
 import LinkContextMenu from "@/app/components/link-context-menu";
@@ -22,7 +22,7 @@ import AsciiArtwork from "@/app/components/ascii-artwork";
 import RainBackground from "@/app/components/rain-background";
 import { SpotifyAmbientProvider } from "@/app/components/spotify-ambient-context";
 import VoiceShortcut from "@/app/components/voice-shortcut";
-import OfficeShortcut from "@/app/components/office-shortcut";
+import OfficeShortcut, { KnowledgeShortcut } from "@/app/components/office-shortcut";
 import ScreenTimeShortcut from "@/app/components/screen-time-shortcut";
 import NewTabSearch from "./new-tab-search";
 import type { NewTabGarden } from "@/lib/new-tab-gardens";
@@ -40,8 +40,6 @@ const PLACES: Place[] = [
   { href: "/plan", label: "Plan", icon: ListTodo },
   { href: "/code", label: "Code", icon: VSCodeIcon },
   { href: "/buzz", label: "Organization", icon: UsersRound },
-  { href: "/pomodoro", label: "Work Timer", icon: Timer },
-  { href: "/settings", label: "Settings", icon: Settings },
 ];
 
 const RECENT_GARDEN_LIMIT = 6;
@@ -157,6 +155,7 @@ export default function NewTabClient({
           <BrowserShortcut query="" />
           <VoiceShortcut className={styles.destinationButton} errorClassName={styles.browserError} />
           <OfficeShortcut className={styles.destinationButton} />
+          <KnowledgeShortcut className={styles.destinationButton} />
               <ScreenTimeShortcut className={styles.destinationButton} />
         </nav>
 

@@ -223,7 +223,7 @@ async function executeRecallTool(input: {
       if (settings.agentControl === "never") {
         throw new RecallError("agent_access_disabled", {
           userMessage:
-            "The agent is not allowed to start or stop Recall capture. Change this in Settings → Recall.",
+            "The agent is not allowed to start or stop Recall capture. Change this in Screen Time → Recall settings.",
           httpStatus: 403,
         });
       }

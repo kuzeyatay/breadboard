@@ -59,6 +59,7 @@ function route(relative, overrides = {}) {
     },
     "@/lib/max-research/conversation-persistence.ts": { reconcileMaxResearchConversation: async () => {} },
     "@/lib/vibe-trading/conversation-persistence.ts": { reconcileVibeTradingConversation: async () => {} },
+    "@/lib/conversations/settle-delegated-work.ts": { settleDelegatedWork: async () => {} },
     ...overrides,
   };
   const source = fs.readFileSync(new URL(`../src/app/api/hermes/sessions/${relative}`, import.meta.url), "utf8");

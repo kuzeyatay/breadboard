@@ -1,0 +1,293 @@
+import { AutoReconnectConnection } from '../../connection';
+import type {
+  BlobRecord,
+  CrawlResult,
+  DocClock,
+  DocDiff,
+  DocIndexedClock,
+  DocRecord,
+  ListedBlobRecord,
+  PeerWorkspaceState,
+  WorkspaceDoc,
+} from '../../storage';
+import { type SpaceType, universalId } from '../../utils/universal-id';
+
+export interface SqliteNativeDBOptions {
+  readonly flavour: string;
+  readonly type: SpaceType;
+  readonly id: string;
+}
+
+export interface NativeIndexField {
+  field: string;
+  values: string[];
+}
+
+export interface NativeIndexQuery {
+  kind: 'match' | 'exists' | 'all' | 'boolean' | 'boost';
+  field?: string;
+  value?: string;
+  occur?: 'must' | 'should' | 'must_not';
+  clauses?: NativeIndexQuery[];
+  boost?: number;
+}
+
+export interface NativeIndexSearchOptions {
+  limit: number;
+  offset: number;
+  fields: string[];
+  highlights: string[];
+}
+
+export interface NativeIndexHit {
+  id: string;
+  score: number;
+  fields: NativeIndexField[];
+  highlights: {
+    field: string;
+    values: { valueIndex: number; spans: { start: number; end: number }[] }[];
+  }[];
+}
+
+export interface NativeIndexSearchResult {
+  total: number;
+  hits: NativeIndexHit[];
+}
+
+export interface NativeDBApis {
+  connect: (id: string) => Promise<void>;
+  disconnect: (id: string) => Promise<void>;
+  pushUpdate: (
+    id: string,
+    docId: string,
+    update: Uint8Array,
+    createForPeer?: string
+  ) => Promise<Date>;
+  getPeerWorkspaceState: (
+    id: string,
+    peer: string,
+    rootDocId: string
+  ) => Promise<PeerWorkspaceState>;
+  invalidatePeerWorkspaceState: (
+    id: string,
+    peer: string,
+    rootDocId: string
+  ) => Promise<void>;
+  installPeerWorkspaceState: (
+    id: string,
+    peer: string,
+    rootDocId: string,
+    cacheToken: number,
+    docs: Array<WorkspaceDoc & { pendingCreate: boolean }>,
+    clocks: Record<string, number>
+  ) => Promise<boolean>;
+  confirmPeerDocCreate: (
+    id: string,
+    peer: string,
+    docId: string
+  ) => Promise<void>;
+  getDoc: (id: string, docId: string) => Promise<DocRecord | null>;
+  getDocDiff?: (
+    id: string,
+    docId: string,
+    state?: Uint8Array
+  ) => Promise<DocDiff | null>;
+  mergeUpdates?: (updates: Uint8Array[]) => Promise<Uint8Array>;
+  deleteDoc: (id: string, docId: string) => Promise<void>;
+  getDocClocks: (id: string, after?: Date | null) => Promise<DocClock[]>;
+  getDocClock: (id: string, docId: string) => Promise<DocClock | null>;
+  getDocIndexedClock: (
+    id: string,
+    docId: string
+  ) => Promise<DocIndexedClock | null>;
+  setDocIndexedClock: (
+    id: string,
+    docId: string,
+    indexedClock: Date,
+    indexerVersion: number
+  ) => Promise<void>;
+  setDocIndexedClocks: (id: string, clocks: DocIndexedClock[]) => Promise<void>;
+  clearDocIndexedClock: (id: string, docId: string) => Promise<void>;
+  getBlob: (id: string, key: string) => Promise<BlobRecord | null>;
+  setBlob: (id: string, blob: BlobRecord) => Promise<void>;
+  deleteBlob: (id: string, key: string, permanently: boolean) => Promise<void>;
+  releaseBlobs: (id: string) => Promise<void>;
+  listBlobs: (id: string) => Promise<ListedBlobRecord[]>;
+  getPeerRemoteClocks: (id: string, peer: string) => Promise<DocClock[]>;
+  getPeerRemoteClock: (
+    id: string,
+    peer: string,
+    docId: string
+  ) => Promise<DocClock | null>;
+  setPeerRemoteClock: (
+    id: string,
+    peer: string,
+    docId: string,
+    clock: Date
+  ) => Promise<void>;
+  getPeerPulledRemoteClocks: (id: string, peer: string) => Promise<DocClock[]>;
+  getPeerPulledRemoteClock: (
+    id: string,
+    peer: string,
+    docId: string
+  ) => Promise<DocClock | null>;
+  setPeerPulledRemoteClock: (
+    id: string,
+    peer: string,
+    docId: string,
+    clock: Date
+  ) => Promise<void>;
+  getPeerPushedClocks: (id: string, peer: string) => Promise<DocClock[]>;
+  getPeerPushedClock: (
+    id: string,
+    peer: string,
+    docId: string
+  ) => Promise<DocClock | null>;
+  setPeerPushedClock: (
+    id: string,
+    peer: string,
+    docId: string,
+    clock: Date
+  ) => Promise<void>;
+  clearClocks: (id: string) => Promise<void>;
+  setBlobUploadedAt: (
+    id: string,
+    peer: string,
+    blobId: string,
+    uploadedAt: Date | null
+  ) => Promise<void>;
+  getBlobUploadedAt: (
+    id: string,
+    peer: string,
+    blobId: string
+  ) => Promise<Date | null>;
+  crawlDocData: (id: string, docId: string) => Promise<CrawlResult>;
+  indexUpsert: (
+    id: string,
+    table: string,
+    document: { id: string; fields: NativeIndexField[] }
+  ) => Promise<void>;
+  indexDelete: (id: string, table: string, docId: string) => Promise<void>;
+  indexSearch: (
+    id: string,
+    table: string,
+    query: NativeIndexQuery,
+    options: NativeIndexSearchOptions
+  ) => Promise<NativeIndexSearchResult>;
+  indexAggregate: (
+    id: string,
+    table: string,
+    query: NativeIndexQuery,
+    field: string,
+    limit: number,
+    offset: number,
+    hits?: NativeIndexSearchOptions
+  ) => Promise<{
+    total: number;
+    buckets: {
+      key: string;
+      count: number;
+      score: number;
+      hits: NativeIndexHit[];
+    }[];
+  }>;
+  indexDeleteByQuery: (
+    id: string,
+    table: string,
+    query: NativeIndexQuery
+  ) => Promise<number>;
+  indexFlush: (id: string) => Promise<void>;
+  indexVersion: () => Promise<number>;
+}
+
+type WrapApiFn<T> = T extends (...args: any[]) => any
+  ? Parameters<T> extends [string, ...infer Rest]
+    ? (...args: Rest) => ReturnType<T>
+    : (...args: Parameters<T>) => ReturnType<T>
+  : never;
+
+type NativeDBApisWrapper = NativeDBApis extends infer APIs
+  ? {
+      [K in keyof APIs]: undefined extends APIs[K]
+        ? WrapApiFn<NonNullable<APIs[K]>> | undefined
+        : WrapApiFn<APIs[K]>;
+    }
+  : never;
+
+let apis: NativeDBApis | null = null;
+
+export function bindNativeDBApis(a: NativeDBApis) {
+  apis = a;
+}
+
+export function getNativeMergeUpdates():
+  | ((updates: Uint8Array[]) => Promise<Uint8Array>)
+  | undefined {
+  return apis?.mergeUpdates;
+}
+
+export class NativeDBConnection extends AutoReconnectConnection<void> {
+  readonly apis: NativeDBApisWrapper;
+
+  readonly flavour = this.options.flavour;
+  readonly type = this.options.type;
+  readonly id = this.options.id;
+
+  constructor(private readonly options: SqliteNativeDBOptions) {
+    super();
+
+    if (!apis) {
+      throw new Error('Not in native context.');
+    }
+
+    this.apis = this.warpApis(apis);
+  }
+
+  override get shareId(): string {
+    return `sqlite:${this.flavour}:${this.type}:${this.id}`;
+  }
+
+  warpApis(originalApis: NativeDBApis): NativeDBApisWrapper {
+    const id = universalId({
+      peer: this.flavour,
+      type: this.type,
+      id: this.id,
+    });
+    return new Proxy(
+      {},
+      {
+        get: (_target, key: keyof NativeDBApisWrapper) => {
+          const v = originalApis[key];
+          if (typeof v !== 'function') {
+            return undefined;
+          }
+
+          if (key === 'mergeUpdates' || key === 'indexVersion') {
+            return async (...args: any[]) => {
+              return (v as (...a: any[]) => any).apply(originalApis, args);
+            };
+          }
+
+          return async (...args: any[]) => {
+            return v.call(
+              originalApis,
+              id,
+              // @ts-expect-error I don't know why it complains ts(2556)
+              ...args
+            );
+          };
+        },
+      }
+    ) as unknown as NativeDBApisWrapper;
+  }
+
+  override async doConnect() {
+    await this.apis.connect();
+  }
+
+  override doDisconnect() {
+    this.apis.disconnect().catch(err => {
+      console.error('NativeDBConnection close failed', err);
+    });
+  }
+}

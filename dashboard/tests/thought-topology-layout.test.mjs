@@ -23,7 +23,6 @@ const {
   connectionOpacity,
   topologyNavigationSlug,
   topologyFolderScopeForSlug,
-  CONNECTION_STROKE_WIDTH,
   AUTHORED_CONNECTION_STRENGTH,
 } = layout;
 
@@ -73,6 +72,24 @@ function sourcePage(id, title, sourceType) {
     sourceType,
   };
 }
+
+test("nested folders retain every source node and hierarchy link in a multi-Garden map", () => {
+  const folders = [folder("root", "", "Root", 0, 1)];
+  for (let depth = 1; depth <= 5; depth++) {
+    const parent = folders.at(-1);
+    folders.push(folder("f" + depth, [parent.path, "section"].filter(Boolean).join("/"), "Section", depth, 1, parent.id));
+  }
+  const leaf = page("page:deep", "f5", "Buried page");
+  const hierarchy = [{ id: "file-link", source: "f5", target: leaf.id }];
+  const payload = { garden: { slug: "library", title: "Library", summary: leaf.summary },
+    build: { state: "ready", threshold: 0.6 }, folders, nodes: [leaf], edges: [], sourceHierarchy: hierarchy };
+  const plan = planThoughtTopology(payload);
+  assert.deepEqual(new Set(plan.nodes.filter(n => n.kind !== "garden").map(n => n.id)),
+    new Set(["f1", "f2", "f3", "f4", "f5", leaf.id]));
+  assert.deepEqual(plan.hierarchyEdges, hierarchy);
+  assert.equal(plan.nodes.find(n => n.id === leaf.id).sectorId, "f1");
+  assert.equal(planThoughtTopology(payload, {excludedFolderIds: ["f3"]}).hierarchyEdges.length, 0);
+});
 
 test("persistent topology labels omit Markdown node names without hiding other names", () => {
   assert.equal(
@@ -377,7 +394,7 @@ test("folder anchors sit on one ring and every page stays inside its folder's cl
   }
 });
 
-test("the visible hierarchy connects Garden to folders to pages, while affinity weight controls colour weight, not width", () => {
+test("the visible hierarchy connects Garden to folders to pages, with readable, bounded affinity-dependent strokes", () => {
   const plan = planThoughtTopology(
     fixture([
       edge("edge:bridge", "page:l11", "page:l12", 0.9),
@@ -413,17 +430,13 @@ test("the visible hierarchy connects Garden to folders to pages, while affinity 
     false,
   );
   for (const item of plan.edges) {
-    assert.equal(
-      item.width,
-      CONNECTION_STROKE_WIDTH,
-      `${item.id} is drawn as the shared hairline`,
-    );
+    assert.ok(item.width >= 0.72 && item.width <= 1.28, "resting links stay within a readable hairline range");
     assert.ok(item.opacity > 0 && item.opacity <= 0.9);
   }
   const bridge = plan.edges.find((item) => item.id === "edge:bridge");
   const cross = plan.edges.find((item) => item.id === "edge:cross");
   assert.ok(
-    bridge.opacity - cross.opacity > 0.3,
+    bridge.opacity - cross.opacity > 0.07 && bridge.width > cross.width,
     "strong and weak affinities should differ visibly in colour weight",
   );
   assert.ok(bridge.strength > 0.7 && cross.strength < 0.3);

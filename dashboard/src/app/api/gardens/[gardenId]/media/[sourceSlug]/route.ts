@@ -119,7 +119,8 @@ export async function GET(
       throw new RouteError(404, "Media source not found");
     }
 
-    const filename = source.sourceFile || path.basename(mediaPath);
+    // A YouTube source is named by its link: the kept file's name gives its type.
+    const filename = source.sourceFile && !/^https?:/i.test(source.sourceFile) ? source.sourceFile : path.basename(mediaPath);
     const headers: Record<string, string> = {
       "Content-Type": mediaMimeType(filename),
       "Accept-Ranges": "bytes",

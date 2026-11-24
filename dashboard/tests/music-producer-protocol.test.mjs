@@ -61,6 +61,8 @@ test("envelopes and nested task results validate application failures, sizes and
   assert.throws(() => unwrapEnvelope({ code: 500, data: {} }));
   assert.throws(() => unwrapEnvelope({ code: 200, error: "failed", data: {} }));
   assert.deepEqual(parseTaskResult([{ task_id: "t", status: 0 }], "t", "http://localhost:8001"), { state: "running" });
+  assert.deepEqual(parseTaskResult([{ task_id: "t", result: "[]", status: 0 }], "t", "http://localhost:8001"), { state: "failed", code: "provider_receipt_lost" });
+  assert.deepEqual(parseTaskResult([{ task_id: "t", result: "[]", status: 0, progress_text: "" }], "t", "http://localhost:8001"), { state: "running" });
   assert.deepEqual(parseTaskResult([{ task_id: "t", status: 2 }], "t", "http://localhost:8001"), { state: "failed" });
   assert.throws(() => parseTaskResult([{ task_id: "other", status: 1 }], "t", "http://localhost:8001"));
   assert.throws(() => parseTaskResult([{ task_id: "t", status: 3 }], "t", "http://localhost:8001"));

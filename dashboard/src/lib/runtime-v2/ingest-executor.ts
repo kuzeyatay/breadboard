@@ -1464,7 +1464,7 @@ function saveUploadedDocumentAsset({
   buffer: Buffer;
   createdFilePaths?: string[];
   knowledgeWriteTransaction?: KnowledgeWriteTransaction;
-  extension?: "pdf" | "pptx";
+  extension?: "pdf" | "pptx" | "docx";
 }): { filePath: string; relativePath: string } {
   const assetDir = path.join(contentPath, clusterSlug.trim(), "assets");
   ensureTrackedIngestionDirectory(assetDir, knowledgeWriteTransaction);
@@ -2515,7 +2515,7 @@ export async function runIngest({
   let screenshotWarning = "";
   let visionError = "";
   let sourcePdfPath: string | undefined;
-  let sourcePresentationPath: string | undefined;
+  let sourcePresentationPath: string | undefined, sourceWordPath: string | undefined;
   // OCR text-layer twin of the upload; the viewer opens it in place of the original.
   let searchablePdfPath: string | undefined;
   let skipKnowledgeExtraction = false;
@@ -3241,6 +3241,15 @@ export async function runIngest({
     markdownText += `\n\n## Source files\n\n[Original PowerPoint](${sourcePresentationPath}) · [Slide PDF](${sourcePdfPath})`;
   }
 
+  // A Word document keeps its original beside the note: the reader opens it in the Word viewer
+  // (view and edit), never as a converted PDF.
+  if (ext === "docx") {
+    sourceWordPath = saveUploadedDocumentAsset({
+      contentPath, clusterSlug: normalizedClusterSlug, baseName: nameWithoutExt,
+      buffer: await fileBytes(), extension: "docx", createdFilePaths, knowledgeWriteTransaction,
+    }).relativePath;
+  }
+
   // ── Hidden-content scan ──────────────────────────────────────────────────
   //
   // The last stage of reading the document, and deliberately the last one that
@@ -3376,6 +3385,7 @@ export async function runIngest({
       ...(safetyReport ? safetyFrontmatter(safetyReport) : {}),
       ...(searchablePdfPath ? { searchable_pdf: searchablePdfPath } : {}),
       ...(sourcePresentationPath ? { source_presentation: sourcePresentationPath } : {}),
+      ...(sourceWordPath ? { source_document: sourceWordPath } : {}),
     },
     abortSignal: request.signal,
     createdFilePaths: createdMarkdownPaths,

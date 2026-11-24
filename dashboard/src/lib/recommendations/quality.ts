@@ -75,6 +75,8 @@ export function usefulRecommendation(card: Recommendation, evidence: readonly Re
     !(sources.some(other => eventsConflict(item, other)) && /\b(?:overlap|clash|conflict|reschedule|move)\b/i.test(card.prompt)))) return false;
   if (sources.some(item => item.calendar?.kind === 'gap') && !sources.some(item => item.source === 'recall' || (item.source === 'task' && taskNeedsHelp(item)))) return false;
   if (/\b(?:get .{0,100} moving|help me decide what to do next|suggest something useful|what should I do next)\b/i.test(card.prompt)) return false;
+  // Reopening an app, tab or chat is a click, not a task for an agent.
+  if (/^\s*(?:re-?open|relaunch|restart|reload|go back to|return to|switch back to)\b/i.test(card.prompt)) return false;
   if (/(?:Telegram|WhatsApp)\s*·|turn my discussion about .+ into notes with decisions/i.test(card.prompt)) return false;
   return true;
 }
@@ -107,6 +109,7 @@ export function recommendationPriority(item: RecommendationEvidence, context: Re
 export function recommendationCandidates(item: RecommendationEvidence, evidence: readonly RecommendationEvidence[], context: RecommendationContext = {}) {
   const title = clean(item.title);
   const make = (prompt: string, related?: string) => ({ prompt, sourceIds: [item.id, ...(related ? [related] : [])] });
+  if (context.surface === 'web-search') return item.source === 'recall' ? [make(title)] : [];
   if (item.lesson && item.suggestedPrompt) return [make(item.suggestedPrompt)];
   // Times establish a conflict even when neither title looks like an event
   // category. The subject only determines what help to offer.

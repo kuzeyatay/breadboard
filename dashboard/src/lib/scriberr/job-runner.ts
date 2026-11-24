@@ -19,6 +19,7 @@ import {
   sanitizeErrorForClient,
 } from "./errors.ts";
 import { assertProbeAcceptable } from "./ffprobe.ts";
+import { runCommand } from "./exec.ts";
 import {
   buildTranscriptMarkdown,
   type TranscriptSourceInfo,
@@ -861,8 +862,12 @@ export class VideoTranscriptionRunner {
       progressPercent: 90,
     });
 
+    // "Keep the media files" on a YouTube link keeps the video itself in the Garden, as for an upload.
+    const keptYouTube = job.inputKind === "youtube" && job.retainMedia && job.canonicalUrl
+      ? await this.downloadYouTubeVideo(jobId, job.canonicalUrl) : null;
     let result: TranscriptIngestResult;
-    try {
+    // The Garden keeps its own copy; the download is removed either way.
+    try { try {
       const mediaKind =
         job.inputKind === "youtube"
           ? "video"
@@ -888,9 +893,9 @@ export class VideoTranscriptionRunner {
           ? { ...markdown.metadata, source_media: `origin:${jobId}` }
           : markdown.metadata,
         youtubeVideoId: job.youtubeVideoId,
-        mediaSha256: job.mediaSha256,
-        mediaFilePath:
-          job.inputKind === "upload" && job.retainMedia ? job.mediaTempPath : null,
+        mediaSha256: keptYouTube?.sha256 ?? job.mediaSha256,
+        mediaFilePath: keptYouTube?.filePath ??
+          (job.inputKind === "upload" && job.retainMedia ? job.mediaTempPath : null),
         mediaKind,
         jobId,
         onProgress: (step: string) => {
@@ -934,11 +939,37 @@ export class VideoTranscriptionRunner {
       }
       throw new VideoTranscriptionError("markdown_write_failed", { cause: error });
     }
+    } finally { if (keptYouTube) fs.rmSync(keptYouTube.filePath, { force: true }); }
 
     await this.completeJob(jobId, {
       sourceSlug: result.sourceSlug,
       sourceRelPath: result.sourceRelPath,
     });
+  }
+
+  /**
+   * Downloads the YouTube video as one MP4 (no merge step, so no ffmpeg) for the Garden to keep. A failure
+   * only means the transcript is saved without the video.
+   */
+  private async downloadYouTubeVideo(jobId: string, url: string): Promise<{ filePath: string; sha256: string } | null> {
+    const filePath = path.join(this.deps.config.tempDir, `youtube-${jobId}.mp4`);
+    this.deps.store.markHeartbeat(jobId);
+    try {
+      fs.mkdirSync(this.deps.config.tempDir, { recursive: true });
+      const run = await runCommand(this.deps.config.ytdlpPath,
+        ["--no-playlist", "--no-progress", "-f", "b[ext=mp4]/b", "-o", filePath, "--", url],
+        { timeoutMs: this.deps.config.ytdlpDownloadTimeoutMs, maxOutputBytes: 256 * 1024 });
+      if (run.code !== 0 || !fs.existsSync(filePath)) {
+        console.warn(`[video-transcription] keeping the YouTube video failed (${run.timedOut ? "timed out" : `exit ${run.code}`}): ${run.stderr.slice(-400)}`);
+        fs.rmSync(filePath, { force: true });
+        return null;
+      }
+      return { filePath, sha256: await sha256OfFile(filePath) };
+    } catch (error) {
+      console.warn("[video-transcription] keeping the YouTube video failed:", error);
+      fs.rmSync(filePath, { force: true });
+      return null;
+    }
   }
 
   private async completeJob(

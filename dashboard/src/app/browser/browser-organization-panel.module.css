@@ -19,7 +19,7 @@
 .header { display: flex; align-items: center; gap: 8px; padding: 15px 14px 12px 18px; }
 .header h2 { display: flex; align-items: center; gap: 8px; margin: 0 auto 0 0; font-size: 16px; font-weight: 600; letter-spacing: -.02em; }
 .header h2 svg { color: var(--botanical); }
-.account { display: inline-flex; align-items: center; min-height: 28px; padding: 0 10px; border: 1px solid var(--line); border-radius: 999px; color: var(--ink); font-size: 12px; font-weight: 500; text-decoration: none; background: var(--paper-raised, var(--paper)); }
+.account { display: inline-flex; align-items: center; min-height: 28px; padding: 0 10px; border: 1px solid var(--line); border-radius: 999px; corner-shape: round; color: var(--ink); font-size: 12px; font-weight: 500; text-decoration: none; background: var(--paper-raised, var(--paper)); }
 .account:has(.avatar) { padding: 0; border: 0; background: transparent; }
 .account:hover { border-color: var(--line-strong); }
 .icon { width: 30px; height: 30px; border: 0; background: transparent; display: inline-flex; justify-content: center; align-items: center; color: var(--ink-muted); border-radius: 8px; flex-shrink: 0; }
@@ -44,7 +44,7 @@
 .selection blockquote { margin: 6px 0 0; padding: 10px 12px; border-left: 3px solid var(--botanical); border-radius: 4px 10px 10px 4px; background: var(--neu-surface-pressed, var(--paper-strong)); box-shadow: var(--neu-inset-shadow); font-size: 12px; color: var(--ink); overflow-wrap: anywhere; max-height: 130px; overflow: auto; }
 
 .ai { margin: 0 0 12px; }
-.ai > button { display: inline-flex; align-items: center; gap: 7px; padding: 6px 12px; border-radius: 999px; border: 1px solid var(--neu-border, var(--line)); background: var(--neu-surface-raised, var(--paper-raised)); box-shadow: var(--neu-soft-shadow); color: var(--ink-muted); font-size: 12px; font-weight: 500; transition: box-shadow var(--neu-duration, .16s) ease, color .15s ease; }
+.ai > button { display: inline-flex; align-items: center; gap: 7px; padding: 6px 12px; border-radius: 999px; corner-shape: round; border: 1px solid var(--neu-border, var(--line)); background: var(--neu-surface-raised, var(--paper-raised)); box-shadow: var(--neu-soft-shadow); color: var(--ink-muted); font-size: 12px; font-weight: 500; transition: box-shadow var(--neu-duration, .16s) ease, color .15s ease; }
 .ai > button:hover { color: var(--ink); box-shadow: var(--neu-hover-shadow); }
 .ai > button svg, .answer strong svg, .thinking svg { color: var(--botanical); flex-shrink: 0; }
 .thinking { display: flex; align-items: center; gap: 7px; margin: 8px 0 0; color: var(--ink-muted); font-size: 12px; }
@@ -68,12 +68,12 @@
 .empty p, .card p { margin: 12px 0 5px; font-size: 13px; font-weight: 600; color: var(--ink); }
 .empty small, .card small { max-width: 255px; font-size: 12px; line-height: 1.6; }
 .card { margin: 6px 18px; border-radius: 14px; border: 1px solid var(--neu-border, var(--line)); background: var(--neu-surface-raised, var(--paper-raised)); box-shadow: var(--neu-soft-shadow); }
-.primary { display: inline-flex; align-items: center; justify-content: center; margin-top: 14px; padding: 7px 14px; border-radius: 999px; background: var(--botanical); color: var(--paper-raised, #fff); font-size: 12px; font-weight: 600; text-decoration: none; box-shadow: 3px 3px 8px color-mix(in srgb, var(--botanical-hover, var(--botanical)) 30%, transparent), -2px -2px 6px color-mix(in srgb, var(--paper-raised) 50%, transparent), inset 1px 1px 0 color-mix(in srgb, var(--paper-raised) 17%, transparent); }
+.primary { display: inline-flex; align-items: center; justify-content: center; margin-top: 14px; padding: 7px 14px; border-radius: 999px; corner-shape: round; background: var(--botanical); color: var(--paper-raised, #fff); font-size: 12px; font-weight: 600; text-decoration: none; box-shadow: 3px 3px 8px color-mix(in srgb, var(--botanical-hover, var(--botanical)) 30%, transparent), -2px -2px 6px color-mix(in srgb, var(--paper-raised) 50%, transparent), inset 1px 1px 0 color-mix(in srgb, var(--paper-raised) 17%, transparent); }
 .primary:hover { background: var(--botanical-hover, var(--botanical)); }
 
 /* Each crumb is a card of its own, so a passage reads as posts and not as a chat. */
 .message { margin-top: 12px; border-radius: 14px; border: 1px solid var(--neu-border, var(--line)); background: var(--neu-surface-raised, var(--paper-raised)); box-shadow: var(--neu-soft-shadow); }
-.avatar { flex-shrink: 0; display: inline-grid; place-items: center; border-radius: 50%; object-fit: cover; background: color-mix(in srgb, var(--botanical) 18%, var(--paper-surface)); color: var(--botanical); font-weight: 700; }
+.avatar { flex-shrink: 0; display: inline-grid; place-items: center; border-radius: 50%; corner-shape: round; object-fit: cover; background: color-mix(in srgb, var(--botanical) 18%, var(--paper-surface)); color: var(--botanical); font-weight: 700; }
 .warning { display: block; margin-top: 5px; color: var(--danger); font-size: 11px; }
 .textLink { display: inline-flex; align-items: center; gap: 5px; color: var(--ink-muted); font-size: 11px !important; background: transparent; border: 0; padding: 7px 0 0; text-decoration: none; }
 .textLink:hover { color: var(--ink); }
@@ -108,7 +108,7 @@
 .composer input { border-top: 1px solid var(--line); padding: 8px 0; font-size: 12px; }
 .composer footer { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
 .postingTo { color: var(--ink-muted); font-size: 11px; margin-right: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.submit { box-shadow: 3px 3px 8px color-mix(in srgb, var(--botanical-hover, var(--botanical)) 30%, transparent), -2px -2px 6px color-mix(in srgb, var(--paper-raised) 50%, transparent), inset 1px 1px 0 color-mix(in srgb, var(--paper-raised) 17%, transparent); border: 0; background: var(--botanical); color: var(--paper-raised, #fff); width: 28px; height: 28px; display: grid; place-items: center; border-radius: 50%; flex-shrink: 0; transition: transform .12s ease; }
+.submit { box-shadow: 3px 3px 8px color-mix(in srgb, var(--botanical-hover, var(--botanical)) 30%, transparent), -2px -2px 6px color-mix(in srgb, var(--paper-raised) 50%, transparent), inset 1px 1px 0 color-mix(in srgb, var(--paper-raised) 17%, transparent); border: 0; background: var(--botanical); color: var(--paper-raised, #fff); width: 28px; height: 28px; display: grid; place-items: center; border-radius: 50%; corner-shape: round; flex-shrink: 0; transition: transform .12s ease; }
 .submit:not(:disabled):active { transform: scale(.94); }
 .mode { display: flex; justify-content: space-between; font-size: 11px; color: var(--ink-muted); margin-bottom: 8px; }
 .mode span { display: flex; align-items: center; gap: 5px; }

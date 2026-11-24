@@ -114,6 +114,16 @@ export function passageLink(target: BrowserAnnotationTarget): string {
  * ponytail: a guess from the address alone. It will miss private pages on
  * ordinary addresses and block some public ones; widen or narrow the lists here.
  */
+/** The site an AI flag is about: the lowercase host without "www.", or null for anything that is not a public website. Same as crumbs/lib/targets.mjs. */
+export function aiFlagSite(value: unknown): string | null {
+  try {
+    const url = new URL(String(value));
+    if (!["http:", "https:"].includes(url.protocol)) return null;
+    const host = url.hostname.toLowerCase().replace(/^www\./, "");
+    return /^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(host) && host.length <= 253 && !/^[\d.]+$/.test(host) ? host : null;
+  } catch { return null; }
+}
+
 export function looksPrivatePage(value: string): boolean {
   let url: URL;
   try { url = new URL(value); } catch { return false; }

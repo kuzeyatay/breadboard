@@ -1,6 +1,7 @@
-// Independent 3D counterpart of thoughtTopologyRenderer.ts. Keep the 2D source
-// untouched: its palette, controls, labels and node gestures are mirrored here.
-// Only world geometry, camera orbit and XYZ drag/persistence differ.
+import { mapTone, mapThreadOpacity, mapPointSize } from "./topologyPaint.mjs"
+import { answerMapQuestion } from "./topologyAssistant"
+import { createMapShaders } from "./topologyShaders.mjs"
+import { detectTopics } from "./topologyCommunities"
 import {
   TopologyCamera3D,
   sphericalTopologyPositions,
@@ -23,7 +24,7 @@ import {
   type ZoomTransform,
 } from "d3"
 import katex from "katex"
-import { Application, Circle, Container, Graphics, Text } from "pixi.js"
+import { Application, Circle, Container, Graphics, Sprite, Text } from "pixi.js"
 import { FullSlug, SimpleSlug, resolveRelative } from "../../util/path"
 import type { D3Config } from "../Graph"
 import { openTopologyChat, TOPOLOGY_SOURCE_COLORS, topologySourceLabel } from "./sourceNodeVisual"
@@ -90,7 +91,7 @@ type SimLink = SimulationLinkDatum<SimNode> & {
 
 type NodeView = {
   node: SimNode
-  gfx: Graphics
+  gfx: Sprite
   label: Text
   placement: LabelPlacement | null
   labelAlpha: number
@@ -103,7 +104,6 @@ type NodeView = {
 type EdgeView = {
   kind: "semantic" | "hierarchy"
   edge: PlannedEdge
-  gfx: Graphics
   source: NodeView
   target: NodeView
   alpha: number
@@ -168,7 +168,8 @@ export type ThoughtTopologySettings = {
   /** Folder ids switched off; their subtrees and connections leave the map. */
   excludedFolderIds: string[]
   /** Repack visible folders into a sphere, or retain the full map's positions. */
-  filteredLayout: "sphere" | "cross-section"
+  grouping: "garden" | "community"
+  activity: "off" | "today" | "week"
   /** Connections weaker than this strength (0..1) are hidden. */
   minConnectionStrength: number
   /** Whether the Garden -> folder -> page hierarchy lines are drawn. */
@@ -187,7 +188,8 @@ const CONNECTION_CAP_CHOICES: Array<{ value: number; label: string }> = [
 const SETTINGS_STORAGE_PREFIX = "thought-topology-settings:v1:"
 const DEFAULT_SETTINGS: ThoughtTopologySettings = {
   excludedFolderIds: [],
-  filteredLayout: "sphere",
+  grouping: "garden",
+  activity: "off",
   minConnectionStrength: 0,
   showHierarchy: true,
   // A large Garden draws thousands of links; each page keeping its five
@@ -196,27 +198,28 @@ const DEFAULT_SETTINGS: ThoughtTopologySettings = {
   maxConnectionsPerNode: 5,
 }
 
-function readStoredSettings(scope: string): ThoughtTopologySettings {
+function readStoredSettings(scope: string, defaults: ThoughtTopologySettings): ThoughtTopologySettings {
   try {
     const raw = window.localStorage.getItem(`${SETTINGS_STORAGE_PREFIX}${scope}`)
     const parsed = raw ? (JSON.parse(raw) as Partial<ThoughtTopologySettings>) : null
-    if (!parsed || typeof parsed !== "object") return { ...DEFAULT_SETTINGS }
+    if (!parsed || typeof parsed !== "object") return { ...defaults }
     const strength = Number(parsed.minConnectionStrength)
     const cap = Number(parsed.maxConnectionsPerNode)
     return {
       excludedFolderIds: Array.isArray(parsed.excludedFolderIds)
         ? parsed.excludedFolderIds.filter((id): id is string => typeof id === "string")
         : [],
-      filteredLayout: parsed.filteredLayout === "cross-section" ? "cross-section" : "sphere",
-      minConnectionStrength: Number.isFinite(strength) ? Math.min(1, Math.max(0, strength)) : 0,
+      grouping: parsed.grouping === "community" ? "community" : "garden",
+      activity: parsed.activity === "week" || parsed.activity === "today" ? parsed.activity : "off",
+      minConnectionStrength: Number.isFinite(strength) ? Math.min(1, Math.max(0, strength)) : defaults.minConnectionStrength,
       showHierarchy: parsed.showHierarchy !== false,
       maxConnectionsPerNode:
         typeof parsed.maxConnectionsPerNode === "number" && Number.isFinite(cap)
           ? Math.max(0, Math.floor(cap))
-          : DEFAULT_SETTINGS.maxConnectionsPerNode,
+          : defaults.maxConnectionsPerNode,
     }
   } catch {
-    return { ...DEFAULT_SETTINGS }
+    return { ...defaults }
   }
 }
 
@@ -257,11 +260,6 @@ type MountResult = {
   connectionCount: number
 }
 
-type SpinControl = {
-  enabled: boolean
-  invalidate?: () => void
-}
-
 function isPreviewSurface(config: D3Config): boolean {
   return (
     Boolean(config.preview) || document.documentElement.classList.contains("quartz-graph-preview")
@@ -282,6 +280,8 @@ function currentPageIds(payload: TopologyPayload, fullSlug: FullSlug): string[] 
     .map((node) => node.id)
 }
 
+const activitySeenByHost = new WeakMap<HTMLElement, { slug: string; seen: Map<string, number> }>()
+
 /**
  * Render the Thought Topology map with a Filters panel. The panel lives
  * outside the Pixi scene and survives re-mounts: every settings change tears
@@ -298,11 +298,14 @@ export async function renderThoughtTopology3D(
   const preview = isPreviewSurface(config)
   const isGlobalGraph = graph.classList.contains("global-graph-container")
   const compactSidebar = !isGlobalGraph && Boolean(graph.closest(".right.sidebar"))
-  const interactive = !preview && !compactSidebar
+  const interactive = !compactSidebar && (!preview || document.documentElement.classList.contains("quartz-graph-preview"))
   const settingsScope = context.scopeFolderPath
     ? `${payload.garden.slug}:folder:${context.scopeFolderPath}`
     : `${payload.garden.slug}:root`
-  let settings = interactive ? readStoredSettings(settingsScope) : { ...DEFAULT_SETTINGS }
+  const defaults = { ...DEFAULT_SETTINGS,
+    minConnectionStrength: (payload.sourceConnectionCount ?? 0) > 5000 ? 0.6 : DEFAULT_SETTINGS.minConnectionStrength,
+  }
+  let settings = interactive ? readStoredSettings(settingsScope, defaults) : { ...defaults }
   let disposed = false
   const renderer = new RenderSlot<MountResult>()
   let active: MountResult | null = null
@@ -311,14 +314,12 @@ export async function renderThoughtTopology3D(
   let recoveryAttempts = 0
   let recoveryNotice: HTMLButtonElement | null = null
   let renderPanel = () => {}
-  let spinButton: HTMLButtonElement | null = null
-  // Spin is an explicit toggle, independent of all other map interactions.
-  const spin: SpinControl = { enabled: false }
-  const setSpinning = (enabled: boolean) => {
-    spin.enabled = enabled
-    spin.invalidate?.()
-    spinButton?.setAttribute("aria-pressed", String(enabled))
-    if (spinButton) spinButton.title = enabled ? "Stop spinning" : "Spin clockwise"
+  if (!payload.nodes.some(node => node.topic)) {
+    const topics = detectTopics(payload.nodes.filter(n => n.kind !== "chat").map(n => ({
+      id: n.id, title: n.title, concepts: n.primaryConcepts ?? [],
+    })), payload.edges.map(e => ({ source: e.source, target: e.target, weight: e.score ?? 1 })))
+    const byId = new Map(topics.flatMap(t => t.memberIds.map(id => [id, { index: t.index, label: t.label }] as const)))
+    payload = { ...payload, nodes: payload.nodes.map(n => ({ ...n, topic: byId.get(n.id) })) }
   }
 
   const scheduleRecovery = () => {
@@ -371,7 +372,6 @@ export async function renderThoughtTopology3D(
           payload,
           context,
           settings,
-          spin,
           scheduleRecovery,
         ),
       )
@@ -398,23 +398,20 @@ export async function renderThoughtTopology3D(
         payload,
         context,
         settings,
-        spin,
         scheduleRecovery,
       ),
     )) ?? null
 
   // --- Filters panel -------------------------------------------------------
   const outer = graph.parentElement
-  const controlsHost = outer?.querySelector(
-    ":scope > .thought-topology-controls",
-  ) as HTMLElement | null
-  const panelHost = controlsHost ?? outer
+  const panelHost = outer
   let panel: HTMLElement | null = null
-  if (interactive && panelHost) {
+  if (interactive && !preview && panelHost) {
     panel = element("div", "thought-topology-filter")
-    panel.dataset.placement = controlsHost ? "column" : "surface"
+    panel.dataset.placement = "surface"
     const toggle = element("button", "thought-topology-filter-toggle")
     toggle.type = "button"
+    toggle.setAttribute("aria-label","Filters")
     toggle.setAttribute("aria-expanded", "false")
     toggle.innerHTML =
       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 5h18"/><path d="M6 12h12"/><path d="M10 19h4"/></svg>'
@@ -432,21 +429,23 @@ export async function renderThoughtTopology3D(
     foldersTitle.append(showAll)
     const folderList = element("ul", "thought-topology-filter-folders")
     foldersSection.append(foldersTitle, folderList)
-    const layoutSection = element("section", "thought-topology-filter-section")
-    const layoutRow = element("label", "thought-topology-filter-row thought-topology-filter-select")
-    layoutRow.append(element("span", undefined, "Filtered layout"))
-    const layoutSelect = element("select")
-    layoutSelect.setAttribute("aria-label", "Filtered layout")
-    for (const [value, label] of [
-      ["sphere", "Full sphere"],
-      ["cross-section", "Cross-section"],
-    ]) {
-      const option = element("option", undefined, label)
-      option.value = value
-      layoutSelect.append(option)
+    const display = element("section", "thought-topology-filter-section")
+    const picker = (title: string, choices: string[][]) => {
+      const row = element("label", "thought-topology-filter-row thought-topology-filter-select")
+      const input = element("select")
+      input.setAttribute("aria-label", title)
+      for (const [value, label] of choices) input.add(new Option(label, value))
+      row.append(element("span", undefined, title), input)
+      display.append(row)
+      return input
     }
-    layoutRow.append(layoutSelect)
-    layoutSection.append(layoutRow)
+    const grouping = picker("Group by", [["garden", "Gardens and folders"], ["community", "Leiden communities"]])
+    const activity = picker("Activity", [["off", "Off"], ["today", "Today"], ["week", "Last 7 days"]])
+    const searchFolders = element("input", "map-folder-search")
+    searchFolders.type = "search"
+    searchFolders.placeholder = "Search Gardens and folders"
+    searchFolders.setAttribute("aria-label", searchFolders.placeholder)
+    foldersSection.insertBefore(searchFolders, folderList)
     const linesSection = element("section", "thought-topology-filter-section")
     const linesTitle = element("div", "thought-topology-filter-title")
     linesTitle.append(element("span", undefined, "Connections"))
@@ -477,15 +476,15 @@ export async function renderThoughtTopology3D(
     }
     capRow.append(capSelect)
     linesSection.append(linesTitle, hierarchyRow, strengthRow, capRow)
-    body.append(summary, foldersSection, layoutSection, linesSection)
-    spinButton = element("button", "thought-topology-filter-toggle thought-topology-spin")
-    spinButton.type = "button"
-    spinButton.innerHTML =
-      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 7v5h-5"/><path d="M20 12a8 8 0 1 0-2.4 5.7"/></svg>'
-    spinButton.append(element("span", undefined, "Spin"))
-    spinButton.addEventListener("click", () => setSpinning(!spin.enabled))
-    setSpinning(spin.enabled)
-    panel.append(toggle, spinButton, body)
+    const reset = element("button", "thought-topology-filter-link", "Reset filters")
+    reset.type = "button"
+    const close = element("button", "thought-topology-filter-link", "Close")
+    close.type = "button"
+    const header = element("header", "map-filter-header")
+    header.append(element("strong", undefined, "Filters"), close)
+    body.append(header, summary, linesSection, display, foldersSection, reset)
+    body.setAttribute("aria-label", "Knowledge map filters")
+    panel.append(toggle, body)
     const expandedFolders = new Set<string>()
 
     const describeStrength = (value: number) =>
@@ -496,15 +495,17 @@ export async function renderThoughtTopology3D(
       const excluded = new Set(settings.excludedFolderIds)
       const activeCount =
         excluded.size +
-        (settings.filteredLayout === DEFAULT_SETTINGS.filteredLayout ? 0 : 1) +
-        (settings.minConnectionStrength > 0 ? 1 : 0) +
+        (settings.grouping === "garden" ? 0 : 1) + (settings.activity === "off" ? 0 : 1) +
+        (settings.minConnectionStrength !== defaults.minConnectionStrength ? 1 : 0) +
         (settings.showHierarchy ? 0 : 1) +
         (settings.maxConnectionsPerNode !== DEFAULT_SETTINGS.maxConnectionsPerNode ? 1 : 0)
       badge.textContent = activeCount > 0 ? String(activeCount) : ""
       badge.hidden = activeCount === 0
       summary.textContent = `${active.visiblePageCount} of ${active.totalPageCount} pages, ${active.connectionCount} connections shown.`
       hierarchyInput.checked = settings.showHierarchy
-      layoutSelect.value = settings.filteredLayout
+      grouping.value = settings.grouping
+      activity.value = settings.activity
+      reset.disabled = activeCount === 0
       strengthInput.value = String(Math.round(settings.minConnectionStrength * 100))
       strengthValue.textContent = describeStrength(settings.minConnectionStrength)
       capSelect.value = String(
@@ -551,12 +552,19 @@ export async function renderThoughtTopology3D(
       }
       for (const option of options) {
         if (option.depth !== 1) continue
+        const query = searchFolders.value.trim().toLowerCase()
+        const allKids = children.get(option.id) ?? []
+        const kids = !query || option.title.toLowerCase().includes(query) ? allKids : allKids.filter(k => k.title.toLowerCase().includes(query))
+        if (query && !option.title.toLowerCase().includes(query) && !kids.length) continue
         const item = row(option, false)
-        const kids = children.get(option.id) ?? []
+        const only = element("button", "thought-topology-filter-link map-only", "Only")
+        only.setAttribute("aria-label", "Show only " + displayFolderTitle(option.title))
+        only.onclick = () => void applySettings({ ...settings, excludedFolderIds: options.filter(o => o.depth === 1 && o.id !== option.id).map(o => o.id) })
+        item.append(only)
         if (kids.length > 0) {
           const disclose = element("button", "thought-topology-filter-disclose")
           disclose.type = "button"
-          const open = expandedFolders.has(option.id)
+          const open = Boolean(query) || expandedFolders.has(option.id)
           disclose.setAttribute("aria-expanded", open ? "true" : "false")
           disclose.textContent = open
             ? "Hide sub-folders"
@@ -577,9 +585,9 @@ export async function renderThoughtTopology3D(
         }
         folderList.append(item)
       }
-      if (options.length === 0) {
+      if (folderList.childElementCount === 0) {
         folderList.append(
-          element("li", "thought-topology-filter-empty", "No folders in this view."),
+          element("li", "thought-topology-filter-empty", searchFolders.value.trim() ? "No matching folders." : "No folders in this view."),
         )
       }
     }
@@ -589,9 +597,14 @@ export async function renderThoughtTopology3D(
       settings = next
       writeStoredSettings(settingsScope, settings)
       await remount()
+      const canvas = graph.querySelector("canvas")
+      if (canvas && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+        canvas.animate([{ opacity: 0.72 }, { opacity: 1 }], { duration: 180, easing: "ease-out" })
+      }
     }
 
-    toggle.addEventListener("click", () => {
+    toggle.addEventListener("click", (e) => {
+      body.toggleAttribute("data-instant", e.detail === 0)
       body.hidden = !body.hidden
       toggle.setAttribute("aria-expanded", body.hidden ? "false" : "true")
       panel?.classList.toggle("open", !body.hidden)
@@ -599,12 +612,12 @@ export async function renderThoughtTopology3D(
     showAll.addEventListener("click", () => {
       void applySettings({ ...settings, excludedFolderIds: [] })
     })
-    layoutSelect.addEventListener("change", () => {
-      void applySettings({
-        ...settings,
-        filteredLayout: layoutSelect.value === "cross-section" ? "cross-section" : "sphere",
-      })
-    })
+    close.onclick = () => { toggle.click(); toggle.focus() }
+    body.onkeydown = e => { if (e.key === "Escape") { e.stopPropagation(); close.click() } }
+    searchFolders.oninput = () => renderPanel()
+    reset.onclick = () => { searchFolders.value = ""; void applySettings({ ...defaults }) }
+    grouping.onchange = () => void applySettings({ ...settings, grouping: grouping.value === "community" ? "community" : "garden" })
+    activity.onchange = () => void applySettings({ ...settings, activity: activity.value as ThoughtTopologySettings["activity"] })
     hierarchyInput.addEventListener("change", () => {
       void applySettings({ ...settings, showHierarchy: hierarchyInput.checked })
     })
@@ -654,7 +667,6 @@ async function mountThoughtTopology(
   payload: TopologyPayload,
   context: ThoughtTopologyRenderContext,
   settings: ThoughtTopologySettings,
-  spin: SpinControl,
   onRendererInvalidated?: () => void,
 ): Promise<MountResult> {
   const resources: Array<() => void> = []
@@ -676,7 +688,6 @@ async function mountThoughtTopology(
       payload,
       context,
       settings,
-      spin,
       (release) => resources.push(release),
       onRendererInvalidated,
     )
@@ -694,19 +705,16 @@ async function mountThoughtTopologyScene(
   payload: TopologyPayload,
   context: ThoughtTopologyRenderContext,
   settings: ThoughtTopologySettings,
-  spin: SpinControl,
   onCleanup: (release: () => void) => void,
   onRendererInvalidated?: () => void,
 ): Promise<MountResult> {
   const preview = isPreviewSurface(config)
   const isGlobalGraph = graph.classList.contains("global-graph-container")
   const compactSidebar = !isGlobalGraph && Boolean(graph.closest(".right.sidebar"))
-  const interactive = !preview && !compactSidebar
-  // The note sidebar card is the size of the dashboard's workspace preview
-  // and gets the same compact plan and framing: Garden, folders, the
-  // strongest bridges and a handful of pages, fitted edge to edge. Planning
-  // every page and connection of a large garden into 260px drew a hairball.
-  const compact = preview || compactSidebar
+  const interactive = !compactSidebar && (!preview || document.documentElement.classList.contains("quartz-graph-preview"))
+  // Passive cards get a small representative plan. The interactive Garden
+  // workspace uses the same graph and filter semantics as its full viewer.
+  const compact = !interactive && (preview || compactSidebar)
   const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false
   // Return to the browser between bounded batches so loading a large map
   // cannot monopolize input/painting while creating labels and GPU objects.
@@ -736,26 +744,32 @@ async function mountThoughtTopologyScene(
     preview: compact,
     previewKeepPageIds: compactSidebar ? currentPageIds(payload, fullSlug) : [],
     scopeFolderPath: context.scopeFolderPath,
-    excludedFolderIds: settings.excludedFolderIds,
-    minConnectionStrength: settings.minConnectionStrength,
-    maxConnectionsPerNode: settings.maxConnectionsPerNode,
+    // An explicitly requested route must include every hop, even when the
+    // overview's density or folder filters would hide an intermediate page.
+    excludedFolderIds: payload.isPagePath ? [] : settings.excludedFolderIds,
+    minConnectionStrength: payload.isPagePath ? 0 : settings.minConnectionStrength,
+    maxConnectionsPerNode: payload.isPagePath ? 0 : settings.maxConnectionsPerNode,
   }
   const plan = planThoughtTopology(payload, planOptions)
+  if (gardenSpheres) {
+    plan.nodes = plan.nodes.filter(n => n.id !== plan.garden.id)
+    plan.hierarchyEdges = plan.hierarchyEdges.filter(e => e.source !== plan.garden.id && e.target !== plan.garden.id)
+  }
   const largeMap = plan.nodes.length > ENTRANCE_SIMULATION_NODE_LIMIT
   const animateEntrance = !compact && !reducedMotion && plan.nodes.length <= ENTRANCE_SIMULATION_NODE_LIMIT
   await yieldIfNeeded()
   const camera = new TopologyCamera3D()
-  // By default, scatter the visible folders across a full sphere. Cross-section
-  // mode retains the complete scope's homes, as do compact previews.
-  const plannedHomes = sphericalTopologyPositions(
-    compact ||
-      (settings.filteredLayout === "cross-section" && settings.excludedFolderIds.length > 0)
-      ? planThoughtTopology(payload, { scopeFolderPath: context.scopeFolderPath }).nodes
-      : plan.nodes,
-    gardenSpheres,
-  )
+  // The preview retains the full Garden as its frame of reference.
+  const basis = compact && !gardenSpheres ? planThoughtTopology(payload, { scopeFolderPath: context.scopeFolderPath }).nodes : plan.nodes
+  const cluster = settings.grouping === "community"
+  const plannedHomes = sphericalTopologyPositions(cluster ? basis.map(n => ({
+    ...n, sectorId: n.topic ? "community:" + n.topic.index : n.sectorId,
+  })) : basis, cluster || gardenSpheres)
   // Chats join the sphere beside the pages they cited or asked about.
-  placeChatsBesidePages(plan.nodes, plan.edges, plannedHomes)
+  const sourcePageOrder = new Map(payload.nodes.map((node, index) => [node.id, index]))
+  const orderedNodes = payload.sourceHierarchy ? [...plan.nodes].sort((a, b) =>
+    (sourcePageOrder.get(a.id) ?? -1) - (sourcePageOrder.get(b.id) ?? -1)) : plan.nodes
+  placeChatsBesidePages(orderedNodes, payload.edges, plannedHomes)
   await yieldIfNeeded()
   const depthSpread = [...plannedHomes.values()].reduce(
     (extent, point) => Math.max(extent, Math.hypot(point.x, point.y, point.z)),
@@ -838,15 +852,12 @@ async function mountThoughtTopologyScene(
   let height = Math.max(graph.offsetHeight, 1)
 
   // --- Palette -------------------------------------------------------------
-  const cssVar = (name: string) => {
-    const scoped = getComputedStyle(graph.closest(".graph") ?? graph)
-      .getPropertyValue(name)
-      .trim()
-    return scoped || getComputedStyle(document.documentElement).getPropertyValue(name).trim()
-  }
   const isDark =
     document.documentElement.getAttribute("saved-theme") === "dark" ||
     document.documentElement.dataset.theme === "dark"
+  const palette = getComputedStyle(graph)
+  const topics = Array.from({length: 8}, (_, i) =>
+    palette.getPropertyValue("--topology-topic-" + i).trim() || (isDark ? "#b8bfcc" : "#627287"))
   const colors = isDark
     ? {
         garden: "#60a5fa",
@@ -861,9 +872,10 @@ async function mountThoughtTopologyScene(
         edgeActive: "#e8ede7",
         edgeSelected: "#60a5fa",
         search: "#facc15",
-        text: cssVar("--dark") || "#f4f1e8",
-        textMuted: cssVar("--darkgray") || "#e6ebe5",
-        paper: cssVar("--light") || "#18181a",
+        topics,
+        text: "#ffffff",
+        textMuted: "#e0e0e0",
+        paper: "#000000",
       }
     : {
         garden: "#2563eb",
@@ -878,11 +890,14 @@ async function mountThoughtTopologyScene(
         edgeActive: "#0f1a16",
         edgeSelected: "#1d4ed8",
         search: "#a16207",
-        text: cssVar("--dark") || "#0f1a16",
-        textMuted: cssVar("--darkgray") || "#13201b",
-        paper: cssVar("--light") || "#e6f0e6",
+        topics,
+        text: "#233139",
+        textMuted: "#45555e",
+        paper: "#fffefb",
       }
-  const fontFamily = cssVar("--bodyFont") || "system-ui, sans-serif"
+  const fontFamily = !isDark && palette.getPropertyValue("--bodyFont").trim() ||
+    '"Alte Haas Map", "Helvetica Neue", Helvetica, Arial, sans-serif'
+  await document.fonts.load("11px " + fontFamily)
 
   // --- Pixi ----------------------------------------------------------------
   const app = new Application()
@@ -910,9 +925,11 @@ async function mountThoughtTopologyScene(
   stage.sortableChildren = true
   const world = new Container({ isRenderGroup: true, zIndex: 0 })
   world.sortableChildren = true
-  const hierarchyLayer = new Container<Graphics>({ zIndex: 0 })
-  const linkLayer = new Container<Graphics>({ zIndex: 1 })
-  const nodeLayer = new Container<Graphics>({ zIndex: 2, sortableChildren: true })
+  const hierarchyLayer = new Container({ zIndex: 0 })
+  const linkLayer = new Container({ zIndex: 1 })
+  const nodeLayer = new Container<Sprite>({ zIndex: 2, sortableChildren: true })
+  const plates = new Graphics({ zIndex: 4.5, eventMode: "none" })
+  stage.addChild(plates)
   const labelLayer = new Container<Text>({ zIndex: 5, isRenderGroup: true })
   // The sidebar limits labels and controls, but still draws the complete map.
   hierarchyLayer.visible = settings.showHierarchy
@@ -950,12 +967,21 @@ async function mountThoughtTopologyScene(
     renderLoop?.dispose()
     for (const cleanup of cleanups.splice(0)) cleanup()
   })
+  const overview = !compactSidebar && outer ? element("div","map-overview") : null
+  if (overview) {
+    overview.append(element("strong",undefined, gardenSpheres && payload.garden.id === 0 ? "Knowledge" : plan.scopeFolder?.title || payload.garden.title),
+      element("span",undefined,(gardenSpheres ? plan.nodes.filter(n => n.kind === "folder" && n.id === n.sectorId).length + " Gardens · " : "") +
+        plan.nodes.length.toLocaleString()+" nodes · "+
+        (plan.edges.length+(settings.showHierarchy ? plan.hierarchyEdges.length : 0)).toLocaleString()+
+        (payload.sourceConnectionCount === undefined ? "" : " of " + payload.sourceConnectionCount.toLocaleString())+" connections"))
+    outer!.append(overview); onCleanup(() => overview.remove())
+  }
   const inspectorRoot = interactive && outer ? element("aside", "thought-inspector") : null
   const inspectorContent = inspectorRoot ? element("div", "thought-inspector-content") : null
   const inspectorClose = inspectorRoot ? element("button", "thought-inspector-close", "×") : null
   if (inspectorRoot && inspectorContent && inspectorClose) {
     inspectorRoot.setAttribute("role", "complementary")
-    inspectorRoot.setAttribute("aria-label", "Node connections")
+    inspectorRoot.setAttribute("aria-label", "Map selection")
     inspectorRoot.setAttribute("aria-hidden", "true")
     inspectorClose.type = "button"
     inspectorClose.setAttribute("aria-label", "Close node connections")
@@ -1002,68 +1028,32 @@ async function mountThoughtTopologyScene(
   )
 
   // --- Drawing helpers -----------------------------------------------------
-  function drawNode(view: NodeView) {
-    const { node, gfx, style } = view
-    const radius = node.radius
-    gfx.clear()
-    const sourceColor = node.sourceKind ? colors.source[node.sourceKind] : null
-    const nodeColor =
-      sourceColor ??
-      (node.kind === "garden"
-        ? colors.garden
-        : node.kind === "folder"
-          ? colors.folder
-          : style === "related" || node.radius >= 3.5
-            ? colors.pageStrong
-            : colors.page)
-    gfx
-      .circle(0, 0, radius + 5)
-      .fill({ color: nodeColor, alpha: style === "selected" ? 0.32 : 0.24 })
-    if (permanentHomeIds.has(node.id)) {
-      // A pinned node wears a thin ring so its lock is visible at rest.
-      gfx.circle(0, 0, radius + 5.5).stroke({ width: 1, color: nodeColor, alpha: 0.8 })
-    }
-    if (node.kind === "garden") {
-      gfx
-        .circle(0, 0, radius)
-        .fill({ color: nodeColor, alpha: 0.98 })
-        .stroke({ width: 1.2, color: nodeColor, alpha: 1 })
-      return
-    }
-    if (node.kind === "folder") {
-      if (style === "selected" || style === "hovered") {
-        gfx
-          .circle(0, 0, radius + 4)
-          .stroke({ width: 1.5, color: colors.garden, alpha: style === "selected" ? 0.75 : 0.45 })
-      }
-      gfx
-        .circle(0, 0, radius)
-        .fill({ color: nodeColor, alpha: 0.98 })
-        .stroke({ width: 1.1, color: nodeColor, alpha: 1 })
-      return
-    }
-    if (style === "selected") {
-      gfx.circle(0, 0, radius).fill({ color: sourceColor ?? colors.garden, alpha: 1 })
-      return
-    }
-    if (style === "hovered") {
-      gfx
-        .circle(0, 0, radius + 3.5)
-        .stroke({ width: 1.2, color: sourceColor ?? colors.garden, alpha: 0.55 })
-    }
-    gfx
-      .circle(0, 0, radius)
-      .fill({ color: nodeColor, alpha: 0.98 })
-      .stroke({ width: 1, color: nodeColor, alpha: 1 })
+  const paletteOrder = new Map(payload.folders.filter(folder => folder.depth === 1)
+    .sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+    .map((folder, index) => [folder.id, folder.gardenTone ?? index]))
+  const toneOf = (node: PlannedNode) => mapTone(node.topic?.index, paletteOrder.get(node.sectorId ?? ""))
+  const tone = (node: PlannedNode) => colors.topics[toneOf(node)]
+  const labelBorders = topics.map(color => mixHex(color, "#c3d1c4", .82))
+  const rawNodes = new Map(payload.nodes.map(n => [n.id,n]))
+  const activityStart = settings.activity === "today" ? new Date().setHours(0,0,0,0) : Date.now()-7*86400000
+  const counts = new Map<string,number>()
+  for (const n of plan.nodes) {
+    const count = (rawNodes.get(n.id)?.activityTimes ?? []).filter(t => t >= activityStart && t <= Date.now()).length
+    if (count) counts.set(n.id,count)
   }
-
+  function activityText(n: PlannedNode) {
+    const count = counts.get(n.id)
+    if (!count || settings.activity === "off") return ""
+    return count + (n.contentKind === "chat" ? (count === 1 ? " chat session" : " chat sessions") : (count === 1 ? " document update" : " document updates")) +
+      (settings.activity === "today" ? " today" : " in the last 7 days")
+  }
   /** The complete name of a node; pages keep their full page title. */
   function labelText(node: PlannedNode): string {
     return node.kind === "page" ? node.title : node.label
   }
 
   function makeLabel(node: PlannedNode): Text {
-    const size = node.kind === "garden" ? 13 : node.kind === "folder" ? 12.5 : 10.5
+    const size = 11
     const label = new Text({
       interactive: false,
       eventMode: "none",
@@ -1074,9 +1064,8 @@ async function mountThoughtTopologyScene(
         fontSize: size,
         fill: node.kind === "page" ? colors.textMuted : colors.text,
         fontFamily,
-        fontWeight: node.kind === "garden" ? "600" : node.kind === "folder" ? "500" : "400",
-        stroke: { color: colors.paper, width: 3, join: "round" },
-        wordWrap: true,
+        fontWeight: !isDark && (node.kind === "garden" || node.id === node.sectorId) ? "700" : "400",
+        wordWrap: false,
         wordWrapWidth:
           node.kind === "garden"
             ? GARDEN_LABEL_WRAP_PX
@@ -1091,7 +1080,8 @@ async function mountThoughtTopologyScene(
   }
 
   for (const node of plan.nodes) {
-    const gfx = new Graphics({
+    const gfx = new Sprite({
+      anchor: 0.5,
       interactive: interactive,
       visible: !largeMap,
       label: node.id,
@@ -1110,8 +1100,8 @@ async function mountThoughtTopologyScene(
       alphaTarget: 1,
       style: "rest",
     }
-    drawNode(view)
     gfx.zIndex = node.kind === "garden" ? 3 : node.kind === "folder" ? 2 : 1
+    gfx.renderable = false
     nodeLayer.addChild(gfx)
     labelLayer.addChild(view.label)
     views.push(view)
@@ -1124,13 +1114,6 @@ async function mountThoughtTopologyScene(
     const source = viewById.get(edge.source)
     const target = viewById.get(edge.target)
     if (!source || !target) continue
-    const gfx = new Graphics({
-      interactive,
-      visible: !largeMap,
-      eventMode: interactive ? "static" : "none",
-      cursor: "pointer",
-      label: edge.id,
-    })
     hierarchyViews.push({
       kind: "hierarchy",
       edge: {
@@ -1141,25 +1124,23 @@ async function mountThoughtTopologyScene(
         direction: "source-to-target",
         explanation: {
           state: "ready",
-          text: `${target.node.title} is organized under ${source.node.title} in this garden.`,
+          text: target.node.kind === "folder" ? "The second folder sits inside the first." : "The page is filed in this folder.",
         },
         evidence: [],
         crossFolder: false,
         strength: 0,
         width: HIERARCHY_STROKE_WIDTH,
-        opacity: 0.26,
+        opacity: mapThreadOpacity(true, 0),
       },
-      gfx,
       source,
       target,
       alpha: 0,
-      alphaTarget: 0.26,
+      alphaTarget: mapThreadOpacity(true, 0),
       color: colors.hierarchy,
-      restColor: colors.hierarchy,
+      restColor: mixHex(tone(source.node), colors.hierarchy, .4),
       widthBoost: 0,
       selected: false,
     })
-    hierarchyLayer.addChild(gfx)
     const pause = yieldIfNeeded()
     if (pause) await pause
   }
@@ -1168,18 +1149,10 @@ async function mountThoughtTopologyScene(
     const source = viewById.get(edge.source)
     const target = viewById.get(edge.target)
     if (!source || !target) continue
-    const gfx = new Graphics({
-      interactive: interactive,
-      visible: !largeMap,
-      eventMode: interactive ? "static" : "none",
-      cursor: "pointer",
-      label: edge.id,
-    })
-    const restColor = mixHex(colors.edgeWeak, colors.edgeStrong, edge.strength)
+    const restColor = mixHex(tone(source.node), tone(target.node), .5)
     edgeViews.push({
       kind: "semantic",
       edge,
-      gfx,
       source,
       target,
       alpha: 0,
@@ -1189,12 +1162,24 @@ async function mountThoughtTopologyScene(
       widthBoost: 0,
       selected: false,
     })
-    linkLayer.addChild(gfx)
     const pause = yieldIfNeeded()
     if (pause) await pause
   }
   const connectionViews: EdgeView[] = [...hierarchyViews, ...edgeViews]
   const edgeById = new Map(connectionViews.map((view) => [view.edge.id, view]))
+  const shaders = createMapShaders<SimNode>(app.canvas, app.canvas.getContext("webgl2")!, !isDark)
+  const shaderNodes = views.map(view => view.node)
+  const shaderEdges = (settings.showHierarchy ? connectionViews : edgeViews).map(view => ({
+    ...view.edge, structural: view.kind === "hierarchy",
+    opacity: isDark ? view.edge.opacity : view.edge.opacity * (
+      view.kind === "hierarchy" ? .85 : view.edge.crossFolder ? 1.45 : .85),
+  }))
+  const rgb = (hex: string) => [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255)
+  const shaderColors = topics.map(rgb), shaderInk = rgb(colors.text)
+  shaders.setNodes(shaderNodes, toneOf)
+  shaders.setLines(shaderNodes, shaderEdges, toneOf, null)
+  shaders.resize(width, height)
+  onCleanup(() => shaders.dispose())
 
   // --- Legacy Knowledge Map motion ----------------------------------------
   // Keep the same d3 springs and settling, starting from a smaller copy of
@@ -1258,6 +1243,7 @@ async function mountThoughtTopologyScene(
   const homeXForce = forceX<SimNode>(homeXForNode).strength(isGlobalGraph ? 0.11 : 0.09)
   const homeYForce = forceY<SimNode>(homeYForNode).strength(isGlobalGraph ? 0.055 : 0.045)
   let simulationSettled = !animateEntrance
+  let positionsDirty = true
   let draggingNode = false
   const simulation = forceSimulation<SimNode>(simNodes)
     .stop()
@@ -1307,6 +1293,7 @@ async function mountThoughtTopologyScene(
       returnTargets.clear()
       returningNodeIds.clear()
       simulationSettled = true
+      positionsDirty = true
       invalidate()
       // The relaxed layout spreads past the frame fitted around the planned
       // positions, which cut off the outer sectors. Re-frame once the first
@@ -1327,19 +1314,24 @@ async function mountThoughtTopologyScene(
   }
 
   // --- Geometry ------------------------------------------------------------
-  const projected = (node: PlannedNode) =>
-    camera.project({
-      x: node.x,
-      y: node.y,
-      z: (node as SimNode).z ?? homePositions.get(node.id)?.z ?? 0,
-    })
+  const projections = new WeakMap<PlannedNode, { x: number; y: number; z: number; px: number; py: number; pz: number; yaw: number; pitch: number }>()
+  const projected = (node: PlannedNode) => {
+    const z = (node as SimNode).z ?? 0
+    let p = projections.get(node)
+    if (p && p.px === node.x && p.py === node.y && p.pz === z && p.yaw === camera.yaw && p.pitch === camera.pitch) return p
+    const next = camera.project({ x: node.x, y: node.y, z })
+    if (!p) { p = { ...next, px: 0, py: 0, pz: 0, yaw: 0, pitch: 0 }; projections.set(node, p) }
+    p.x = next.x; p.y = next.y; p.z = next.z
+    p.px = node.x; p.py = node.y; p.pz = z; p.yaw = camera.yaw; p.pitch = camera.pitch
+    return p
+  }
   const worldX = (node: PlannedNode) => projected(node).x + width / 2
   const worldY = (node: PlannedNode) => projected(node).y + height / 2
   const screenOf = (node: PlannedNode) => ({
     x: transform.applyX(worldX(node)),
     y: transform.applyY(worldY(node)),
   })
-  const screenRadius = (node: PlannedNode) => node.radius * Math.sqrt(transform.k)
+  const screenRadius = (node: PlannedNode) => .25 * mapPointSize(node.kind !== "page", false) * Math.min(2.2, Math.max(.85, Math.sqrt(transform.k / fitK)))
 
   /** Pick from the current rendered coordinates instead of relying on a prior
    * hover event. Nodes can move beneath a stationary pointer while the force
@@ -1350,7 +1342,7 @@ async function mountThoughtTopologyScene(
       const position = screenOf(view.node)
       const distance = Math.hypot(x - position.x, y - position.y)
       const hitRadius = Math.max(
-        NODE_CLICK_TARGET_RADIUS_PX,
+        largeMap ? 5 : NODE_CLICK_TARGET_RADIUS_PX,
         (view.node.radius + 7) * Math.sqrt(transform.k),
       )
       const depth = projected(view.node).z
@@ -1381,58 +1373,20 @@ async function mountThoughtTopologyScene(
     }
   }
 
-  function distanceToEdge(view: EdgeView, point: { x: number; y: number }): number {
-    let best = Infinity
-    let previous = edgePoint(view, 0)
-    for (let step = 1; step <= 12; step += 1) {
-      const next = edgePoint(view, step / 12)
-      const dx = next.x - previous.x
-      const dy = next.y - previous.y
-      const denominator = dx * dx + dy * dy
-      const unit =
-        denominator === 0
-          ? 0
-          : Math.max(
-              0,
-              Math.min(
-                1,
-                ((point.x - previous.x) * dx + (point.y - previous.y) * dy) / denominator,
-              ),
-            )
-      best = Math.min(
-        best,
-        Math.hypot(point.x - (previous.x + unit * dx), point.y - (previous.y + unit * dy)),
-      )
-      previous = next
+  function edgeAt(x: number, y: number) {
+    const px = transform.invertX(x) - width / 2, py = transform.invertY(y) - height / 2
+    const reach = 4 / transform.k
+    let best = reach * reach, hit: EdgeView | undefined
+    for (const edge of connectionViews) {
+      if (!canHoverConnection(edge)) continue
+      const a = projected(edge.source.node), b = projected(edge.target.node)
+      if (px < Math.min(a.x,b.x)-reach || px > Math.max(a.x,b.x)+reach || py < Math.min(a.y,b.y)-reach || py > Math.max(a.y,b.y)+reach) continue
+      const dx = b.x-a.x, dy = b.y-a.y
+      const t = Math.max(0,Math.min(1, ((px-a.x)*dx+(py-a.y)*dy)/(dx*dx+dy*dy || 1)))
+      const distance = (px-a.x-t*dx)**2+(py-a.y-t*dy)**2
+      if (distance < best) { best = distance; hit = edge }
     }
-    return best
-  }
-
-  function drawEdge(view: EdgeView) {
-    const g = edgeGeometry(view)
-    const k = transform.k
-    const restWidth = view.edge.width + view.widthBoost
-    const strokeWidth = (view.selected ? restWidth + 1.2 : restWidth) / k
-    const gfx = view.gfx
-    // Fading a connection does not change its geometry. Keep the GPU path
-    // until an endpoint, zoom, or style changes instead of rebuilding it on
-    // every opacity frame.
-    gfx.alpha = view.alpha
-    const drawn = view.drawn
-    if (drawn && drawn.x1 === g.x1 && drawn.y1 === g.y1 && drawn.x2 === g.x2 &&
-        drawn.y2 === g.y2 && drawn.k === k && drawn.width === strokeWidth && drawn.color === view.color) return
-    view.drawn = { ...g, k, width: strokeWidth, color: view.color }
-    gfx.clear()
-    const path = () => {
-      gfx.moveTo(g.x1, g.y1)
-      gfx.lineTo(g.x2, g.y2)
-    }
-    if (interactive) {
-      path()
-      gfx.stroke({ alpha: 0.001, width: 14 / k, color: view.color })
-    }
-    path()
-    gfx.stroke({ alpha: 1, width: strokeWidth, color: view.color })
+    return hit
   }
 
   // --- View transform ------------------------------------------------------
@@ -1509,8 +1463,8 @@ async function mountThoughtTopologyScene(
       ? { ...plan.garden, ...(homePositions.get(plan.garden.id) ?? {}) }
       : plan.garden
     const bounds = boundsOf(
-      fitNodes.map((node) => ({ ...node, ...projected(node) })),
-      compact ? 18 : 44,
+      fitNodes.map((node) => ({ ...projected(node), radius: gardenSpheres ? 0 : node.radius })),
+      gardenSpheres ? 0 : compact ? 18 : 44,
     )
     // Keep the Garden name centred even in sparse or filtered clouds. Mirror
     // the bounds about its anchor so fitting still includes every outer node.
@@ -1518,19 +1472,19 @@ async function mountThoughtTopologyScene(
     const halfWidth = Math.max(focus.x - bounds.minX, bounds.maxX - focus.x)
     const halfHeight = Math.max(focus.y - bounds.minY, bounds.maxY - focus.y)
     const next = fitTransform(
-      {
+      gardenSpheres ? bounds : {
         minX: focus.x - halfWidth,
         maxX: focus.x + halfWidth,
         minY: focus.y - halfHeight,
         maxY: focus.y + halfHeight,
       },
       { width, height },
-      currentInsets(),
+      gardenSpheres ? { left: width * .08, right: width * .08, top: height * .07, bottom: height * .07 } : currentInsets(),
       {
         minScale: 0.01,
         maxScale: compact ? 1.25 : 1.35,
       },
-      focus,
+      gardenSpheres ? undefined : focus,
     )
     fitK = next.k
     viewState = "fit"
@@ -1601,10 +1555,7 @@ async function mountThoughtTopologyScene(
             : emphasis && highlighted
               ? "related"
               : "rest"
-      if (style !== view.style) {
-        view.style = style
-        drawNode(view)
-      }
+      view.style = style
       view.alphaTarget = highlighted ? 1 : view.node.kind === "page" ? 0.42 : 0.62
     }
 
@@ -1621,17 +1572,9 @@ async function mountThoughtTopologyScene(
         ? source === inspectedNodeId || target === inspectedNodeId
         : selected || hovered || touchesFocus || (emphasis === null ? true : withinEmphasis)
       // Dimmed connections must not intercept the highlighted links at crossings.
-      view.gfx.eventMode = interactive && canHoverConnection(view) ? "static" : "none"
       view.selected = selected
-      view.alphaTarget = selected
-        ? 1
-        : hovered
-          ? Math.min(1, view.edge.opacity + 0.42)
-          : active
-            ? emphasis
-              ? Math.min(1, view.edge.opacity + 0.3)
-              : view.edge.opacity
-            : 0.05
+      const base = view.edge.opacity
+      view.alphaTarget = active ? base : base * .32
       view.color = selected
         ? colors.edgeSelected
         : hovered
@@ -1731,20 +1674,62 @@ async function mountThoughtTopologyScene(
    * a mismatch, and zooming into a dense cluster never separated the names
    * even though it separated the dots.
    */
-  function labelScale(): number {
-    const ratio = transform.k / (fitK || transform.k || 1)
-    return Math.min(1.7, Math.max(0.9, Math.sqrt(ratio)))
-  }
+
 
   /** Zoom (relative to fit) from which quiet names — Markdown pages, whose
    * names are otherwise shown on demand — join the label budget. */
   const QUIET_NAME_ZOOM = 1.5
 
+  const gardenCaptions = views.filter(v => v.node.kind === "folder")
+  const isGarden = (n: PlannedNode) => n.id === n.sectorId
+  const degreeById = new Map<string, number>()
+  for (const edge of [...(payload.sourceHierarchy ?? plan.hierarchyEdges), ...payload.edges]) {
+    degreeById.set(edge.source, (degreeById.get(edge.source) ?? 0) + 1)
+    degreeById.set(edge.target, (degreeById.get(edge.target) ?? 0) + 1)
+  }
+  gardenCaptions.sort(({node: a}, {node: b}) =>
+    Number(isGarden(b)) - Number(isGarden(a)) ||
+    Number(b.folderId === b.sectorId) - Number(a.folderId === a.sectorId) ||
+    (degreeById.get(b.id) ?? 0) - (degreeById.get(a.id) ?? 0) || a.title.localeCompare(b.title))
+
+  function placeGardenCaptions(ratio: number) {
+    const boxes: ClipRect[] = []
+    const folderGardens = new Set<string | null>()
+    const overview = ratio < 1.8
+    const budget = Math.max(6, Math.min(overview ? 21 : 38, Math.round(width * height / (overview ? 30000 : 23000))))
+    for (const view of views) {
+      view.placement = null
+      view.labelTarget = 0
+    }
+    for (const view of gardenCaptions) {
+      if (boxes.length >= budget) break
+      const {node, label} = view
+      const folder = !isGarden(node)
+      if (overview && folder && (node.folderId !== node.sectorId || folderGardens.has(node.sectorId) || folderGardens.size >= 4)) continue
+      const {x, y} = screenOf(node)
+      if (x < 0 || x > width || y < 8 || y > height - 8) continue
+      const w = label.width + 10, h = label.height + 4
+      const left = x + 7 + w <= width ? x + 7 : x - 7 - w
+      const top = y - h / 2
+      if (left < 0 || top < 0 || top + h > height) continue
+      if (boxes.some(b => left < b.right + 5 && left + w > b.left - 5 && top < b.bottom + 4 && top + h > b.top - 4)) continue
+      const rect = { left, top, right: left + w, bottom: top + h }
+      boxes.push(rect)
+      view.placement = {side: left > x ? "right" : "left", dx: left + 5 - x, dy: 0, anchorX: 0, anchorY: .5, rect}
+      view.labelTarget = calloutVisible ? .3 : 1
+      if (folder) folderGardens.add(node.sectorId)
+    }
+  }
+
   function updateLabels() {
     labelsDirty = false
     const ratio = transform.k / (fitK || 1)
+    if (gardenSpheres && !compact && !payload.isPagePath && !selectedNodeId && !selectedEdgeId && !searchQuery) {
+      placeGardenCaptions(ratio)
+      return
+    }
     const budget = pageLabelBudget(ratio)
-    const scale = labelScale()
+    const scale = 1
     for (const view of views) {
       if (view.label.scale.x !== scale) view.label.scale.set(scale, scale)
     }
@@ -1769,7 +1754,7 @@ async function mountThoughtTopologyScene(
       // view is zoomed in enough for names to have room.
       const quietName = !shouldShowTopologyNodeLabel(node)
       const inFocus =
-        selectedNodeId === node.id ||
+        payload.isPagePath || selectedNodeId === node.id ||
         (hoveredNodeId === node.id && !draggingNode) ||
         selectedNeighbours.has(node.id) ||
         Boolean(
@@ -1778,6 +1763,7 @@ async function mountThoughtTopologyScene(
         ) ||
         Boolean(searchQuery && searchHits.has(node.id))
       if (
+        (!inFocus && node.kind === "page") ||
         (compactSidebar && node.kind !== "folder") ||
         (quietName && !inFocus && ratio < QUIET_NAME_ZOOM)
       ) {
@@ -1858,6 +1844,22 @@ async function mountThoughtTopologyScene(
       right: width - 4,
       bottom: height - 4,
     }
+    candidates.sort((a,b) => b.priority-a.priority)
+    const overview = ratio < 1.8 && !selectedNodeId
+    const gardenFolders = new Set<string | null>()
+    const labelBudget = Math.max(6, Math.min(overview ? 21 : 38, Math.round(width*height/(overview ? 30000 : 23000))))
+    for (let i = 0; i < candidates.length;) {
+      const node = viewById.get(candidates[i].id)!.node
+      if (gardenSpheres && overview && node.kind === "folder" && node.id !== node.sectorId) {
+        if (node.folderId !== node.sectorId || gardenFolders.has(node.sectorId) || gardenFolders.size >= 4) {
+          candidates.splice(i,1)
+          continue
+        }
+        gardenFolders.add(node.sectorId)
+      }
+      i++
+    }
+    candidates.splice(labelBudget)
     const placements = placeLabels(candidates, obstacles, clip, blockedRects())
     if (compact) {
       // The sidebar card is too small for every name. Trim the budget tier to
@@ -1878,12 +1880,12 @@ async function mountThoughtTopologyScene(
         ((
           compact
             ? labelMustStayAttached(view.node.id)
-            : wanted.has(view.node.id) && !budgetTier.has(view.node.id)
+            : labelMustStayAttached(view.node.id) && wanted.has(view.node.id) && !budgetTier.has(view.node.id)
         )
           ? attachedLabelPlacement(view)
           : null)
       view.placement = placement
-      view.labelTarget = placement ? (view.alphaTarget < 1 ? 0.6 : 1) : 0
+      view.labelTarget = placement ? (calloutVisible ? 0.3 : view.alphaTarget < 1 ? 0.6 : 1) : 0
     }
   }
 
@@ -2004,7 +2006,9 @@ async function mountThoughtTopologyScene(
       calloutText(
         "thought-callout-meta",
         [
+          node.topic ? `Topic: ${node.topic.label}` : "",
           sourceType,
+          activityText(node),
           concepts,
           `${touching.length} ${touching.length === 1 ? "connection" : "connections"}`,
         ]
@@ -2016,33 +2020,14 @@ async function mountThoughtTopologyScene(
 
   function renderEdgeCallout(view: EdgeView) {
     if (!calloutContent) return
-    const { edge } = view
     calloutContent.replaceChildren()
     calloutContent.appendChild(
       calloutTitle(
         `${view.source.node.title} ${view.kind === "hierarchy" ? "→" : "↔"} ${view.target.node.title}`,
       ),
     )
-    calloutText(
-      "thought-callout-meta",
-      [
-        relationLabel(edge.relationType),
-        view.kind === "semantic"
-          ? `${affinityLabel(edge.score, edge.threshold)} affinity · ${edge.score.toFixed(2)}`
-          : "",
-        edge.crossFolder ? "Bridges folders" : "",
-      ]
-        .filter(Boolean)
-        .join(" · "),
-    )
-    calloutText(
-      "thought-callout-summary",
-      edge.explanation.text.trim()
-        ? edge.explanation.text
-        : edge.origin === "inferred"
-          ? "This connection is supported by the displayed semantic evidence."
-          : "This connection comes from the garden's authored structure.",
-    )
+    calloutText("thought-callout-meta", connectionMeta(view))
+    calloutText("thought-callout-summary", inspectorConnectionExplanation(view))
   }
 
   function visibleConnectionsFor(nodeId: string): EdgeView[] {
@@ -2076,10 +2061,39 @@ async function mountThoughtTopologyScene(
   }
 
   function inspectorConnectionExplanation(view: EdgeView): string {
-    if (view.edge.explanation.text.trim()) return view.edge.explanation.text
-    return view.edge.origin === "inferred"
-      ? "This connection is supported by the displayed semantic evidence."
-      : "This connection comes from the garden's authored structure."
+    const text = view.edge.explanation.text.trim()
+    // Preserve the stored question for retrieval and show the reader just its evidence.
+    const question = /^You asked "(.*)"(?: and the answer cited |; | in .+?; )/.exec(text)?.[1]
+    if (question) {
+      const cited = text.includes(" and the answer cited ")
+      return (cited ? "The answer cited this page when you asked “" : "This page matches your question “") + question + "”"
+    }
+    if (view.kind === "hierarchy") return view.target.node.kind === "folder"
+      ? "The second folder sits inside the first." : "The page is filed in this folder."
+    if (/through its recorded source references/.test(text)) return "The first page lists the second as a source."
+    const oldCross = /form a cross-Garden semantic match|latest Thought Topology builds/i.test(text)
+    const oldRelated = /are connected(?: because|\.$)/.test(text) || text.includes("This connection is preserved from authored Markdown")
+    if (text && !oldCross && !oldRelated) return text
+    const shared = view.edge.evidence
+      .filter(item => item.kind === "concept" || /^Shared (concept|term):/i.test(item.label))
+      .map(item => item.label.replace(/^Shared (concept|term):\s*/i, "").trim()).filter(Boolean)
+    if (shared.length) return "Both pages cover " + new Intl.ListFormat("en").format([...new Set(shared)].slice(0, 3)) + "."
+    if (view.edge.origin !== "inferred") return "One page references the other in the Garden."
+    return "Breadboard found similar wording or ideas in the two pages."
+  }
+
+  function connectionMeta(view: EdgeView) {
+    const edge = view.edge
+    const cross = edge.relationType === "cross-garden-related" || edge.evidence.some(e => /^Cross-Garden match:/i.test(e.label))
+    const gardenOf = (node: SimNode) => node.sectorId && gardenSpheres ? viewById.get(node.sectorId)?.node.title : payload.garden.title
+    const recordedPair = edge.evidence.find(e => /^Cross-Garden match:/i.test(e.label))
+      ?.label.replace(/^Cross-Garden match:\s*/i, "").trim()
+    const sourceGarden = gardenOf(view.source.node)
+    const targetGarden = gardenOf(view.target.node)
+    const pair = cross ? (sourceGarden && targetGarden && sourceGarden !== targetGarden
+      ? sourceGarden + " ↔ " + targetGarden : recordedPair) : ""
+    return [relationLabel(edge.relationType), pair, view.kind === "semantic" ?
+      affinityLabel(edge.score, edge.threshold) + " affinity · " + edge.score.toFixed(2) : ""].filter(Boolean).join(" · ")
   }
 
   function syncInspectorConnectionSelection() {
@@ -2147,6 +2161,7 @@ async function mountThoughtTopologyScene(
         ),
       )
     }
+    if (activityText(node)) header.append(element("p","thought-breadcrumb",activityText(node)))
     const summaryText = withoutEmptyLessonPagesNotice(inspectorNodeSummary(node))
     if (summaryText) {
       const summary = element("p", "thought-summary")
@@ -2187,26 +2202,11 @@ async function mountThoughtTopologyScene(
         port.dataset.kind = connection.kind
         const otherTitle = element("span", "thought-connection-title")
         appendMathText(otherTitle, other.title)
-        const weight = element(
-          "span",
-          "thought-connection-weight",
-          connection.kind === "semantic"
-            ? `${Math.round(connection.edge.score * 100)}%`
-            : "Structure",
-        )
-        cardHeading.append(port, otherTitle, weight)
+        cardHeading.append(port, otherTitle)
         const relation = element(
           "span",
           "thought-connection-relation",
-          [
-            relationLabel(connection.edge.relationType),
-            connection.kind === "semantic"
-              ? `${affinityLabel(connection.edge.score, connection.edge.threshold)} affinity`
-              : "Garden hierarchy",
-            connection.edge.crossFolder ? "Bridges folders" : "",
-          ]
-            .filter(Boolean)
-            .join(" · "),
+          connectionMeta(connection),
         )
         const explanation = element("span", "thought-connection-explanation")
         appendMathText(explanation, inspectorConnectionExplanation(connection))
@@ -2350,13 +2350,13 @@ async function mountThoughtTopologyScene(
     // Its highlighted connections still expose their floating text on hover.
     const hoveredNode =
       hoveredNodeId && hoveredNodeId !== inspectedNodeId ? viewById.get(hoveredNodeId) : undefined
-    const hoveredEdge = hoveredEdgeId ? edgeById.get(hoveredEdgeId) : undefined
+    const hoveredEdge = hoveredEdgeId && !(hoveredEdgeId === selectedEdgeId && inspectorRoot?.classList.contains("open")) ? edgeById.get(hoveredEdgeId) : undefined
     const selectedNode =
       selectedNodeId && selectedNodeId !== inspectedNodeId
         ? viewById.get(selectedNodeId)
         : undefined
     const selectedEdge =
-      selectedEdgeId && !inspectedNodeId ? edgeById.get(selectedEdgeId) : undefined
+      selectedEdgeId && !inspectorRoot?.classList.contains("open") ? edgeById.get(selectedEdgeId) : undefined
     const target: FloatingCalloutTarget | null = hoveredNode
       ? { kind: "node", view: hoveredNode }
       : hoveredEdge
@@ -2405,9 +2405,27 @@ async function mountThoughtTopologyScene(
   }
 
   function selectEdge(view: EdgeView) {
-    hideNodeInspector()
+    inspectedNodeId = null
     selectedEdgeId = view.edge.id
     selectedNodeId = null
+    if (inspectorContent && inspectorRoot) {
+      const header = element("header", "thought-inspector-header")
+      const title = element("h2")
+      const endpoint = (end: NodeView) => {
+        const button = element("button","map-endpoint")
+        button.type = "button"; appendMathText(button,end.node.title)
+        button.title = "Inspect " + end.node.title
+        button.onclick = () => openNodeInspector(end)
+        return button
+      }
+      title.append(endpoint(view.source),document.createTextNode(view.kind === "hierarchy" ? " → " : " ↔ "),endpoint(view.target))
+      const summary = element("p", "thought-summary")
+      appendMathText(summary, inspectorConnectionExplanation(view))
+      header.append(element("p", "thought-kicker", "Connection"), title, element("p", "thought-breadcrumb", connectionMeta(view)), summary)
+      inspectorContent.replaceChildren(header)
+      inspectorRoot.classList.add("open")
+      inspectorRoot.setAttribute("aria-hidden", "false")
+    }
     refreshStyles()
     syncFloatingCallout()
     emitGraphContext()
@@ -2431,7 +2449,7 @@ async function mountThoughtTopologyScene(
 
   const handleInspectorClose = () => clearSelection()
   const handleInspectorKeydown = (event: KeyboardEvent) => {
-    if (event.key === "Escape" && inspectedNodeId) clearSelection()
+    if (event.key === "Escape" && (inspectedNodeId || selectedEdgeId)) clearSelection()
   }
   inspectorClose?.addEventListener("click", handleInspectorClose)
   window.addEventListener("keydown", handleInspectorKeydown)
@@ -2482,7 +2500,6 @@ async function mountThoughtTopologyScene(
     homeXForce.x(homeXForNode)
     homeYForce.y(homeYForNode)
     writeStoredPositions(positionScope, positions)
-    drawNode(view)
     refreshNodeInspector()
     invalidate()
     emitGraphContext()
@@ -2521,7 +2538,6 @@ async function mountThoughtTopologyScene(
       simulationSettled = false
       simulation.alpha(Math.max(simulation.alpha(), 0.25)).restart()
     }
-    drawNode(view)
     refreshNodeInspector()
     invalidate()
     emitGraphContext()
@@ -2545,43 +2561,200 @@ async function mountThoughtTopologyScene(
     lastRightClick = { nodeId: view.node.id, at: now }
   }
 
+  const accents = new Graphics({ eventMode: "none", zIndex: 4 })
+  stage.addChild(accents)
+  const resultNodes = new Set<string>(), resultEdges = new Map<string, EdgeView>()
+  let answerPulseUntil = 0
+  const freshNodes = new Set<string>(), freshEdges = new Set<string>()
+  const now = Date.now()
+  let history = activitySeenByHost.get(graph)
+  if (!history || history.slug !== payload.garden.slug) {
+    history = { slug: payload.garden.slug, seen: new Map() }
+    activitySeenByHost.set(graph, history)
+  }
+  const seen = history.seen
+  function arrived(id: string, at: number | undefined) {
+    const previous = seen.get(id)
+    const latest = at && at <= now ? at : 0
+    seen.set(id, Math.max(previous ?? 0, latest))
+    return latest > (previous ?? 0) && now - latest < (previous === undefined ? 60_000 : 7 * 86_400_000)
+  }
+  for (const n of payload.nodes) {
+    if (arrived(n.id, Math.max(0, ...(n.activityTimes ?? []))) && viewById.has(n.id)) freshNodes.add(n.id)
+  }
+  for (const e of payload.edges) {
+    if (!arrived(e.id,e.changedAt) || !edgeById.has(e.id)) continue
+    freshEdges.add(e.id)
+    freshNodes.add(e.source)
+    freshNodes.add(e.target)
+  }
+  const arrivalPulseUntil = freshNodes.size || freshEdges.size ? performance.now() + 1600 : 0
+  function drawAccents(time: number) {
+    accents.clear()
+    const waveAt = (until: number) => time < until && !reducedMotion ? (1 + Math.cos((until - time) / 140)) / 2 : .6
+    const answerWave = waveAt(answerPulseUntil), arrivalWave = waveAt(arrivalPulseUntil)
+    const drawLine = (e: EdgeView, wave: number) => {
+      const a = screenOf(e.source.node), b = screenOf(e.target.node)
+      accents.moveTo(a.x,a.y).lineTo(b.x,b.y).stroke({width:1.3+wave*.9,color:colors.text,alpha:.55+.4*wave})
+    }
+    for (const edge of resultEdges.values()) drawLine(edge, answerWave)
+    if (time < arrivalPulseUntil) for (const id of freshEdges) {
+      const edge = edgeById.get(id)
+      if (edge && !resultEdges.has(id)) drawLine(edge, arrivalWave)
+    }
+    const ring = (id: string, wave: number) => {
+      const v=viewById.get(id); if (!v) return
+      const p=screenOf(v.node)
+      accents.circle(p.x,p.y,6 + wave*3).stroke({width:1.7,color:tone(v.node),alpha:.85})
+    }
+    if (settings.activity !== "off") {
+      for (const [id, count] of counts) {
+        const view = viewById.get(id)
+        if (!view) continue
+        const p = screenOf(view.node)
+        accents.circle(p.x,p.y,screenRadius(view.node)+2+Math.min(4,Math.log2(count)))
+          .stroke({width:1,color:tone(view.node),alpha:.55})
+      }
+    }
+    for (const id of permanentHomeIds) if (!resultNodes.has(id)) ring(id, .6)
+    for (const id of resultNodes) ring(id, answerWave)
+    if (time < arrivalPulseUntil) for (const id of freshNodes) if (!resultNodes.has(id)) ring(id, arrivalWave)
+    return time < arrivalPulseUntil || (!reducedMotion && time < answerPulseUntil)
+  }
+  if (interactive && !preview && outer && outer.dataset.graphSurface !== "garden") {
+    const host = element("div","map-assistant")
+    const toggle = element("button","map-assistant-toggle","Assistant")
+    toggle.type = "button"; toggle.setAttribute("aria-expanded","false")
+    const panel = element("section","map-assistant-panel")
+    panel.hidden = true; panel.setAttribute("aria-label","Knowledge assistant")
+    const header = element("header","map-filter-header")
+    const dismiss = element("button","thought-topology-filter-link","Close")
+    header.append(element("strong",undefined,"Knowledge assistant"),dismiss)
+    const messages = element("div","map-assistant-messages")
+    messages.setAttribute("aria-live","polite")
+    const purpose = element("p","map-assistant-purpose","Ask how nodes are connected. I’ll highlight the nodes and links behind each answer.")
+    const form = element("form","map-assistant-compose")
+    const input = element("input"); input.placeholder = "Ask about this map…"; input.setAttribute("aria-label","Ask about connections")
+    const send = element("button",undefined,"Ask"); send.type = "submit"; form.append(input,send)
+    const defaultPrompt = gardenSpheres && plan.edges.some(edge => edge.crossFolder) ?
+      "Find connections across Gardens" : "Show strongest connections"
+    const explore = element("button","map-assistant-prompt",defaultPrompt)
+    panel.append(header,purpose,messages,explore,form); host.append(panel,toggle); outer.append(host)
+    const setOpen = (open: boolean) => {
+      panel.hidden = !open; toggle.setAttribute("aria-expanded",String(open))
+      if (open) {
+        explore.textContent = selectedNodeId ? "Find connections to this node" :
+          selectedEdgeId ? "Explain this connection" : defaultPrompt
+        input.focus()
+      } else toggle.focus()
+    }
+    toggle.onclick = () => setOpen(panel.hidden); dismiss.onclick = () => setOpen(false)
+    panel.onkeydown = e => { if(e.key==="Escape") { e.stopPropagation(); setOpen(false) } }
+    let eligible: PlannedEdge[] | undefined
+    function highlight(edges: EdgeView[], nodes: string[] = []) {
+      resultNodes.clear(); resultEdges.clear()
+      for (const id of nodes) resultNodes.add(id)
+      for (const edge of edges) {
+        resultEdges.set(edge.edge.id,edge); resultNodes.add(edge.edge.source); resultNodes.add(edge.edge.target)
+      }
+      if (resultNodes.size) {
+        const points = [...resultNodes].map(id => projected(viewById.get(id)!.node))
+        const bounds = boundsOf(points, 56)
+        const insets = currentInsets()
+        if (inspectorRoot?.classList.contains("open")) insets.left += Math.min(width * .4, inspectorRoot.offsetWidth)
+        if (!panel.hidden && width > 650) insets.right += Math.min(width * .38, panel.offsetWidth)
+        const next = fitTransform(bounds, {width, height}, insets, {minScale: .01, maxScale: Math.max(fitK, Math.min(1.45, transform.k * 1.45))})
+        viewState = "focus"
+        applyTransform(next, true)
+      }
+      answerPulseUntil = resultNodes.size && !reducedMotion ? performance.now() + 2200 : 0
+      invalidate()
+    }
+    form.onsubmit = e => {
+      e.preventDefault()
+      const q=input.value.trim(); if(!q) return
+      purpose.hidden = true
+      eligible ??= planThoughtTopology(payload,{...planOptions,maxConnectionsPerNode:0}).edges
+        .filter(edge => viewById.has(edge.source) && viewById.has(edge.target))
+      const found = answerMapQuestion(plan.nodes, eligible, q, {
+        selectedNodeId,
+        selectedEdge: selectedEdgeId ? edgeById.get(selectedEdgeId)?.edge :
+          !selectedNodeId && resultEdges.size === 1 ? resultEdges.values().next().value?.edge : undefined,
+        multipleGardens: gardenSpheres,
+        visibleConnectionCount: shaderEdges.length,
+      })
+      if (found.nodes.length || found.edges.length) clearSelection()
+      const hits = found.edges.map(edge => edgeById.get(edge.id) ?? ({
+        edge,kind:"semantic",source:viewById.get(edge.source)!,target:viewById.get(edge.target)!,
+        alpha:1,alphaTarget:1,color:colors.edgeActive,restColor:colors.edgeActive,widthBoost:0,selected:false,
+      } as EdgeView))
+      messages.replaceChildren(element("p","map-question",q))
+      const answer = element("p","map-answer")
+      appendMathText(answer, found.text)
+      messages.append(answer)
+      highlight(hits, found.nodes.map(node => node.id))
+      for (const node of found.nodes) {
+        const button = element("button", "map-source", node.title)
+        button.type = "button"
+        button.onclick = () => { setOpen(false); openNodeInspector(viewById.get(node.id)!); highlight([], [node.id]) }
+        messages.append(button)
+      }
+      for (const hit of hits) {
+        const button = element("button","map-source")
+        button.type = "button"
+        const arrow = hit.kind === "hierarchy" || hit.edge.direction === "directed" ? " → " : " ↔ "
+        button.append(element("strong",undefined,hit.source.node.title+arrow+hit.target.node.title),
+          element("small",undefined,connectionMeta(hit)),element("span",undefined,inspectorConnectionExplanation(hit)))
+        button.onclick = () => { setOpen(false); edgeById.set(hit.edge.id,hit); selectEdge(hit); highlight([hit]) }
+        messages.append(button)
+      }
+      if (resultNodes.size) {
+        const clear = element("button","thought-topology-filter-link","Clear highlights")
+        clear.onclick = () => { highlight([]); clear.remove() }; messages.append(clear)
+      }
+      input.value=""; messages.scrollTop=0
+    }
+    explore.onclick = () => { input.value = explore.textContent ?? defaultPrompt; form.requestSubmit() }
+    onCleanup(() => host.remove())
+  }
+
   // --- Pointer interactions ------------------------------------------------
   if (interactive) {
-    for (const view of views) {
-      view.gfx
-        .on("pointerover", () => {
-          hoveredNodeId = view.node.id
-          refreshStyles()
-          syncFloatingCallout()
-        })
-        .on("pointerleave", () => {
-          if (hoveredNodeId === view.node.id) hoveredNodeId = null
-          refreshStyles()
-          syncFloatingCallout()
-        })
+    let hoverFrame = 0
+    let lastPoint: { x: number; y: number } | null = null
+    const updateHover = () => {
+      hoverFrame = 0
+      const node = lastPoint ? nodeAtScreenPoint(lastPoint.x, lastPoint.y) : undefined
+      const edge = lastPoint && !node ? edgeAt(lastPoint.x, lastPoint.y) : undefined
+      if (hoveredNodeId === (node?.node.id ?? null) && hoveredEdgeId === (edge?.edge.id ?? null)) return
+      hoveredNodeId = node?.node.id ?? null
+      hoveredEdgeId = edge?.edge.id ?? null
+      refreshStyles(); syncFloatingCallout()
     }
-    for (const view of connectionViews) {
-      view.gfx
-        .on("pointerover", () => {
-          if (!canHoverConnection(view)) return
-          hoveredEdgeId = view.edge.id
-          refreshStyles()
-          syncFloatingCallout()
-        })
-        .on("pointerleave", () => {
-          if (hoveredEdgeId === view.edge.id) hoveredEdgeId = null
-          refreshStyles()
-          syncFloatingCallout()
-        })
-        .on("pointertap", (event) => {
-          event.stopPropagation()
-          const point = world.toLocal(event.global)
-          const closest = connectionViews
-            .filter(canHoverConnection)
-            .sort((left, right) => distanceToEdge(left, point) - distanceToEdge(right, point))[0]
-          selectEdge(closest ?? view)
-        })
+    const hover = (e: PointerEvent) => {
+      if (e.buttons) return
+      lastPoint = canvasPoint(e)
+      if (!hoverFrame) hoverFrame = requestAnimationFrame(updateHover)
     }
+    const leave = () => { lastPoint = null; updateHover() }
+    let press: { x: number; y: number } | null = null
+    const down = (e: PointerEvent) => { press = e.button === 0 ? canvasPoint(e) : null }
+    const up = (e: PointerEvent) => {
+      const p = canvasPoint(e), start = press
+      press = null
+      if (!start || Math.hypot(p.x-start.x,p.y-start.y) > CLICK_SLOP_PX || nodeAtScreenPoint(p.x,p.y)) return
+      const edge = edgeAt(p.x,p.y)
+      if (edge) { hoveredEdgeId = edge.edge.id; selectEdge(edge) }
+    }
+    app.canvas.addEventListener("pointermove",hover)
+    app.canvas.addEventListener("pointerleave",leave)
+    app.canvas.addEventListener("pointerdown",down)
+    app.canvas.addEventListener("pointerup",up)
+    cleanups.push(() => {
+      cancelAnimationFrame(hoverFrame)
+      app.canvas.removeEventListener("pointermove",hover); app.canvas.removeEventListener("pointerleave",leave)
+      app.canvas.removeEventListener("pointerdown",down); app.canvas.removeEventListener("pointerup",up)
+    })
 
     const handleContextMenu = (event: MouseEvent) => {
       const point = canvasPoint(event)
@@ -2635,7 +2808,7 @@ async function mountThoughtTopologyScene(
             const permanent =
               nextDragIsPermanent || source?.button === 2 || Boolean((source?.buttons ?? 0) & 2)
             nextDragIsPermanent = false
-            if (!event.active && !reducedMotion) simulation.alphaTarget(1).restart()
+            if (!event.active && !reducedMotion && !largeMap) simulation.alphaTarget(1).restart()
             simulationSettled = false
             draggingNode = true
             activeDragNodeId = view.node.id
@@ -2696,7 +2869,7 @@ async function mountThoughtTopologyScene(
             draggingNode = false
             activeDragNodeId = null
             if (!event.active && !reducedMotion) simulation.alphaTarget(0)
-            if (reducedMotion) simulationSettled = true
+            if (reducedMotion || largeMap) { simulationSettled = true; positionsDirty = true }
             if (state.moved <= CLICK_SLOP_PX) {
               for (const member of state.members) {
                 const home = homePositions.get(member.view.node.id)
@@ -2713,7 +2886,7 @@ async function mountThoughtTopologyScene(
               // A quiet left click opens the page (or folder). A quiet right
               // click opens its connection drawer; a second toggles its fix.
               if (state.permanent) handleRightNodeClick(state.view)
-              else openNode(state.view)
+              else openNodeInspector(state.view)
               return
             }
             lastRightClick = null
@@ -2738,7 +2911,6 @@ async function mountThoughtTopologyScene(
               homeXForce.x(homeXForNode)
               homeYForce.y(homeYForNode)
               writeStoredPositions(positionScope, positions)
-              for (const member of state.members) drawNode(member.view)
               refreshNodeInspector()
               invalidate()
               emitGraphContext()
@@ -2748,7 +2920,7 @@ async function mountThoughtTopologyScene(
             for (const member of state.members) {
               const home = homePositions.get(member.view.node.id)
               if (!home) continue
-              if (reducedMotion) {
+              if (reducedMotion || largeMap) {
                 member.view.node.x = home.x
                 member.view.node.y = home.y
                 member.view.node.z = home.z
@@ -2781,7 +2953,7 @@ async function mountThoughtTopologyScene(
     } else {
       for (const view of views)
         view.gfx.on("pointertap", (event) =>
-          event.button === 2 ? handleRightNodeClick(view) : openNode(view),
+          event.button === 2 ? handleRightNodeClick(view) : openNodeInspector(view),
         )
     }
 
@@ -2963,10 +3135,10 @@ async function mountThoughtTopologyScene(
             origin: selectedEdge.edge.origin,
             relationType: selectedEdge.edge.relationType,
             score: selectedEdge.edge.score,
-            explanation: selectedEdge.edge.explanation.text,
+            explanation: inspectorConnectionExplanation(selectedEdge),
           }
         : null,
-      visibleNodeSlugs: plan.nodes.map((node) => node.navigateSlug ?? node.id).slice(0, 24),
+      visibleNodeSlugs: plan.nodes.slice(0, 24).map((node) => node.navigateSlug ?? node.id),
       directNeighborSlugs,
       activeCluster: context.scopeCluster,
       filters: searchQuery ? [searchQuery] : [],
@@ -2993,6 +3165,7 @@ async function mountThoughtTopologyScene(
           width = nextWidth
           height = nextHeight
           app.renderer.resize(width, height)
+          shaders.resize(width, height)
           if (viewState === "fit") fitView(false)
           else
             applyTransform(
@@ -3012,36 +3185,25 @@ async function mountThoughtTopologyScene(
   const lerp = (current: number, target: number) =>
     Math.abs(target - current) < 0.01 ? target : current + (target - current) * 0.22
 
-  let lastFrameTime: number | null = null
   // Pixi triangulates/uploads each shape the first time it is drawn. Creating
   // objects in batches alone does not prevent that first GPU upload spike.
   let revealedNodes = largeMap ? 0 : views.length
   let revealedEdges = largeMap ? 0 : connectionViews.length
   function animate(time: number): boolean {
     if (stopAnimation) return false
-    // Large maps may have thousands of paths. Bound active rendering as
-    // well as eliminating idle frames; input still invalidates the scene.
-    if (simNodes.length > ENTRANCE_SIMULATION_NODE_LIMIT && lastFrameTime !== null && time - lastFrameTime < 1000 / 30) return true
-    const elapsed = lastFrameTime === null ? 0 : Math.min(50, time - lastFrameTime)
-    lastFrameTime = time
-    if (interactive && spin.enabled && !document.hidden) {
-      // Clockwise from above: the near side moves right. One turn per minute;
-      // explicit opt-in remains available at half speed with reduced motion.
-      camera.yaw += (elapsed * Math.PI * 2) / (reducedMotion ? 120_000 : 60_000)
-      invalidate()
-    }
     if (labelsDirty) updateLabels()
     let fading = false
     revealedNodes = Math.min(views.length, revealedNodes + INITIAL_NODE_BATCH)
     revealedEdges = Math.min(connectionViews.length, revealedEdges + INITIAL_EDGE_BATCH)
     const sceneReady = revealedNodes === views.length && revealedEdges === connectionViews.length
     const inverseScale = 1 / Math.sqrt(transform.k)
+    plates.clear()
     for (let index = 0; index < revealedNodes; index++) {
       const view = views[index]
       const { node } = view
       view.gfx.visible = true
       view.gfx.position.set(worldX(node), worldY(node))
-      view.gfx.zIndex = projected(node).z
+      view.gfx.zIndex = node.kind === "page" ? 0 : 1
       view.gfx.scale.set(inverseScale, inverseScale)
       view.alpha = lerp(view.alpha, view.alphaTarget)
       view.gfx.alpha = view.alpha
@@ -3054,6 +3216,13 @@ async function mountThoughtTopologyScene(
         view.label.alpha = view.labelAlpha
         view.label.anchor.set(placement.anchorX, placement.anchorY)
         view.label.position.set(position.x + placement.dx, position.y + placement.dy)
+        const label = view.label, w = label.width, h = label.height
+        const left = Math.round(label.x-w*placement.anchorX-4)+.5
+        const top = Math.round(label.y-h*placement.anchorY-2)+.5
+        if (isDark) plates.rect(left,top,w+8,h+4)
+        else plates.roundRect(left,top,w+8,h+4,4)
+        plates.fill({color:colors.paper,alpha:view.labelAlpha})
+          .stroke({color:isDark ? colors.text : labelBorders[toneOf(node)],alpha:view.labelAlpha,width:1})
         // Wrapped lines align towards the dot they belong to.
         const align =
           placement.side === "left" ? "right" : placement.side === "right" ? "left" : "center"
@@ -3062,22 +3231,25 @@ async function mountThoughtTopologyScene(
         view.label.visible = false
       }
     }
-    for (let index = 0; index < revealedEdges; index++) {
-      const view = connectionViews[index]
-      view.gfx.visible = true
-      view.alpha = lerp(view.alpha, view.alphaTarget)
-      fading ||= view.alpha !== view.alphaTarget
-      drawEdge(view)
+    if (!simulationSettled || draggingNode || positionsDirty) {
+      shaders.updatePositions(shaderNodes, shaderEdges)
+      positionsDirty = false
     }
+    const pulsing = drawAccents(time)
     positionFloatingCallout()
     if (debugEnabled) {
       const debugWindow = window as Window & { __breadboardThoughtTopologyDebug?: unknown }
       debugWindow.__breadboardThoughtTopologyDebug = {
         dimension: "3d",
         sceneReady,
-        spinning: spin.enabled,
+        spinning: false,
         camera: { yaw: camera.yaw, pitch: camera.pitch },
         selectedConnectionId: selectedEdgeId,
+        highlightedNodes: [...resultNodes],
+        highlightedEdges: [...resultEdges.keys()],
+        answerPulseActive: time < answerPulseUntil,
+        freshNodeCount: freshNodes.size,
+        freshEdgeCount: freshEdges.size,
         selectedNodeId,
         inspectedNodeId,
         inspectorOpen: inspectorRoot?.classList.contains("open") ?? false,
@@ -3146,23 +3318,24 @@ async function mountThoughtTopologyScene(
       }
     }
     try {
-      app.renderer.render(stage)
+      const picked = hoveredEdgeId ?? hoveredNodeId ?? selectedEdgeId ?? selectedNodeId
+      shaders.draw(camera, {x: 0, y: 0}, {
+        x: transform.x + (transform.k - 1) * width / 2,
+        y: transform.y + (transform.k - 1) * height / 2,
+      }, fitK, transform.k / fitK, picked === null ? null : { id: picked }, shaderColors, shaderInk)
+      app.renderer.resetState()
+      app.renderer.render({ container: stage, clear: false })
     } catch {
       invalidateRenderer()
       return false
     }
-    return !sceneReady || fading || transitioning || (interactive && spin.enabled)
+    return !sceneReady || fading || transitioning || pulsing
   }
 
   renderLoop = new GraphRenderLoop(animate)
-  spin.invalidate = invalidate
-  onCleanup(() => {
-    if (spin.invalidate === invalidate) delete spin.invalidate
-  })
   let intersecting = false
   const updateVisibility = () => {
     const visible = !document.hidden && intersecting && !stopAnimation
-    lastFrameTime = null
     renderLoop?.setActive(visible)
     if (visible) {
       if (!simulationSettled) simulation.restart()
@@ -3188,6 +3361,8 @@ async function mountThoughtTopologyScene(
     canvasSelection.interrupt()
   })
   updateVisibility()
+  graph.dataset.mapReady = "true"
+  onCleanup(() => { if (!graph.querySelector("canvas")) delete graph.dataset.mapReady })
   refreshStyles()
   fitView(false, !simulationSettled)
   emitGraphContext()
@@ -3215,6 +3390,6 @@ async function mountThoughtTopologyScene(
     folderOptions: plan.folderOptions,
     visiblePageCount: plan.visiblePageCount,
     totalPageCount: plan.totalPageCount,
-    connectionCount: plan.edges.length,
+    connectionCount: plan.edges.length + (settings.showHierarchy ? plan.hierarchyEdges.length : 0),
   }
 }

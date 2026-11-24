@@ -71,14 +71,22 @@ exports.activate = async function activate(context) {
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   proxyHost = "127.0.0.1:" + server.address().port;
   context.subscriptions.push({ dispose: () => server.close() });
-  const page = "http://" + proxyHost + "/code/bread" + (initial.garden ? "?garden=" + encodeURIComponent(initial.garden) : "");
+  // Bread wears VS Code's theme: light or dark with the editor, reloaded when the editor switches.
+  const themeName = () => [vscode.ColorThemeKind.Light, vscode.ColorThemeKind.HighContrastLight].includes(vscode.window.activeColorTheme.kind) ? "light" : "dark";
+  const page = () => "http://" + proxyHost + "/code/bread?theme=" + themeName() + (initial.garden ? "&garden=" + encodeURIComponent(initial.garden) : "");
+  const render = view => {
+    view.webview.html = '<!doctype html><html><head><meta charset="utf-8">'
+      + '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; frame-src http://' + proxyHost + '; style-src \'unsafe-inline\';">'
+      + '<style>html,body,iframe{margin:0;padding:0;border:0;width:100%;height:100%;overflow:hidden;background:var(--vscode-sideBar-background)}</style></head>'
+      + '<body><iframe src="' + page() + '" allow="clipboard-read; clipboard-write; microphone"></iframe></body></html>';
+  };
   context.subscriptions.push(vscode.window.registerWebviewViewProvider("breadboard.bread", {
     resolveWebviewView(view) {
       view.webview.options = { enableScripts: true };
-      view.webview.html = '<!doctype html><html><head><meta charset="utf-8">'
-        + '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; frame-src http://' + proxyHost + '; style-src \'unsafe-inline\';">'
-        + '<style>html,body,iframe{margin:0;padding:0;border:0;width:100%;height:100%;overflow:hidden}</style></head>'
-        + '<body><iframe src="' + page + '" allow="clipboard-read; clipboard-write; microphone"></iframe></body></html>';
+      render(view);
+      let shown = themeName();
+      const watch = vscode.window.onDidChangeActiveColorTheme(() => { if (themeName() !== shown) { shown = themeName(); render(view); } });
+      view.onDidDispose(() => watch.dispose());
     },
   }, { webviewOptions: { retainContextWhenHidden: true } }));
   await vscode.commands.executeCommand("setContext", "breadboard.hosted", true);

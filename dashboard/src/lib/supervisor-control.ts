@@ -2057,6 +2057,97 @@ export async function maintainRuntimeStorage(env: NodeJS.ProcessEnv = process.en
   return control("/v1/internal/storage/maintenance", {}, env, 5_000);
 }
 
+/** A non-OK control response, carrying the Runtime's own code and message. */
+export class SupervisorControlError extends Error {
+  readonly status: number;
+  readonly code: string | null;
+  /** The supervised service this failure is about, when known. */
+  readonly serviceId: string | null;
+  constructor(status: number, body: unknown, message?: string, serviceId: string | null = null) {
+    const record = isRecord(body) ? body : {};
+    const code = typeof record.code === "string" ? record.code : null;
+    const detail = typeof record.message === "string" ? record.message.trim() : "";
+    super(message ?? (detail ? `${detail} (${status})` : `Supervisor control request failed (${status}).`));
+    this.name = "SupervisorControlError";
+    this.status = status;
+    this.code = code;
+    this.serviceId = serviceId;
+  }
+}
+
+/** Plain words for the Runtime's fixed service failure verdicts. */
+const SERVICE_FAILURE_HINTS: Record<string, string> = {
+  "Service launch prerequisites were unavailable":
+    "its installed files are missing or on a storage drive that isn't connected. Reconnect the drive (or reinstall it from the agent's settings), then press Retry there.",
+  "Service process exhausted its enforced resource limit":
+    "it ran out of its memory allowance. Close other heavy tools, then press Retry in the agent's settings.",
+  "Service process tree supervision failed":
+    "it stopped unexpectedly. Press Retry in the agent's settings; if it keeps failing, reinstall it there.",
+};
+
+/** States the desktop's explicit Retry accepts (see desktop app-lifecycle retryService). */
+const RETRYABLE_SERVICE_STATES = new Set(["failed", "resource-blocked", "installation-unavailable"]);
+
+export interface ServiceProblem {
+  id: string;
+  name: string;
+  state: string;
+  /** Plain-language reason, never paths or secrets. */
+  reason: string;
+}
+
+function serviceProblemReason(lastError: string): string {
+  return SERVICE_FAILURE_HINTS[lastError]
+    ?? (lastError ? `${lastError.replace(/\.$/, "")}.` : "the local runtime could not start it.");
+}
+
+/**
+ * Every service the Runtime holds in a failed state, with the reason in plain
+ * words. `null` means there is no desktop Runtime (bare dashboard dev).
+ */
+export async function readServiceProblems(
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<ServiceProblem[] | null> {
+  const target = endpoint(env);
+  if (!target) return null;
+  const response = await runtimeControlTransports().service(`${target.origin}/v1/status`, {
+    method: "GET",
+    headers: { accept: "application/json", authorization: `Bearer ${target.token}` },
+    cache: "no-store",
+    redirect: "error",
+    signal: AbortSignal.timeout(3_000),
+  });
+  if (!response.ok) throw new SupervisorControlError(response.status, null);
+  const value = await readBoundedControlJson(response);
+  const services = isRecord(value) && Array.isArray(value.services) ? value.services : [];
+  return services.flatMap((row) => {
+    if (!isRecord(row) || typeof row.id !== "string" || typeof row.state !== "string") return [];
+    if (!RETRYABLE_SERVICE_STATES.has(row.state)) return [];
+    const name = typeof row.displayName === "string" && row.displayName ? row.displayName : row.id;
+    const lastError = typeof row.lastError === "string" ? row.lastError.trim() : "";
+    return [{ id: row.id, name, state: row.state, reason: serviceProblemReason(lastError) }];
+  });
+}
+
+/**
+ * A lease 503 only says "unavailable". The service row knows why (missing
+ * install, disconnected drive, crash), so name the service and the reason.
+ */
+async function explainServiceLeaseFailure(
+  serviceId: SupervisedServiceId,
+  error: SupervisorControlError,
+  env: NodeJS.ProcessEnv,
+): Promise<Error> {
+  try {
+    const problem = (await readServiceProblems(env))?.find(({ id }) => id === serviceId);
+    if (!problem) return error;
+    return new SupervisorControlError(error.status, { code: error.code },
+      `${problem.name} could not start: ${problem.reason}`, serviceId);
+  } catch {
+    return error;
+  }
+}
+
 async function control<T>(
   path: string,
   body: Record<string, unknown>,
@@ -2084,13 +2175,11 @@ async function control<T>(
     try {
       result = await readBoundedControlJson(response);
     } catch (error) {
-      if (!response.ok) {
-        throw new Error(`Supervisor control request failed (${response.status}).`);
-      }
+      if (!response.ok) throw new SupervisorControlError(response.status, null);
       throw error;
     }
     if (isResourceResult(result)) throw new SupervisorResourceExhaustedError(result);
-    if (!response.ok) throw new Error(`Supervisor control request failed (${response.status}).`);
+    if (!response.ok) throw new SupervisorControlError(response.status, result);
     return result as T;
   } finally {
     clearTimeout(timer);
@@ -2265,7 +2354,12 @@ export async function acquireServiceLease(
     { reason },
     env,
     timeoutMs,
-  );
+  ).catch(async (error: unknown) => {
+    if (error instanceof SupervisorControlError && error.status === 503) {
+      throw await explainServiceLeaseFailure(serviceId, error, env);
+    }
+    throw error;
+  });
   if (!result) return null;
   if (typeof result.leaseId !== "string" || result.serviceId !== serviceId) {
     throw new Error("Supervisor returned an invalid service lease.");

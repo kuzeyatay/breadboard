@@ -199,6 +199,7 @@ import { useGardenUploadRecoveries } from "@/app/components/use-garden-upload-re
 import { useGardenRestoredUploads } from "@/app/components/use-garden-restored-uploads";
 import { RestoredGardenUploadRows } from "@/app/components/restored-garden-upload-rows";
 import GardenVideoImport from "@/app/components/garden-video-import";
+import GardenSpacesSection from "@/app/components/garden-spaces-section";
 import OverflowMarquee from "@/app/components/overflow-marquee";
 import {
   VLM_PARSE_FILE_RE,
@@ -286,6 +287,8 @@ import {
   boltSlidesUserMessage,
   taskFromBoltSlidesCommand,
 } from "@/lib/bolt-slides/identity.ts";
+import { runtimeAgentRoute, withChatContext } from "@/lib/hermes/runtime-agent-intent.ts";
+import { videoCapabilityRoute } from "@/lib/hermes/video-capability.ts";
 import {
   classroomUserMessage,
   taskFromClassroomCommand,
@@ -980,6 +983,8 @@ interface InlineSelectionThread {
    * and can host highlights and nested "Ask here" threads of its own. */
   answerMessageId?: string;
   artifactMessageId?: string;
+  /** Every question asked on this highlight, oldest first (the last is this one). */
+  attempts?: InlineSelectionThread[];
 }
 
 /**
@@ -5773,7 +5778,10 @@ export default function WorkspaceClient({
   const [openInlineAnswers, setOpenInlineAnswers] = useState<Array<{
     id: string;
     anchor: FloatingAnchorRect;
+    newQuestion?: number;
   }>>([]);
+  // Which earlier question/answer pair a highlight shows; absent = the newest.
+  const [inlineAttemptChoice, setInlineAttemptChoice] = useState<Record<string, number>>({});
   // A shared chat can be read but not asked into; the menu still highlights.
   const canAskSelection = activeChat?.isOwn !== false;
 
@@ -5833,8 +5841,13 @@ export default function WorkspaceClient({
       ) {
         return;
       }
-      const current = byId.get(selection.id) ?? { selection, pending: false };
+      let current = byId.get(selection.id) ?? { selection, pending: false };
       if (message.role === "user") {
+        // Asking again keeps the earlier pair as a branch, like chat edits.
+        if (current.question !== undefined || current.answer !== undefined) {
+          const { attempts = [], ...previous } = current;
+          current = { selection: current.selection, pending: false, attempts: [...attempts, previous] };
+        }
         current.question = message.content;
         current.attachments = reusableChatAttachments(message.attachments).filter(item => !item.context);
         // Pending from the moment the question is sent, not from the moment
@@ -5868,6 +5881,9 @@ export default function WorkspaceClient({
       }
       byId.set(selection.id, current);
     });
+    for (const thread of byId.values()) {
+      if (thread.attempts) thread.attempts = [...thread.attempts, thread];
+    }
     return byId;
   }, [deletedInlineSelectionIds, isStreaming, messages, savedInlineSelections]);
 
@@ -6074,14 +6090,19 @@ export default function WorkspaceClient({
     window.setTimeout(() => textareaRef.current?.focus(), 0);
   }, []);
 
-  function replyToInlineAnswer(selection: ChatTextSelectionReference, anchor: FloatingAnchorRect) {
-    setSavedInlineSelections((current) => [...current, selection]);
+  function replyToInlineAnswer(reply: ChatTextSelectionReference, anchor: FloatingAnchorRect) {
+    // Replying again to the same answer asks another question on the one
+    // whole-answer highlight, so its replies switch like chat branches.
+    const existing = [...inlineSelectionThreads.values()].find(thread =>
+      thread.selection.wholeMessage && thread.selection.sourceMessageId === reply.sourceMessageId)?.selection;
+    const selection = existing ?? reply;
+    if (!existing) setSavedInlineSelections((current) => [...current, selection]);
     setSelectionMenu(null);
     setOpenInlineAnswers((current) => {
       const parent = current.findIndex((open) =>
         inlineSelectionThreads.get(open.id)?.answerMessageId === selection.sourceMessageId,
       );
-      return [...current.slice(0, parent + 1), { id: selection.id, anchor }];
+      return [...current.slice(0, parent + 1), { id: selection.id, anchor, newQuestion: existing ? Date.now() : undefined }];
     });
     window.getSelection()?.removeAllRanges();
   }
@@ -6185,6 +6206,12 @@ export default function WorkspaceClient({
     if (!trimmed || chatContentLoading || !canAskSelection) {
       return;
     }
+    setInlineAttemptChoice((current) => {
+      if (!(selection.id in current)) return current;
+      const next = { ...current };
+      delete next[selection.id];
+      return next;
+    });
     void sendInlineQuestion(trimmed, selection, attachments);
   }
 
@@ -6283,6 +6310,14 @@ export default function WorkspaceClient({
   const launchHopsRef = useRef(0);
   const launchRoundOriginsRef = useRef(new Set<string>());
   const continuedDelegatedRunsRef = useRef(new Set<string>());
+  // A natural-language route to a runtime agent, between the send that chose it
+  // and the launcher's first commit. See runtimeAgentRoute in handleSubmit.
+  const naturalRouteRef = useRef<{
+    text: string;
+    voice?: import('@/lib/speech/voice-request').VoiceRequestOptions;
+    expires: number;
+  } | null>(null);
+  const bypassNaturalRouteRef = useRef(false);
   const delegatedAgentLaunchRef = useRef<AgentLaunchRequestPayload | null>(
     null,
   );
@@ -9796,6 +9831,10 @@ async function selectCareerOps(): Promise<ExternalAgentSelection | null> {
     userMessageFields: Pick<Message, "attachmentNames" | "attachments"> = {},
     options: { serverNamesTheChat?: boolean } = {},
   ) {
+    const naturalRoute = naturalRouteRef.current;
+    if (naturalRoute && naturalRoute.expires > Date.now() && !delegatedAgentLaunchRef.current) {
+      userContent = naturalRoute.text;
+    }
     const writableActiveChat = activeChat?.isOwn === false ? null : activeChat;
     if (delegatedAgentLaunchRef.current) {
       const originSession = originatingAgentLaunchSession(chatSessions.map((session) => ({
@@ -9898,6 +9937,25 @@ async function selectCareerOps(): Promise<ExternalAgentSelection | null> {
     // The rows below replace the pending turn, so the Thinking it raised is
     // spent — whether this commit carries a run card or a failure to start.
     settleExternalTurnActivity();
+    const naturalRoute = naturalRouteRef.current;
+    naturalRouteRef.current = null;
+    if (naturalRoute && naturalRoute.expires > Date.now() && !delegatedAgentLaunchRef.current) {
+      if (!assistantMessage.externalAgentOutcome) {
+        // The agent this message was routed to could not start: withdraw the
+        // turn and let the ordinary assistant answer the same message. The
+        // person asked for the outcome, not for this agent by command.
+        updateChatMessages(session.id, transcriptForRetriedTurn(session));
+        window.setTimeout(() => {
+          bypassNaturalRouteRef.current = true;
+          void handleSubmit(naturalRoute.text, undefined, undefined, false, undefined, {
+            voice: naturalRoute.voice,
+            fromComposer: true,
+          });
+        }, 0);
+        return;
+      }
+      userContent = naturalRoute.text;
+    }
     if (delegatedAgentLaunchRef.current) {
       const delegatedRequest = delegatedAgentLaunchRef.current;
       const delegatedMessages =
@@ -13641,6 +13699,14 @@ async function launchCareerOps(task: string) {
       : composerSend
         ? chatAttachments
         : [];
+    // The one Video capability picks the engine that fits and sends the brief
+    // as that engine's own command, so its launcher below runs unchanged.
+    const videoRoute = videoCapabilityRoute(text);
+    if (videoRoute) {
+      setInput("");
+      void handleSubmit(videoRoute, historyOverride, attachmentOverride, internalAgentContinuation, onTurnStarted, { ...turnOptions, fromComposer: composerSend });
+      return;
+    }
     if (text && agentActivity.pendingClarification && !internalAgentContinuation && !textSelection && pendingAttachments.length === 0) {
       const answered = await agentActivity.respondToClarification(text);
       if (answered && composerSend) setInput(current => current.trim() === text ? "" : current);
@@ -14240,6 +14306,45 @@ if (careerOpsAgent) {
       setInput("");
       setChatAttachments([]);
       void launchAgentBrowser(text, agentBrowserAgent);
+      return;
+    }
+
+    // A plain request that is a runtime agent's job ("can you create a
+    // slide?") goes to that agent, sent as its command so the launchers above
+    // handle it exactly as if it had been typed. Only what a person typed or
+    // said, and never with attachments the agent would drop; the hand-off
+    // chain's own messages stay Hermes turns. If the agent cannot start,
+    // persistExternalAgentTurn withdraws the turn and this message is
+    // answered here instead.
+    const bypassNaturalRoute = bypassNaturalRouteRef.current;
+    bypassNaturalRouteRef.current = false;
+    const agentRoute =
+      !bypassNaturalRoute &&
+      (composerSend || turnOptions?.voice) &&
+      !internalAgentContinuation &&
+      !textSelection &&
+      historyOverride === undefined &&
+      pendingAttachments.length === 0
+        ? runtimeAgentRoute(text, "garden_chat")
+        : null;
+    if (agentRoute) {
+      const recent = messages
+        .filter((message) => !message.internalAgentContinuation)
+        .slice(-2)
+        .map((message) => message.content);
+      const commandText = agentRoute.needsContext
+        ? withChatContext(agentRoute.commandText, recent)
+        : agentRoute.commandText;
+      naturalRouteRef.current = {
+        text,
+        voice: turnOptions?.voice,
+        expires: Date.now() + 30_000,
+      };
+      setInput("");
+      void handleSubmit(commandText, undefined, undefined, false, undefined, {
+        voice: turnOptions?.voice,
+        fromComposer: true,
+      });
       return;
     }
 
@@ -16877,11 +16982,13 @@ if (careerOpsAgent) {
           const isPdf = isSource && doc.sourceType?.toLowerCase() === "pdf";
           const sourceDisplay = gardenSourceDisplay(doc);
           const isPdfSource = isSource && sourceDisplay.hasPdf;
-          const displayTitle = isSource ? sourceDisplay.title : doc.title || doc.name;
+          // An upload shows its file type in its name (lecture.pdf, notes.docx, talk.mp3), as Spaces does.
+          const fileType = isSource ? (/\.([a-z0-9]{2,5})$/i.exec(doc.sourceFile || doc.sourceMedia || "")?.[1] ?? (/^(pdf|pptx|docx)$/i.test(doc.sourceType ?? "") ? doc.sourceType : ""))?.toLowerCase() : "";
+          const baseTitle = isSource ? sourceDisplay.title : doc.title || doc.name;
+          const displayTitle = fileType && !baseTitle.toLowerCase().endsWith(`.${fileType}`) ? `${baseTitle}.${fileType}` : baseTitle;
           const sourceDescription = sourceDisplay.description;
-          const documentHref = isPdfSource
-            ? `/gardens/${clusterSlug}/pdf/${encodeURIComponent(doc.slug)}`
-            : gardenDocumentHref(clusterSlug, doc);
+          // Every source opens in the Garden reader; a PDF or recording shows its original there.
+          const documentHref = gardenDocumentHref(clusterSlug, doc);
           const rowKey = `${doc.slug}:${doc.type}:${index}`;
           const row = (
             <li
@@ -17002,7 +17109,9 @@ if (careerOpsAgent) {
                   ].join(" ")}
                   title={isPdfSource ? "Open PDF viewer" : "Open note"}
                 >
-                  <OverflowMarquee>{displayTitle}</OverflowMarquee>
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <span className="min-w-0 flex-1"><OverflowMarquee>{displayTitle}</OverflowMarquee></span>
+                  </span>
                 </Link>
                 {isSource && sourceDescription && (
                   <p
@@ -17071,6 +17180,7 @@ if (careerOpsAgent) {
               key={rowKey}
               documentTitle={displayTitle}
               pdfHref={isPdfSource ? documentHref : null}
+              isolatedPdfHref={isPdfSource ? `/gardens/${encodeURIComponent(clusterSlug)}/pdf/${encodeURIComponent(doc.slug)}` : null}
             >
               {row}
             </DocumentContextMenu>
@@ -18292,6 +18402,14 @@ if (careerOpsAgent) {
         />
       </div>
 
+      {isOwner ? <GardenSpacesSection clusterSlug={clusterSlug} selection={{
+        // A Spaces file's mirror note names its path; a Word upload's editable copy in sources/ belongs to its upload.
+        slugFor: (path) => documents.find((document) => document.type === "source-document" &&
+          (document.sourceFile === path || (path.startsWith("sources/") && document.sourceFile === path.slice("sources/".length))))?.slug,
+        selected: selectedDocumentSlugs,
+        toggle: toggleSelectedDocument,
+      }} /> : null}
+
       <div className="border-t border-gray-800 shrink-0">
         <button
           type="button"
@@ -19061,12 +19179,22 @@ if (careerOpsAgent) {
             />
           ) : null}
           {openInlineAnswers.map((openAnswer) => {
-            const thread = inlineSelectionThreads.get(openAnswer.id);
-            if (!thread) return null;
+            const latest = inlineSelectionThreads.get(openAnswer.id);
+            if (!latest) return null;
+            const attempts = latest.pending ? undefined : latest.attempts;
+            const attemptIndex = attempts ? Math.min(inlineAttemptChoice[openAnswer.id] ?? attempts.length - 1, attempts.length - 1) : 0;
+            const thread = attempts?.[attemptIndex] ?? latest;
+            const showAttempt = (index: number) => setInlineAttemptChoice(current => ({ ...current, [openAnswer.id]: index }));
             return (
               <InlineSelectionAnswerPopover
                 key={openAnswer.id}
                 anchor={openAnswer.anchor}
+                branch={attempts && attempts.length > 1 ? {
+                  current: attemptIndex + 1, total: attempts.length,
+                  onPrevious: () => showAttempt(Math.max(0, attemptIndex - 1)),
+                  onNext: () => showAttempt(Math.min(attempts.length - 1, attemptIndex + 1)),
+                } : undefined}
+                newQuestionRequest={openAnswer.newQuestion}
                 selection={thread.selection}
                 suggestionSelection={thread.selection}
                 suggestionModel={model}

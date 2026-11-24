@@ -1755,3 +1755,35 @@ test("developer provisioning scripts are explicit external boundaries with no pr
   const product = productSources.join("\n");
   assert.doesNotMatch(product, /setup-audio-analyzer\.mjs|setup-google-images\.mjs/u);
 });
+
+test("Claude account jobs add, switch and sign out one isolated subscription", async t => {
+  const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-claude-profiles-"));
+  t.after(() => fs.rmSync(dataRoot, { recursive: true, force: true }));
+  const executable = path.join(dataRoot, process.platform === "win32" ? "claude.exe" : "claude");
+  fs.writeFileSync(executable, "fixture");
+  const root = path.join(dataRoot, ".claude");
+  const signedIn = new Map([[root, "one@example.test"]]);
+  const actions = [];
+  const context = { dataRoot, appRoot: dataRoot, signal: new AbortController().signal,
+    env: { CLAUDE_CONFIG_DIR: root, CLAUDE_CLI_PATH: executable },
+    spawnImpl: (_exe, args, { env }) => {
+      const directory = env.CLAUDE_CONFIG_DIR;
+      actions.push([args[1], directory]);
+      if (args[1] === "login") signedIn.set(directory, "two@example.test");
+      if (args[1] === "logout") signedIn.delete(directory);
+      return fakeChild(JSON.stringify({ loggedIn: signedIn.has(directory), email: signedIn.get(directory) }));
+    },
+  };
+  const run = (action, profile) => executeManagedSetup({
+    protocolVersion: 1, operation: "claude-code", action, ...(profile ? { profile } : {}),
+  }, context);
+  assert.equal((await run("login")).ok, true);
+  const added = JSON.parse((await run("profiles")).detail).accounts;
+  assert.deepEqual(added.map(row => row.email), ["two@example.test", "one@example.test"]);
+  await run("activate", "default");
+  assert.equal(JSON.parse((await run("profiles")).detail).accounts[0].id, "default");
+  await run("logout", added[0].id);
+  assert.deepEqual(JSON.parse((await run("profiles")).detail).accounts.map(row => row.id), ["default"]);
+  assert.equal(actions.find(([action]) => action === "logout")[1], actions.find(([action]) => action === "login")[1]);
+  assert.equal(signedIn.get(root), "one@example.test");
+});

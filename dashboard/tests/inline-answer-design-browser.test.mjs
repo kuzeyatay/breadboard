@@ -99,7 +99,7 @@ test('Ask here retains drafts, image-only questions, image preview, stop/retry a
     await card.getByRole('button',{name:'Ask this question again',exact:true}).click();
     await page.evaluate(()=>window.finish());
     await expect(card.getByText('formatted answer',{exact:true})).toBeVisible();
-    for(const name of ['Copy response','Read response aloud','Mark response as helpful','Mark response as not helpful','More response actions']){
+    for(const name of ['Copy response','Response feedback','Read response aloud','More response actions']){
       await expect(card.getByRole('button',{name,exact:true})).toBeVisible();
     }
     await card.getByRole('button',{name:'More highlight actions',exact:true}).click();

@@ -9,7 +9,6 @@ import SettingsMessaging from "@/app/components/settings-messaging";
 import SettingsGuardrails from "@/app/components/settings-guardrails";
 import SettingsMcp from "@/app/components/settings-mcp";
 import SettingsProviders from "@/app/components/settings-providers";
-import SettingsRecall from "@/app/components/settings-recall";
 import SettingsSpeech from "@/app/components/settings-speech";
 import SettingsSystem from "@/app/components/settings-system";
 import SettingsStorage from "@/app/components/settings-storage";
@@ -18,15 +17,13 @@ import SettingsVoiceCalibration from "@/app/components/settings-voice-calibratio
 export type SettingsTab =
   | "account"
   | "connections"
-  | "mcp"
   | "memory"
   | "voice"
   | "speech"
   | "messaging"
   | "guardrails"
   | "system"
-  | "storage"
-  | "recall";
+  | "storage";
 
 interface SettingsDialogProps {
   onClose: () => void;
@@ -48,12 +45,7 @@ const TABS: Array<{ value: SettingsTab; label: string; description: string }> = 
   {
     value: "connections",
     label: "Connections",
-    description: "Connect apps for Breadboard to use when you ask.",
-  },
-  {
-    value: "mcp",
-    label: "MCP",
-    description: "Connect extra tools using MCP servers.",
+    description: "Connect apps and MCP servers to Breadboard.",
   },
   {
     value: "memory",
@@ -84,11 +76,6 @@ const TABS: Array<{ value: SettingsTab; label: string; description: string }> = 
     value: "guardrails",
     label: "Guardrails",
     description: "Hide personal details in outgoing WhatsApp and Telegram replies.",
-  },
-  {
-    value: "recall",
-    label: "Recall",
-    description: "Control what Recall saves and which agents can access it.",
   },
 ];
 
@@ -269,18 +256,13 @@ export default function SettingsDialog({
               role="tabpanel"
               aria-labelledby="settings-tab-connections"
               hidden={tab !== "connections"}
+              className="space-y-5"
             >
+              <section aria-labelledby="settings-mcp-heading" className="space-y-3">
+                <h3 id="settings-mcp-heading" className="text-sm font-medium text-[var(--ink-heading)]">MCP servers</h3>
+                <SettingsMcp />
+              </section>
               <SettingsConnections />
-            </div>
-          ) : null}
-          {visitedTabs.has("mcp") ? (
-            <div
-              id="settings-panel-mcp"
-              role="tabpanel"
-              aria-labelledby="settings-tab-mcp"
-              hidden={tab !== "mcp"}
-            >
-              <SettingsMcp />
             </div>
           ) : null}
           {visitedTabs.has("memory") ? (
@@ -321,16 +303,6 @@ export default function SettingsDialog({
               hidden={tab !== "guardrails"}
             >
               <SettingsGuardrails />
-            </div>
-          ) : null}
-          {visitedTabs.has("recall") ? (
-            <div
-              id="settings-panel-recall"
-              role="tabpanel"
-              aria-labelledby="settings-tab-recall"
-              hidden={tab !== "recall"}
-            >
-              <SettingsRecall />
             </div>
           ) : null}
           {visitedTabs.has("voice") ? (

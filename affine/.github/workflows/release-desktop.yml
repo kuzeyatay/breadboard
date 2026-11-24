@@ -1,0 +1,62 @@
+name: Build Desktop Candidates
+'on':
+  workflow_call:
+    inputs:
+      build-type:
+        required: true
+        type: string
+      app-version:
+        required: true
+        type: string
+      git-short-hash:
+        required: true
+        type: string
+      matrix:
+        required: true
+        type: string
+permissions:
+  contents: read
+env:
+  BUILD_TYPE: ${{ inputs.build-type }}
+  RELEASE_VERSION: ${{ inputs.app-version }}
+  DEBUG: affine:*,napi:*
+  APP_NAME: affine
+  MACOSX_DEPLOYMENT_TARGET: '11.6'
+jobs:
+  before-make:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Setup Version
+        uses: ./.github/actions/setup-version
+        with:
+          app-version: ${{ inputs.app-version }}
+      - name: Setup Node.js
+        uses: ./.github/actions/setup-node
+      - name: Setup @sentry/cli
+        uses: ./.github/actions/setup-sentry
+      - name: generate-assets
+        run: yarn affine @affine/electron generate-assets
+        env:
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: affine
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          SENTRY_RELEASE: ${{ inputs.app-version }}
+          RELEASE_VERSION: ${{ inputs.app-version }}
+      - name: Upload web artifact
+        uses: actions/upload-artifact@v4
+        with:
+          overwrite: true
+          name: desktop-web
+          path: packages/frontend/apps/electron/resources/web-static
+    continue-on-error: ${{ !contains(inputs.matrix, '"required":true') }}
+  package:
+    needs: before-make
+    uses: ./.github/workflows/release-desktop-platform.yml
+    secrets: inherit
+    with:
+      build_type: ${{ inputs.build-type }}
+      app_version: ${{ inputs.app-version }}
+      git_short_hash: ${{ inputs.git-short-hash }}
+      matrix: ${{ inputs.matrix }}

@@ -10,7 +10,9 @@ const shortcut = read("../src/app/components/browser-shortcut.tsx");
 const newTab = read("../src/app/new-tab/new-tab-client.tsx");
 const catalog = read("../src/lib/profile/navbar-shortcuts.ts");
 const page = read("../src/app/browser/page.tsx");
-const client = read("../src/app/browser/browser-client.tsx") + read("../src/app/browser/browser-navigation.tsx");
+// The bookmarks bar and Starred panel were split out of the client; they are still the browser page.
+const client = read("../src/app/browser/browser-client.tsx") + read("../src/app/browser/browser-navigation.tsx")
+  + read("../src/app/browser/browser-bookmarks-bar.tsx") + read("../src/app/browser/browser-starred-panel.tsx");
 const suggestionList = read("../src/app/browser/browser-suggestion-list.tsx");
 const widgets = read("../src/app/browser/browser-home-widgets.tsx") + read("../src/app/browser/browser-site-icon.tsx");
 const greetingTypewriter = read("../src/app/components/use-greeting-typewriter.ts");
@@ -59,7 +61,7 @@ test("browser tabs share Breadboard's strip and use a trusted address toolbar", 
   assert.match(client, /Search the web or enter a web address/);
   assert.match(
     client,
-    /useChatGreeting\(\{[\s\S]*?scope: "mine",[\s\S]*?temporary: false,[\s\S]*?initialSignals: initialGreetingSignals/,
+    /useChatGreeting\(\{[\s\S]*?scope: "mine",[\s\S]*?temporary: privateBrowsing,[\s\S]*?initialSignals: initialGreetingSignals/,
   );
   assert.match(widgets, /function BrowserQuickLinks/);
   assert.match(widgets, /function BrowserDock/);
@@ -77,7 +79,8 @@ test("browser tabs share Breadboard's strip and use a trusted address toolbar", 
   assert.match(terminal, /collapsed=\{terminalRailCollapsed\}/);
   assert.match(terminal, /onToggleCollapsed=\{toggleTerminalRail\}/);
   assert.doesNotMatch(terminal, /collapsed=\{drawerPresentation \|\| rail\.collapsed\}/);
-  assert.match(client, /className="browser-side-rail"/);
+  // A private home shows the same tools as the home's place buttons.
+  assert.match(client, /className=\{privateHome \? homeControls\.places : "browser-side-rail"\}/);
   assert.match(client, /className="browser-terminal-resizer"/);
   assert.match(widgets, /className=\{`browser-sketch-outline/);
   assert.match(client, /<GoogleGlyph \/>/);
@@ -113,7 +116,7 @@ test("browser startup reconnects and repairs a plain shell instead of becoming a
   assert.match(client, /openBrowserInDesktop\(\{ replaceCurrent: true \}\)/);
   assert.doesNotMatch(client, /Starting Browser|Connecting the address bar|browser-recovery-card|browser-start-status/);
   assert.match(client, /Try again/);
-  assert.match(client, /Back to dashboard/);
+  assert.match(client, /<Link href="\/new-tab">Back to home<\/Link>/);
   assert.doesNotMatch(client, /Browser tabs are available in the Breadboard desktop app/);
 });
 
@@ -173,14 +176,16 @@ test("browser home provides live dock data, search suggestions, and editable sho
   assert.match(titleBar, /browserTabFaviconFallback/);
   assert.match(titleBar, /reportedFavicon \? undefined : "true"/);
   assert.match(widgets, /\/api\/browser\/weather/);
-  assert.match(widgets, /\/api\/hermes\/connections\/spotify\/engine/);
+  // The widget reads the engine's state through the browser Spotify route, which starts it server-side.
+  assert.match(widgets, /\/api\/browser\/spotify/);
   assert.match(widgets, /const \[initializing, setInitializing\] = useState\(true\)/);
   assert.match(widgets, /initializing \? "Loading Spotify…"/);
   assert.match(widgets, /data-loading=\{initializing\}/);
   assert.match(spotifyRoute, /spotifyPlaybackEngineStatus/);
   assert.match(spotifyRoute, /endpoint: "\/v1\/me\/player"/);
   assert.match(weatherRoute, /api\.open-meteo\.com/);
-  assert.match(globals, /grid-template-columns: repeat\(7,/);
+  // Seven shortcut columns by default; a page can override the count.
+  assert.match(globals, /grid-template-columns: repeat\(var\(--browser-shortcut-columns, 7\),/);
   assert.match(globals, /width: 40px/);
   assert.match(globals, /animation: browser-suggestions-enter 90ms ease-out;/);
   assert.match(globals, /height: clamp\(260px, calc\(100vh - 245px\), 560px\);/);
@@ -190,14 +195,16 @@ test("browser home has daily quotes, an image-free default, and theme-specific b
   assert.match(client, /usePageAppearance\(restoreOwnerKey, "browser"\)/);
   assert.match(client, /<BrowserHomeAccessories ownerKey=\{restoreOwnerKey\}/);
   assert.match(homeAccessories, /<BrowserDailyQuote ownerKey=\{ownerKey\}/);
-  assert.match(homeAccessories, /<BrowserDock openConnections=/);
+  assert.match(homeAccessories, /<BrowserDock [^>]*openConnections=/);
   assert.match(client, /<PageAppearance page="browser"/);
   assert.match(appearanceStore, /breadboard:browser-wallpaper:\$\{ownerKey\}:\$\{theme\}/);
   assert.match(appearance, /editingTheme/);
   assert.match(appearanceStore, /"Astral" \| "Places" \| "Abstract"/);
-  assert.match(appearance, /browser-wallpaper-drawer/);
+  // The drawer became the Appearance panel dialog on 11-06.
+  assert.match(appearance, /<Dialog\.Content className=\{panelStyles\.panel\} data-appearance-panel>/);
   assert.match(personalization, /<BrowserSketchOutline targetRef=\{quoteRef\} index=\{2\} \/>/);
-  assert.match(appearance, /\["Generated", "Human"\] as const/);
+  // The New tab adds an ASCII source to the two shared ones.
+  assert.match(appearance, /\(\["Generated", "Human", \.\.\.\(initialPage === "new-tab" \? \["ASCII"\] : \[\]\)\] as BackgroundSource\[\]\)/);
   assert.equal((appearanceStore.match(/model: "GPT Image"/g) ?? []).length, 6);
   assert.match(appearance, /Generated by \{wallpaper\.model\}/);
   assert.match(appearance, /Photo by \{image\.creator\}/);
@@ -223,8 +230,8 @@ test("browser home has daily quotes, an image-free default, and theme-specific b
   assert.match(personalization, /browserDailyQuote\(today, ownerKey, 42\)/);
   assert.match(personalization, /browser-daily-quote-compact/);
   assert.match(globals, /\.browser-dock\s*\{[\s\S]*?width:\s*var\(--browser-bottom-width\);[\s\S]*?height:\s*var\(--browser-dock-height\);/);
-  assert.match(globals, /html\[data-theme="dark"\] \.browser-dock\s*\{[\s\S]*?background:\s*rgb\(24 27 34 \/ 86%\);/);
-  assert.match(globals, /html\[data-theme="dark"\] \.browser-dock\s*\{[\s\S]*?color:\s*#f7f4ec;/);
+  assert.match(globals, /html\[data-theme="dark"\] \.browser-dock\s*\{[\s\S]*?background:\s*rgb\(24 29 26 \/ 86%\);/);
+  assert.match(globals, /html\[data-theme="dark"\] \.browser-dock\s*\{[\s\S]*?color:\s*#eceee6;/);
   assert.doesNotMatch(globals, /\.browser-dock\s*\{[\s\S]*?background:\s*color-mix\(in srgb, var\(--ink-heading\)/);
   assert.match(globals, /\.browser-wallpaper-drawer\[data-open="true"\]/);
   assert.match(globals, /\.browser-wallpaper-categories\s*\{[\s\S]*?min-height:\s*30px;[\s\S]*?flex:\s*none;/);
@@ -281,11 +288,12 @@ test("browser bookmarks persist in desktop storage per profile and occupy truste
 });
 
 test("the trusted rail opens resizable Terminal, History, and Starred panels", () => {
-  assert.match(client, /type BrowserToolPanel = "terminal" \| "history" \| "starred" \| "downloads"/);
+  assert.match(client, /type BrowserToolPanel = "terminal" \| "history" \| "visited-pages" \| "starred" \| "downloads"/);
   assert.match(client, /toggleToolPanel\("terminal"\)/);
   assert.match(client, /toggleToolPanel\("history"\)/);
   assert.match(client, /toggleToolPanel\("starred"\)/);
-  assert.match(client, /<BrowserHistoryPanel active=\{activePanel === "history"\}/);
+  // History also serves the visited-pages view.
+  assert.match(client, /<BrowserHistoryPanel active=\{isActive && terminalOpen && \(activePanel === "history" \|\| activePanel === "visited-pages"\)\}/);
   assert.match(client, /aria-label="Starred pages"/);
   assert.match(client, /searches=\{recentSearchStore\}/);
   assert.match(client, /removeBookmark\(bookmark\.url\)/);
@@ -299,7 +307,7 @@ test("browser Spotify opens a CarPlay-style searchable player and uses the Bread
   assert.match(widgets, /className="browser-spotify-popover"/);
   assert.match(widgets, /role="dialog"/);
   assert.match(widgets, /role="tablist"/);
-  assert.match(widgets, /aria-label="Spotify player and library"/);
+  assert.match(widgets, /aria-label="Spotify in Breadboard"/);
   assert.match(widgets, /url\.searchParams\.set\("view", "search"\)/);
   assert.match(widgets, /url\.searchParams\.set\("view", "playlists"\)/);
   assert.match(widgets, /control\("play-track"/);

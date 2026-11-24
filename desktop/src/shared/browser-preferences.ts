@@ -14,6 +14,8 @@ export function isBrowserMediaPermissionList(value: unknown): value is BrowserMe
 export interface BrowserPreferences {
   notificationsEnabled: boolean;
   organizationSidebarEnabled?: boolean;
+  /** false once the person ticked "Don't show this again" on the flag-as-AI question. */
+  aiFlagConfirm?: boolean;
   sites: Record<string, "granted" | "denied">;
   mediaSites?: Record<string, Partial<Record<BrowserMediaPermission, "granted" | "denied">>>;
   translationLanguage: string;

@@ -51,6 +51,8 @@ export interface DesktopTabView {
     organizationOpen?: boolean;
     organizationWidth?: number;
     annotationTarget?: import("./browser-annotations").BrowserAnnotationTarget;
+    /** Enough people flagged this website as AI-generated: outline the address yellow or red. */
+    aiFlagLevel?: "yellow" | "red";
     downloadsOpen?: boolean;
     extensionsOpen?: boolean;
     hls?: { streams: import("../../../desktop/src/shared/ipc-contract").BrowserHlsStream[]; available: boolean };
@@ -107,7 +109,7 @@ export interface DesktopTabsState {
   preparingNewTab?: boolean;
   tabs: DesktopTabView[];
   extensions: DesktopBrowserExtension[];
-  browserPreferences?: { organizationSidebarEnabled?: boolean; notificationsEnabled: boolean; sites: Record<string, "granted" | "denied">; mediaSites?: Record<string, Partial<Record<"microphone" | "camera" | "location", "granted" | "denied">>>; translationLanguage: string; appLinks?: Record<string, string[]> };
+  browserPreferences?: { organizationSidebarEnabled?: boolean; aiFlagConfirm?: boolean; notificationsEnabled: boolean; sites: Record<string, "granted" | "denied">; mediaSites?: Record<string, Partial<Record<"microphone" | "camera" | "location", "granted" | "denied">>>; translationLanguage: string; appLinks?: Record<string, string[]> };
   /** Saved website sign-ins: origin and username only, never the password. */
   savedPasswords?: Array<{ origin: string; username: string }>;
 }
@@ -191,6 +193,7 @@ type DesktopTabsAction =
   | { type: "browser-navigate"; input: string }
   | { type: "browser-stop" }
   | { type: "browser-menu"; x: number; y: number; profileLabel: string }
+  | { type: "browser-open-settings" }
   | { type: "browser-find"; text: string; forward?: boolean; findNext?: boolean }
   | { type: "browser-find-close" }
   | { type: "browser-downloads-popover"; x: number; y: number }
@@ -213,6 +216,10 @@ type DesktopTabsAction =
   | { type: "browser-hls-download"; id: string }
   | { type: "browser-terminal"; open: boolean; width?: number }
   | { type: "browser-organization"; open: boolean; width?: number }
+  /** The trusted page reports how many people flagged its website as AI-generated; the address outline follows. */
+  | { type: "browser-ai-flags"; site: string | null; level: "yellow" | "red" | null }
+  /** Ask before flagging a website as AI-generated. Resolves true when the person confirms. */
+  | { type: "browser-ai-flag-confirm"; site: string }
   | { type: "browser-organization-selection" }
   | { type: "browser-organization-target"; target: import("./browser-annotations").BrowserAnnotationTarget }
   | { type: "browser-organization-markers"; items: Array<{ id: string; target: import("./browser-annotations").BrowserAnnotationTarget; count?: number; preview?: string }> }
@@ -713,6 +720,7 @@ export type DesktopTabKind =
   | "code"
   | "gestures"
   | "office"
+  | "knowledge"
   | "screen-time"
   | "crumbs"
   | "design"
@@ -738,11 +746,13 @@ const ROUTE_LABELS: Record<string, { label: string; kind: DesktopTabKind }> = {
   profile: { label: "Settings", kind: "profile" },
   code: { label: "Code", kind: "code" },
   gestures: { label: "Gestures", kind: "gestures" },
-  office: { label: "Office", kind: "office" },
+  office: { label: "Spaces", kind: "office" },
+  spaces: { label: "Spaces", kind: "office" },
+  knowledge: { label: "Knowledge", kind: "knowledge" },
   "screen-time": { label: "Screen Time", kind: "screen-time" },
   crumbs: { label: "Crumbs", kind: "crumbs" },
-  design: { label: "Design", kind: "design" },
-  "video-studio": { label: "Video", kind: "video-studio" },
+  design: { label: "Spaces", kind: "office" },
+  "video-studio": { label: "Spaces", kind: "office" },
   calendar: { label: "Calendar", kind: "calendar" },
   garden: { label: "Gardens", kind: "gardens" },
   gardens: { label: "Gardens", kind: "gardens" },

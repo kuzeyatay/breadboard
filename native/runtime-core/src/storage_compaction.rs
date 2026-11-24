@@ -9,10 +9,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const DATABASES: [&str; 3] = [
+const DATABASES: [&str; 4] = [
     "runtime-v2/runtime-v2.sqlite3",
     "database/brain.db",
     "database/skills-catalog.db",
+    crate::recall_storage::RECALL_DATABASE,
 ];
 const RESERVE: u64 = 2 * 1024 * 1024 * 1024;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -35,17 +36,17 @@ fn sidecar(database: &Path, suffix: &str) -> PathBuf {
     value.push(suffix);
     PathBuf::from(value)
 }
-fn reject_link(path: &Path) -> Result<()> {
+pub(crate) fn reject_link(path: &Path) -> io::Result<()> {
     if let Ok(meta) = fs::symlink_metadata(path) {
         #[cfg(windows)]
         {
             use std::os::windows::fs::MetadataExt;
             if meta.file_attributes() & 0x400 != 0 {
-                return Err("redirected maintenance path".into());
+                return Err(io::Error::other("redirected maintenance path"));
             }
         }
         if meta.file_type().is_symlink() {
-            return Err("redirected maintenance path".into());
+            return Err(io::Error::other("redirected maintenance path"));
         }
     }
     Ok(())
@@ -66,7 +67,7 @@ fn journal(database: &Path, phase: &str) -> Result<()> {
     file.flush()?;
     file.sync_all()?;
     drop(file);
-    fs::rename(&temporary, &target)?;
+    crate::paths::install_file_replace(&temporary, &target)?;
     Ok(())
 }
 fn remove_owned(path: &Path) -> Result<()> {
@@ -115,7 +116,7 @@ fn recover_one(database: &Path) -> Result<()> {
     } else if previous.exists() {
         verify(&previous)?;
         remove_owned(database)?;
-        fs::rename(&previous, database)?;
+        crate::paths::install_file_replace(&previous, database)?;
     } else {
         verify(database)?;
     }
@@ -125,7 +126,7 @@ fn recover_one(database: &Path) -> Result<()> {
 }
 
 #[cfg(windows)]
-fn available_bytes(directory: &Path) -> Result<u64> {
+pub(crate) fn available_bytes(directory: &Path) -> io::Result<u64> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
     let path: Vec<u16> = directory.as_os_str().encode_wide().chain(Some(0)).collect();
@@ -139,13 +140,13 @@ fn available_bytes(directory: &Path) -> Result<u64> {
         )
     } == 0
     {
-        return Err(io::Error::last_os_error().into());
+        return Err(io::Error::last_os_error());
     }
     Ok(available)
 }
 #[cfg(not(windows))]
-fn available_bytes(_directory: &Path) -> Result<u64> {
-    Err("offline storage compaction requires the supported desktop platform".into())
+pub(crate) fn available_bytes(_directory: &Path) -> io::Result<u64> {
+    Err(io::Error::other("storage maintenance requires the supported desktop platform"))
 }
 
 fn compact_one(database: &Path, free_bytes: u64) -> Result<u64> {
@@ -269,8 +270,8 @@ fn compact_one(database: &Path, free_bytes: u64) -> Result<u64> {
         .open(&compact)?
         .sync_all()?;
     journal(database, "prepared")?;
-    fs::rename(database, &previous)?;
-    fs::rename(&compact, database)?;
+    crate::paths::install_file_replace(database, &previous)?;
+    crate::paths::install_file_replace(&compact, database)?;
     verify(database)?;
     journal(database, "installed")?;
     let after = fs::metadata(database)?.len();
@@ -361,7 +362,13 @@ pub fn compact_storage(
                 .0,
         )?;
         paths.pin_existing_data_file(&file)?;
-        match compact_one(file.absolute(), available_bytes(paths.data_root())?) {
+        if relative == crate::recall_storage::RECALL_DATABASE
+            && file.absolute().with_file_name("db.sqlite.quarantine.json").exists()
+        {
+            report.deferred.push("Recall history must be repaired before compaction".into());
+            continue;
+        }
+        match compact_one(file.absolute(), available_bytes(_directory.absolute())?) {
             Ok(bytes) => {
                 report.databases_compacted += 1;
                 report.bytes_released += bytes;

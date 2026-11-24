@@ -32,7 +32,8 @@ const sharedState: RecommendationState = cacheGlobal.breadboardRecommendationsV1
 const { evidenceCache, recommendationCache, generations, recentlyShown, voiceOpeners } = sharedState;
 
 function contextKey(context: RecommendationContext) {
-  return [context.gardenSlug,context.pageTitle,context.localDate,context.timeZone,context.documentConversationId];
+  const key = [context.gardenSlug,context.pageTitle,context.localDate,context.timeZone,context.documentConversationId];
+  return context.surface ? [...key, context.surface] : key;
 }
 
 function generation(userId: number): object {
@@ -148,7 +149,7 @@ export async function recommendationEvidence(userId: number, context: Recommenda
   const current = generation(userId);
   const key = `${userId}:${JSON.stringify([access.key, contextKey(context), Math.floor(Date.now()/RECOMMENDATION_TTL_MS)])}`;
   const evidence = await cached(evidenceCache, key, () => readRecommendationEvidence(userId, context));
-  const learned = await import("../personal-context/suggestions.ts")
+  const learned = context.surface === 'web-search' ? [] : await import("../personal-context/suggestions.ts")
     .then(module => module.learnedEvidence(userId,context.gardenSlug)).catch(() => []);
   // A settings change during a provider read takes effect before anything is shown.
   if (generations.get(userId) !== current || policy(userId).key !== access.key) return [];
@@ -163,7 +164,7 @@ export async function recommendationsForUser(userId: number, context: Recommenda
   if (!access.enabled) return [];
   const evidence = await recommendationEvidence(userId, context);
   if (generations.get(userId) !== current || policy(userId).key !== access.key) return [];
-  const globalSurface = !context.gardenSlug && !context.pageTitle && !context.documentConversationId;
+  const globalSurface = !context.surface && !context.gardenSlug && !context.pageTitle && !context.documentConversationId;
   if (!evidence.length) {
     if (globalSurface) voiceOpeners.delete(userId);
     return [];

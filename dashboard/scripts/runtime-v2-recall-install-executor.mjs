@@ -321,16 +321,14 @@ export function recallQuarantineMarker(home) {
  * That command repairs and verifies a working copy, then swaps it in; the
  * faulted original stays beside it. Returns the sentence Settings shows.
  */
-async function recoverQuarantinedDatabase(plan, signal, timeoutMs, spawnImpl) {
+async function recoverQuarantinedDatabase(plan, signal, timeoutMs, spawnImpl, availableBytes) {
   const marker = recallQuarantineMarker(plan.home);
   const dataDir = path.dirname(marker);
-  const size =
-    fs.statSync(path.join(dataDir, "db.sqlite"), { throwIfNoEntry: false })
-      ?.size ?? 0;
-  const volume = fs.statfsSync(dataDir);
+  const size = ["db.sqlite", "db.sqlite-wal", "db.sqlite-shm"].reduce((bytes, file) =>
+    bytes + (fs.statSync(path.join(dataDir, file), { throwIfNoEntry: false })?.size ?? 0), 0);
   // The repair holds the original and a rebuilt copy at once. Starting it on a
   // nearly full disk would repeat the fault that caused the quarantine.
-  const free = volume.bavail * volume.bsize;
+  const free = availableBytes(dataDir);
   if (free < RECOVERY_HEADROOM_BYTES) {
     return "Recall's history needs a repair, and the disk is too full to do it safely.";
   }
@@ -346,6 +344,7 @@ async function recoverQuarantinedDatabase(plan, signal, timeoutMs, spawnImpl) {
   if (free < 2 * size + RECOVERY_HEADROOM_BYTES) {
     return "Recall's history needs a repair, and the disk is too full to do it safely.";
   }
+  const previousAttempts = new Set(fs.readdirSync(dataDir));
   const result = await runNpm(
     {
       ...plan,
@@ -366,11 +365,16 @@ async function recoverQuarantinedDatabase(plan, signal, timeoutMs, spawnImpl) {
     process.stderr.write(result.logTail.slice(-MAX_INSTALL_LOG_BYTES));
   if (result.code === 0 && !fs.existsSync(marker))
     return "Recall's history was repaired.";
-  // A failed repair leaves its working copy, as large as the database, and
-  // the next attempt makes another. Only that scratch folder is removed.
+  // Keep interrupted swaps and their source generations for the engine's
+  // recovery. A newly created directory containing only scratch is disposable.
   for (const name of fs.readdirSync(dataDir)) {
-    if (/^db-recovery-\d{8}-\d{6}-\d+$/u.test(name))
-      fs.rmSync(path.join(dataDir, name), { recursive: true, force: true });
+    if (previousAttempts.has(name) || !/^db-recovery-\d{8}-\d{6}-\d+$/u.test(name)) continue;
+    const attempt = path.join(dataDir, name);
+    if (!fs.lstatSync(attempt).isDirectory()) continue;
+    const files = fs.readdirSync(attempt);
+    if (files.length === 1 && files[0] === "working-copy") {
+      fs.rmSync(attempt, { recursive: true, force: true });
+    }
   }
   return "Recall's history could not be repaired. Breadboard will try again later.";
 }
@@ -384,6 +388,10 @@ export async function executeRecallInstall({
   env = process.env,
   timeoutMs = RECALL_INSTALL_TIMEOUT_MS,
   spawnImpl = spawn,
+  availableBytes = (directory) => {
+    const volume = fs.statfsSync(directory);
+    return volume.bavail * volume.bsize;
+  },
 }) {
   const plan = buildRecallInstallPlan({ dataRoot, platform, arch, env });
   ensureInstallRoot(plan);
@@ -425,6 +433,7 @@ export async function executeRecallInstall({
         signal,
         timeoutMs,
         spawnImpl,
+        availableBytes,
       );
     }
     clearInterval(heartbeat);

@@ -18,6 +18,7 @@ mod state_machine;
 mod store;
 mod storage_maintenance;
 mod storage_compaction;
+pub mod recall_storage;
 pub use storage_compaction::{compact_storage, recover_storage_swaps, CompactionReport};
 pub use storage_maintenance::StorageMaintenanceReport;
 mod system_commit;

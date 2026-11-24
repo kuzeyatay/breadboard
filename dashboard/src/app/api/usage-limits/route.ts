@@ -127,8 +127,8 @@ export async function POST(request: Request) {
     const userId = await requireUserId();
     if (claudeSubscriptionModelId(model)) {
       const payload = await readClaudeUsageLimits(model, new Date(), {
-        recoverSession: async () => {
-          const result = await runClaudeAccountJob({ userId, operation: 'refresh-usage' });
+        recoverSession: async (profile) => {
+          const result = await runClaudeAccountJob({ userId, operation: 'refresh-usage', profile });
           if (!result.ok) throw new Error(result.message);
         },
       });

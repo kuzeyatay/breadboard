@@ -69,6 +69,49 @@
     }
   });
 
+  // My assets also lists the person's Garden media: the Garden the editor was opened in first, then, further
+  // down, every other Garden. A click adds that file to the project (the parent page fetches and imports it).
+  let library = [];
+  const libraryStyle = `#bb-garden-media{display:grid;gap:6px;margin:10px 0 14px}#bb-garden-media h4{margin:8px 0 2px;font-size:11px;font-weight:600;opacity:.7}
+#bb-garden-media button{display:grid;grid-template-columns:22px 1fr;gap:2px 8px;align-items:center;text-align:left;padding:7px 9px;border-radius:8px;border:1px solid color-mix(in srgb,currentColor 14%,transparent);background:color-mix(in srgb,currentColor 4%,transparent);color:inherit;font:inherit;font-size:12px;cursor:pointer}
+#bb-garden-media button:hover{background:color-mix(in srgb,currentColor 9%,transparent)}#bb-garden-media button[disabled]{opacity:.55;cursor:progress}
+#bb-garden-media span{grid-row:span 2;font-size:14px;opacity:.75;text-align:center}#bb-garden-media strong{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}#bb-garden-media small{opacity:.6;font-size:11px}`;
+  const icon = { video: "▶︎", audio: "♪", image: "▧" };
+  function renderLibrary() {
+    const tabs = [...document.querySelectorAll(".tabs")].find((el) => el.children.length === 3 && el.children[2].classList.contains("is-active") && el.closest(".panel, aside, section, div"));
+    const existing = document.getElementById("bb-garden-media");
+    if (!tabs || !library.length) { existing?.remove(); return; }
+    if (existing && existing.previousElementSibling === tabs && existing.dataset.count === String(library.length)) return;
+    existing?.remove();
+    if (!document.getElementById("bb-garden-media-style")) { const style = document.createElement("style"); style.id = "bb-garden-media-style"; style.textContent = libraryStyle; document.head.append(style); }
+    const section = document.createElement("section");
+    section.id = "bb-garden-media"; section.dataset.count = String(library.length);
+    let garden = null;
+    library.forEach((item, index) => {
+      if (item.garden !== garden) {
+        garden = item.garden;
+        const heading = document.createElement("h4");
+        heading.textContent = index === 0 && item.here ? `In ${item.gardenName}` : item.gardenName;
+        section.append(heading);
+      }
+      const button = document.createElement("button");
+      button.type = "button"; button.title = `Add ${item.filename} to this video`;
+      const mark = document.createElement("span"); mark.textContent = icon[item.kind] || "▧";
+      const name = document.createElement("strong"); name.textContent = item.title;
+      const detail = document.createElement("small"); detail.textContent = `${item.kind === "audio" ? "Recording" : item.kind === "image" ? "Image" : "Video"}${item.size ? ` · ${item.size >= 1e9 ? (item.size / 1e9).toFixed(1) + " GB" : Math.max(1, Math.round(item.size / 1e6)) + " MB"}` : ""}`;
+      button.append(mark, name, detail);
+      button.onclick = () => { button.disabled = true; detail.textContent = "Adding…"; post({ type: "library-pick", url: item.url, filename: item.filename }); };
+      section.append(button);
+    });
+    tabs.after(section);
+  }
+  new MutationObserver(() => renderLibrary()).observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["class"] });
+  window.addEventListener("message", (event) => {
+    if (event.source === window.parent && event.data?.source === "breadboard" && event.data.type === "library" && Array.isArray(event.data.items)) {
+      library = event.data.items; document.getElementById("bb-garden-media")?.remove(); renderLibrary();
+    }
+  });
+
   // Exports and project saves still download as upstream does; Breadboard also gets a copy.
   const click = HTMLAnchorElement.prototype.click;
   HTMLAnchorElement.prototype.click = function () {

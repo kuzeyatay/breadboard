@@ -7,13 +7,14 @@ import path from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import zlib from "node:zlib";
+import { addProfile, claudeRoot, isProfileId, preferProfile, profileDir, profileRows, profileStore, rememberProfile, servingProfile } from "./claude-profiles.mjs";
 
 export const MANAGED_SETUP_OPERATIONS = Object.freeze({
   "audio-analyzer": Object.freeze(["check", "download", "install"]),
   "bolt-slides": Object.freeze(["install-dependencies", "remove"]),
   cad: Object.freeze(["install", "remove"]),
   "career-ops": Object.freeze(["install", "browsers", "scaffold", "remove"]),
-  "claude-code": Object.freeze(["status", "logout", "refresh-usage", "install", "remove"]),
+  "claude-code": Object.freeze(["status", "profiles", "login", "activate", "logout", "refresh-usage", "install", "remove"]),
   acestep: Object.freeze(["install", "remove"]),
   codex: Object.freeze(["install", "remove"]),
   colpali: Object.freeze(["install", "remove"]),
@@ -373,11 +374,11 @@ function claudeStatusResult(value) {
   };
 }
 
-async function claudeAccountOperation(action, context) {
+async function claudeAccountOperation(action, context, profile) {
   const command = fixedClaudeCommand(context);
   if (!command) {
     const message = "Claude Code is not installed.";
-    if (action === "status") {
+    if (action === "status" || action === "profiles") {
       return {
         ok: true,
         message,
@@ -393,6 +394,46 @@ async function claudeAccountOperation(action, context) {
     }
     return { ok: false, message, detail: "" };
   }
+  const root = claudeRoot(context.env);
+  const envFor = id => ({
+    ...claudeAccountEnvironment(context.env),
+    ...(id === "default" ? {} : { CLAUDE_CONFIG_DIR: profileDir(root, id) }),
+  });
+  const invoke = (id, args, timeoutMs = CLAUDE_ACCOUNT_TIMEOUT_MS) => runManagedSetupCommand(command, args, {
+    cwd: context.dataRoot, env: envFor(id), signal: context.signal, timeoutMs,
+    spawnImpl: context.spawnImpl, platform: context.platform,
+  });
+  const statusFor = async id => {
+    const result = await invoke(id, ["auth", "status", "--json"]);
+    const status = JSON.parse(result.stdout);
+    if (typeof status?.loggedIn !== "boolean") throw new Error("Claude Code returned an invalid account status.");
+    return claudeStatusResult(status);
+  };
+  if (action === "login") {
+    await addProfile(root, async id => {
+      const result = await invoke(id, ["auth", "login", "--claudeai"], 8 * 60_000);
+      if (result.code !== 0) throw new Error("Claude sign-in did not finish. Try adding the account again.");
+    }, statusFor);
+    return { ok: true, message: "Claude account connected.", detail: "" };
+  }
+  if (action === "profiles") {
+    const status = await statusFor("default");
+    const hasStore = fs.existsSync(profileStore(root));
+    if (hasStore) rememberProfile(root, "default", status);
+    const rows = profileRows(root).filter(row => row.id !== "default" || status.loggedIn)
+      .map(row => row.id === "default" ? { ...row, email: status.email } : row);
+    return { ok: true, message: "Claude accounts checked.", detail: JSON.stringify({
+      ...status, loggedIn: rows.length > 0, accounts: rows,
+    }) };
+  }
+  const id = profile ?? (action === "refresh-usage" ? servingProfile(root) : "default");
+  if (!id || (id !== "default" && !profileRows(root).some(row => row.id === id))) {
+    throw new Error("That Claude account is unavailable.");
+  }
+  if (action === "activate") {
+    preferProfile(root, id);
+    return { ok: true, message: "Preferred Claude account updated.", detail: "" };
+  }
   if (action === "refresh-usage") {
     // Let the official CLI renew OAuth and start the session. Safe mode keeps
     // OAuth available while omitting project instructions, hooks and plugins;
@@ -405,7 +446,7 @@ async function claudeAccountOperation(action, context) {
     ], {
       cwd: context.dataRoot,
       env: {
-        ...claudeAccountEnvironment(context.env),
+        ...envFor(id),
         CLAUDE_CODE_MAX_OUTPUT_TOKENS: "8",
         MAX_THINKING_TOKENS: "0",
         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
@@ -430,7 +471,7 @@ async function claudeAccountOperation(action, context) {
     action === "status" ? ["auth", "status", "--json"] : ["auth", "logout"],
     {
       cwd: context.dataRoot,
-      env: claudeAccountEnvironment(context.env),
+      env: envFor(id),
       signal: context.signal,
       timeoutMs: CLAUDE_ACCOUNT_TIMEOUT_MS,
       spawnImpl: context.spawnImpl,
@@ -438,6 +479,7 @@ async function claudeAccountOperation(action, context) {
     },
   );
   if (action === "logout") {
+    if (result.code === 0) rememberProfile(root, id, { loggedIn: false });
     return result.code === 0
       ? { ok: true, message: "Claude Code is signed out.", detail: "" }
       : { ok: false, message: "Claude Code could not sign out.", detail: "" };
@@ -3614,7 +3656,10 @@ async function openworkSetup(context) {
 export function validateManagedSetupRequest(value) {
   if (
     !isRecord(value) ||
-    Object.keys(value).sort().join(",") !== "action,operation,protocolVersion" ||
+    (Object.keys(value).sort().join(",") !== "action,operation,protocolVersion" &&
+      !(Object.keys(value).sort().join(",") === "action,operation,profile,protocolVersion" &&
+        value.operation === "claude-code" && ["activate", "logout", "refresh-usage"].includes(value.action) &&
+        isProfileId(value.profile))) ||
     value.protocolVersion !== 1 ||
     typeof value.operation !== "string" ||
     typeof value.action !== "string" ||
@@ -4090,7 +4135,7 @@ async function dispatchManagedSetup(canonical, context) {
   // First-use downloads; "claude-code" also carries the account operations.
   if (isOptionalDownloadRequest(canonical)) return optionalDownloadSetup(canonical.operation, canonical.action, context);
   if (canonical.operation === "claude-code") {
-    return claudeAccountOperation(canonical.action, context);
+    return claudeAccountOperation(canonical.action, context, canonical.profile);
   }
   if (canonical.operation === "google-images") return googleImagesSetup(canonical.action, context);
   if (canonical.operation === "hyperframes") return hyperframesSetup(context);

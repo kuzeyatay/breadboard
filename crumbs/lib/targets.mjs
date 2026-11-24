@@ -52,7 +52,18 @@ export const COLLECTIONS = {
   key: "com.breadboard.key",
   note: "com.breadboard.note",
   rating: "com.breadboard.rating",
+  aiflag: "com.breadboard.aiflag",
 };
+
+/** The site an AI flag is about: the lowercase host without "www.", or null for anything that is not a public website. */
+export function aiFlagSite(value) {
+  try {
+    const url = new URL(value);
+    if (!["http:", "https:"].includes(url.protocol)) return null;
+    const host = url.hostname.toLowerCase().replace(/^www\./, "");
+    return /^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(host) && host.length <= 253 && !/^[\d.]+$/.test(host) ? host : null;
+  } catch { return null; }
+}
 
 /** A `com.breadboard.highlight` record, or null when it is not one we show. */
 export function parseHighlightRecord(record) {

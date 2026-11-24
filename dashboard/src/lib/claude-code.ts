@@ -1,10 +1,10 @@
-import crypto from "node:crypto";
+import { isProfileId } from "../../scripts/claude-profiles.mjs";
 import {
   ClaudeAccountJobError,
+  beginClaudeAccountLogin,
+  pollClaudeAccountLogin,
   runClaudeAccountJob,
 } from "./runtime-v2/claude-account-job.ts";
-
-const LOGIN_STATE_TTL_MS = 15 * 60_000;
 
 /**
  * Models exposed by Claude Code subscriptions.
@@ -51,21 +51,21 @@ interface ClaudeAuthStatusPayload {
   subscriptionType?: unknown;
 }
 
-const globalState = globalThis as typeof globalThis & {
-  __breadboardClaudeLoginStates?: Map<string, { userId: number; expiresAt: number }>;
-};
+export function claudeProfileFile(id: string): string {
+  return id === "default" ? CLAUDE_CODE_ACCOUNT_FILE : `claude-code-profile-${id}.json`;
+}
 
-function loginStates(): Map<string, { userId: number; expiresAt: number }> {
-  globalState.__breadboardClaudeLoginStates ??= new Map<
-    string,
-    { userId: number; expiresAt: number }
-  >();
-  const states = globalState.__breadboardClaudeLoginStates;
-  const now = Date.now();
-  for (const [state, record] of states) {
-    if (record.expiresAt <= now) states.delete(state);
-  }
-  return states;
+export function claudeProfileId(file: string): string | null {
+  if (file === CLAUDE_CODE_ACCOUNT_FILE) return "default";
+  const id = /^claude-code-profile-([0-9a-f-]+)\.json$/.exec(file)?.[1];
+  return id && isProfileId(id) ? id : null;
+}
+
+interface ClaudeProfile {
+  id: string;
+  email: string | null;
+  connectedAt: string | null;
+  resetAt: number;
 }
 
 function text(value: unknown): string | null {
@@ -92,13 +92,14 @@ export function parseClaudeCodeStatus(value: unknown): ClaudeCodeStatus {
 export async function readClaudeCodeStatus(
   userId: number,
   signal?: AbortSignal,
-): Promise<ClaudeCodeStatus> {
-  const result = await runClaudeAccountJob({ userId, operation: "status", signal });
+): Promise<ClaudeCodeStatus & { accounts: ClaudeProfile[] }> {
+  const result = await runClaudeAccountJob({ userId, operation: "profiles", signal });
   try {
-    const status = parseClaudeCodeStatus(JSON.parse(result.detail));
-    const parsed = JSON.parse(result.detail) as { installed?: unknown; error?: unknown };
+    const parsed = JSON.parse(result.detail);
+    const status = parseClaudeCodeStatus(parsed);
     return {
       ...status,
+      accounts: Array.isArray(parsed.accounts) ? parsed.accounts.filter((row: ClaudeProfile) => row && isProfileId(row.id) && Number.isFinite(row.resetAt)) : [],
       installed: parsed.installed === true,
       error: status.loggedIn ? null : text(parsed.error) ?? status.error,
     };
@@ -110,53 +111,23 @@ export async function readClaudeCodeStatus(
   }
 }
 
-/**
- * Link an already authenticated Claude Code installation to Breadboard.
- *
- * Operator OSS ultimately trusts `claude auth status` and leaves the real
- * credential under Claude Code's ownership. Breadboard does the same. The
- * current settings surface has no authorization-code input, so a first login
- * must be completed with the official `claude auth login` command; once it is,
- * linking is immediate and no token is copied into Breadboard or CLIProxyAPI.
- */
-export async function linkClaudeCodeLogin(userId: number, signal?: AbortSignal): Promise<{
-  state: string;
-  complete: true;
-}> {
-  const status = await readClaudeCodeStatus(userId, signal);
-  if (!status.installed) {
-    throw new Error(
-      "Claude Code is not installed. Install the official Claude Code CLI, run `claude auth login`, then refresh Breadboard.",
-    );
-  }
-  if (!status.loggedIn) {
-    throw new Error(
-      "Run `claude auth login` once in a terminal, then refresh Breadboard. Claude keeps the credential; Breadboard never copies it.",
-    );
-  }
-
-  const state = `${CLAUDE_LOGIN_STATE_PREFIX}${crypto.randomUUID()}`;
-  loginStates().set(state, { userId, expiresAt: Date.now() + LOGIN_STATE_TTL_MS });
-  return { state, complete: true };
+export async function linkClaudeCodeLogin(userId: number) {
+  return { state: CLAUDE_LOGIN_STATE_PREFIX + await beginClaudeAccountLogin(userId) };
 }
 
 export function isClaudeCodeLoginState(state: string): boolean {
   return state.startsWith(CLAUDE_LOGIN_STATE_PREFIX);
 }
 
-export async function isClaudeCodeLoginComplete(
-  userId: number,
-  state: string,
-  signal?: AbortSignal,
-): Promise<boolean> {
-  if (loginStates().get(state)?.userId !== userId) return false;
-  return (await readClaudeCodeStatus(userId, signal)).loggedIn;
+export async function isClaudeCodeLoginComplete(userId: number, state: string, cancel = false) {
+  const jobId = state.slice(CLAUDE_LOGIN_STATE_PREFIX.length);
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(jobId)) throw new ClaudeAccountJobError(400, "Invalid Claude sign-in.");
+  return pollClaudeAccountLogin(userId, jobId, cancel);
 }
 
-/** Sign out through the owner of the credential rather than deleting files. */
-export async function logoutClaudeCode(userId: number, signal?: AbortSignal): Promise<void> {
-  const result = await runClaudeAccountJob({ userId, operation: "logout", signal });
-  if (!result.ok) throw new ClaudeAccountJobError(502, result.message);
+export async function changeClaudeProfile(userId: number, operation: "activate" | "logout", profile: string, signal?: AbortSignal) {
+  const result = await runClaudeAccountJob({ userId, operation, profile, signal });
+  if (!result.ok) throw new ClaudeAccountJobError(409, result.message);
 }
 
 export function isClaudeCodeModel(model: string): boolean {

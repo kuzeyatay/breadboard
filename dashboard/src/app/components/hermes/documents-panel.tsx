@@ -196,9 +196,7 @@ export default function DocumentsPanel({ attachedKeys, attachingKeys, onToggleAt
               const attached = attachedKeys.has(key);
               const attaching = attachingKeys.has(key);
               const display = gardenSourceDisplay({ ...doc, name: doc.title });
-              const href = display.hasPdf
-                ? `/gardens/${doc.gardenSlug}/pdf/${encodeURIComponent(doc.slug)}`
-                : gardenDocumentHref(doc.gardenSlug, doc);
+              const href = gardenDocumentHref(doc.gardenSlug, doc);
               return (
                 <li
                   key={key}

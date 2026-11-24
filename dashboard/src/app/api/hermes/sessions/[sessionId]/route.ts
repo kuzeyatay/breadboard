@@ -31,6 +31,7 @@ import { cancelRunningExternalAgentRuns } from "@/lib/conversations/external-age
 import { reconcileMaxResearchConversation } from "@/lib/max-research/conversation-persistence.ts";
 import { reconcileVibeTradingConversation } from "@/lib/vibe-trading/conversation-persistence.ts";
 import { requireSameOrigin } from "@/lib/request-origin";
+import { settleDelegatedWork } from "@/lib/conversations/settle-delegated-work.ts";
 import { sideChatHasStars } from "@/lib/starred-messages-store.ts";
 
 export const dynamic = "force-dynamic";
@@ -59,6 +60,7 @@ export async function GET(
     }
     await reconcileMaxResearchConversation(userId, conversation.id);
     await reconcileVibeTradingConversation(userId, conversation.id);
+    await settleDelegatedWork(userId, conversation.id, true);
     return NextResponse.json({ session: presentHermesSessionDetail(conversation) });
   } catch (error) {
     return apiErrorResponse(error);

@@ -315,7 +315,7 @@ test("evidence opens from the overflow menu without a standalone disclosure", ()
 
 test("assistant action buttons expose inline editing while keeping downloads in the menu", () => {
   assert.match(actions, /navigator\.clipboard\.writeText/);
-  assert.match(actions, /localStorage\.setItem/);
+  assert.match(actions, /<AnswerFeedbackMenu/);
   assert.match(actions, /aria-pressed=/);
   assert.match(actions, /new Blob/);
   assert.match(actions, /anchor\.download/);

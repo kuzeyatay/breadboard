@@ -79,6 +79,18 @@ test("a document's note follows its versions, moves and trash", async () => {
   assert.equal(fs.existsSync(note("Archive/lab-plan-md.md")), false);
 });
 
+test("a Spaces design in a folder links its image by its full content path, the way Quartz resolves it", async () => {
+  // Quartz resolves from the content root; "../assets" from Spaces/ lost the Garden folder and broke the image.
+  const png = Buffer.from("89504e470d0a1a0a", "hex");
+  const stage = await store.stage(new Blob([png]).stream());
+  const file = store.import(scope, "Spaces/Poster.png", stage);
+  await syncOfficeMirrors(store, scope);
+  const text = fs.readFileSync(note("Spaces/poster-png.md"), "utf8");
+  assert.match(text, new RegExp(`\\]\\(notes/assets/office/${file.id}/figure-1\\.png\\)`));
+  assert.doesNotMatch(text, /\.\.\/assets/);
+  assert.ok(fs.existsSync(note(`assets/office/${file.id}/figure-1.png`)));
+});
+
 test("a private file in a public Garden gets no note until it is shared", async () => {
   const shared = { gardenId: "shared", clusterId: 901, ownerId: 900, userId: 900 };
   let file = await add(shared, "Office/Secret.md", "# Secret\n\nPrivate notes.");

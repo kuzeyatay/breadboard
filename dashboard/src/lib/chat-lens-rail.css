@@ -33,6 +33,7 @@
   inset: 6px 0 6px auto;
   width: 30px;
   border-radius: 50%;
+  corner-shape: round;
   background: linear-gradient(90deg, transparent, var(--lens-edge) 14%, var(--lens-face) 50%, var(--lens-edge) 86%, transparent);
   mask-image: linear-gradient(transparent, black 25%, black 75%, transparent);
   opacity: var(--lens-ring-opacity);

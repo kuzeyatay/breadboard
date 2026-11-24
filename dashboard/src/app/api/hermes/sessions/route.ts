@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import { CODE_ORIGIN_LABEL } from "@/lib/conversations/origin-label.ts";
+import db from "@/lib/db";
 import { isPdfAssistantPageContext, isVideoAssistantPageContext } from "@/lib/pdf-assistant-scope.ts";
 import { requireUserId } from "@/lib/server-auth";
 import {
@@ -193,6 +195,11 @@ export async function POST(request: Request) {
           turn: initialTurn,
         }).conversation
       : createConversation(conversationInput);
+    // Bread in VS Code: a workspace chat keeps its garden link and still reads "Code: <title>" in the Terminal.
+    if (body.code === true) {
+      db.prepare("UPDATE conversations SET origin_label = ? WHERE id = ?").run(CODE_ORIGIN_LABEL, conversation.id);
+      conversation.origin_label = CODE_ORIGIN_LABEL;
+    }
     // A conversation is the durable owner; creating it must not depend on
     // enough Windows commit being available to cold-start Hermes. The ordinary
     // turn flow resolves the runtime only when the browser opens its event

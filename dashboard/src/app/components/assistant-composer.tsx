@@ -37,17 +37,18 @@ import type { PromptSuggestionMessage } from '@/lib/chat-prompt-suggestion';
 import { usePromptSuggestion } from '@/app/components/use-prompt-suggestion';
 import { useSentenceCompletion } from '@/app/components/use-sentence-completion';
 import PromptSuggestionOverlay from '@/app/components/prompt-suggestion-overlay';
+import SuggestionInfo from '@/app/components/suggestion-info';
+import ChatDraftFormatting from '@/app/components/chat/chat-draft-formatting';
 import UsageLimitsPopover from '@/app/components/usage-limits-popover';
 import ViewportPopover from '@/app/components/viewport-popover';
 import { CommandHub, type CommandHubHandle } from '@/app/components/hermes/command-hub';
 import SlashCommandMenu, {
   type SlashCommandMenuHandle,
 } from '@/app/components/hermes/slash-command-menu';
-import SelectedSkills from '@/app/components/hermes/selected-skills';
 import { splitLeadingCommandTokens } from '@/app/components/hermes/command-text';
 import { slashQueryAt, slashQueryReplacementRange } from '@/lib/hermes/slash-query';
 import BotMentionMenu, { type BotMentionMenuHandle } from '@/app/components/bots/bot-mention-menu';
-import { mentionQueryAt } from '@/lib/bots/mentions';
+import { mentionQueryAt, splitMentions } from '@/lib/bots/mentions';
 import {
   caretOnFirstLine,
   caretOnLastLine,
@@ -818,7 +819,6 @@ export default function AssistantComposer({
     return () => window.clearTimeout(timer);
   }, []);
   const commandHubRef = useRef<CommandHubHandle>(null);
-  const [skillHints, setSkillHints] = useState<CommandHubItem[]>([]);
   const composerSurfaceRef = useRef<HTMLDivElement>(null);
   const slashCommandMenuRef = useRef<SlashCommandMenuHandle>(null);
   const botMentionMenuRef = useRef<BotMentionMenuHandle>(null);
@@ -1499,7 +1499,6 @@ export default function AssistantComposer({
   function insertCommand(item: CommandHubItem) {
     setMenuSearch(null);
     setShowSlashCommands(false);
-    if (item.kind === 'skill') setSkillHints(current => [...current.filter(skill => skill.id !== item.id), item]);
     if (item.token.startsWith('master-agent:')) {
       // Choosing a workflow leaves the specialist chip behind. Otherwise its
       // sticky selection would claim the next request before the planner.
@@ -1656,6 +1655,10 @@ export default function AssistantComposer({
 
   return (
     <div className={className}>
+      {!formAgent && !menuSearch && !uploadQueued && (
+        <ChatDraftFormatting key={`${capabilitySurface}:${capabilitySessionId ?? 'draft'}`}
+          inputRef={internalTextareaRef} value={value} />
+      )}
       <SignInRequiredCard
         key={`${capabilitySurface}:${capabilitySessionId ?? 'unscoped'}`}
         surface={capabilitySurface}
@@ -1713,9 +1716,6 @@ export default function AssistantComposer({
           onSelect={selectDirectSlashCommand}
           onBrowseAll={() => { setMenuSearch(null); setShowSlashCommands(false); commandHubRef.current?.openTab('skill'); }}
         />
-        <SelectedSkills value={value} onChange={onChange} sessionId={capabilitySessionId}
-          surface={capabilitySurface} hints={skillHints} disabled={sessionActionsDisabled}
-          onRemove={() => window.setTimeout(() => internalTextareaRef.current?.focus(), 0)} />
         {capabilitySessionId && capabilitySurface !== 'quartz_ai' ? (
           <GoalCard
             sessionId={capabilitySessionId}
@@ -2497,7 +2497,7 @@ export default function AssistantComposer({
               }, 0);
             } : undefined}
             onOpenMcpSettings={() => {
-              setSettingsInitialTab('mcp');
+              setSettingsInitialTab('connections');
               setSettingsMounted(true);
               setShowIntelligence(true);
               setIntelligencePanel('settings');
@@ -2646,7 +2646,8 @@ onSelectCareerOps={onSelectCareerOps ? () => insertCommandToken(CAREER_OPS_COMMA
               const linkBody = commandSplit ? commandSplit.rest : value;
               const bodySegments = composerSegments(linkBody);
               const hasLink = bodySegments.some((segment) => segment.kind === 'link');
-              const mirrored = !menuSearch && (Boolean(commandSplit) || hasLink || Boolean(sentenceCompletion.text));
+              const hasMention = bodySegments.some((segment) => segment.kind !== 'link' && splitMentions(segment.text).some((part) => part.mention));
+              const mirrored = !menuSearch && (Boolean(commandSplit) || hasLink || hasMention || Boolean(sentenceCompletion.text));
               return (
                 <>
                   {/* Keep the mirror centered with a one-line textarea. Once
@@ -2655,7 +2656,6 @@ onSelectCareerOps={onSelectCareerOps ? () => insertCommandToken(CAREER_OPS_COMMA
                   {mirrored ? (
                     <div
                       ref={commandBackdropRef}
-                      aria-hidden
                       data-sentence-completion={sentenceCompletion.text ? '' : undefined}
                       // Above the textarea, not behind it, so an anchor can be
                       // clicked. The layer itself passes every event through;
@@ -2667,7 +2667,7 @@ onSelectCareerOps={onSelectCareerOps ? () => insertCommandToken(CAREER_OPS_COMMA
                         className={`w-full whitespace-pre-wrap break-words px-1 py-0 ${compact ? 'min-h-5 text-sm leading-5' : 'min-h-6 text-[15px] leading-6'}`}
                       >
                         {commandSplit ? (
-                          <span className="text-[var(--botanical)]">{commandSplit.command}</span>
+                          <span aria-hidden className="text-[var(--botanical)]">{commandSplit.command}</span>
                         ) : null}
                         {bodySegments.map((segment, index) =>
                           segment.kind === 'link' ? (
@@ -2688,18 +2688,24 @@ onSelectCareerOps={onSelectCareerOps ? () => insertCommandToken(CAREER_OPS_COMMA
                               {segment.text}
                             </a>
                           ) : (
-                            <span key={`${index}-text`} className="text-[var(--ink)]">
-                              {segment.text}
+                            <span aria-hidden key={`${index}-text`} className="text-[var(--ink)]">
+                              {/* A bot @mention wears the same blue as a /command. */}
+                              {splitMentions(segment.text).map((part, at) => part.mention
+                                ? <span key={at} className="text-[var(--botanical)]">{part.value}</span>
+                                : part.value)}
                             </span>
                           ),
                         )}
                         {sentenceCompletion.text ? (
                           <>
                             <wbr />
-                            <span data-sentence-completion-text className="text-[var(--ink-muted)] opacity-70 [overflow-wrap:anywhere]">
+                            <span aria-hidden data-sentence-completion-text className="text-[var(--ink-muted)] opacity-70 [overflow-wrap:anywhere]">
                               {sentenceCompletion.text}
                             </span>
-                            <kbd className="ml-2 inline-block rounded border border-[var(--line)] px-1.5 py-0.5 align-baseline font-sans text-[10px] leading-none text-[var(--ink-muted)]">Tab</kbd>
+                            <span className="ml-2 inline-flex items-center gap-1 align-middle">
+                              <kbd aria-hidden className="rounded border border-[var(--line)] px-1.5 py-0.5 font-sans text-[10px] leading-none text-[var(--ink-muted)]">Tab</kbd>
+                              <SuggestionInfo reason={sentenceCompletion.reason} editorRef={internalTextareaRef} />
+                            </span>
                           </>
                         ) : null}
                         {'\u200b'}
@@ -2800,13 +2806,13 @@ onSelectCareerOps={onSelectCareerOps ? () => insertCommandToken(CAREER_OPS_COMMA
                     aria-label={menuSearch ? (menuSearch.kind === 'add' ? 'Search add menu' : 'Search capabilities') : placeholder}
                     aria-controls={menuSearch?.kind === 'add' ? 'composer-add-menu' : showSlashCommands ? 'direct-slash-command-menu' : undefined}
                     aria-describedby={sentenceCompletion.text ? sentenceCompletion.descriptionId : promptSuggestion.text ? promptSuggestion.descriptionId : undefined}
-                    aria-keyshortcuts={sentenceCompletion.text || promptSuggestion.text ? 'Tab Escape' : undefined}
+                    aria-keyshortcuts={sentenceCompletion.text || promptSuggestion.text ? 'Tab Escape Alt+I' : undefined}
                     className={`block w-full min-w-0 max-w-full resize-none overflow-y-hidden bg-transparent px-1 py-0 caret-[var(--composer-caret)] outline-none placeholder:text-[var(--ink-muted)] disabled:opacity-50 ${mirrored ? 'text-transparent' : 'text-[var(--ink)]'} ${compact ? 'min-h-5 text-sm leading-5' : 'min-h-6 text-[15px] leading-6'}`}
                     style={textareaStyle}
                   />
                   {sentenceCompletion.text ? (
                     <span id={sentenceCompletion.descriptionId} className="sr-only">
-                      Suggested completion: {sentenceCompletion.text} Press Tab to accept or Escape to dismiss.
+                      Suggested completion: {sentenceCompletion.text} Press Tab to accept, Escape to dismiss, or Alt+I for the reason.
                     </span>
                   ) : null}
                   {promptSuggestion.text ? (
@@ -2814,11 +2820,13 @@ onSelectCareerOps={onSelectCareerOps ? () => insertCommandToken(CAREER_OPS_COMMA
                       <PromptSuggestionOverlay
                         key={JSON.stringify([placeholder, promptSuggestion.text])}
                         text={promptSuggestion.text}
+                        reason={promptSuggestion.reason}
+                        editorRef={internalTextareaRef}
                         placeholder={placeholder}
                         compact={compact}
                       />
                       <span id={promptSuggestion.descriptionId} className="sr-only">
-                        Suggested message: {promptSuggestion.text} Press Tab to use it or Escape to dismiss.
+                        Suggested message: {promptSuggestion.text} Press Tab to use it, Escape to dismiss, or Alt+I for the reason.
                       </span>
                     </>
                   ) : null}

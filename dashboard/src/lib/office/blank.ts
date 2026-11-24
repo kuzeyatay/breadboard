@@ -1,3 +1,4 @@
+import { crc32, deflateSync } from "node:zlib";
 import JSZip from "jszip";
 import { buildBlankDocx } from "../../vendor/genoffice/docx-engine/src/blank.ts";
 import { createBlankPptx } from "../../vendor/genoffice/pptx-engine/src/blank.ts";
@@ -36,7 +37,31 @@ function blankPdf(): Uint8Array {
   return new TextEncoder().encode(body);
 }
 
-export async function blankOfficeFile(kind: OfficeKind, title: string): Promise<Uint8Array> {
+/** An empty AFFiNE page: the editor writes the real snapshot on its first save. */
+async function blankAffine(mode: "page" | "edgeless"): Promise<Uint8Array> {
+  const zip = new JSZip();
+  zip.file("info.json", JSON.stringify({ format: "breadboard-affine", version: 1, mode }));
+  return zip.generateAsync({ type: "uint8array" });
+}
+
+/** A white square canvas (1080 x 1080 RGB PNG) for a new design. */
+function blankPng(size = 1080): Uint8Array {
+  const chunk = (type: string, data: Buffer) => {
+    const head = Buffer.alloc(8); head.writeUInt32BE(data.length, 0); head.write(type, 4, "ascii");
+    const crc = Buffer.alloc(4); crc.writeUInt32BE(crc32(Buffer.concat([head.subarray(4), data])) >>> 0, 0);
+    return Buffer.concat([head, data, crc]);
+  };
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(size, 0); header.writeUInt32BE(size, 4); header[8] = 8; header[9] = 2;
+  const row = Buffer.alloc(1 + size * 3, 255); row[0] = 0;
+  const pixels = deflateSync(Buffer.concat(Array.from({ length: size }, () => row)));
+  return new Uint8Array(Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", header), chunk("IDAT", pixels), chunk("IEND", Buffer.alloc(0))]));
+}
+
+export async function blankOfficeFile(kind: OfficeKind, title: string, options: { whiteboard?: boolean } = {}): Promise<Uint8Array> {
+  if (kind === "affine") return blankAffine(options.whiteboard ? "edgeless" : "page");
+  if (kind === "png") return blankPng();
+  if (kind === "mp4") throw new Error("A video starts in Video Studio and is saved on its first export.");
   if (kind === "docx") return buildBlankDocx();
   if (kind === "pptx") return createBlankPptx();
   if (kind === "xlsx") return blankXlsx();

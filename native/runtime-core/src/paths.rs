@@ -697,7 +697,9 @@ pub struct RuntimePaths {
     data_root: TrustedRoot,
     app_root: TrustedRoot,
     runtime_root: TrustedRoot,
-    bulk_root: Option<TrustedRoot>,
+    /// Empty while a configured drive is disconnected; filled on first use
+    /// after it reconnects (see `live_bulk_root`), shared by every clone.
+    bulk_root: Arc<std::sync::OnceLock<TrustedRoot>>,
     configured_bulk_root: Option<PathBuf>,
 }
 
@@ -855,7 +857,7 @@ impl RuntimePaths {
             data_root: establish_root("data", data_root.into())?,
             app_root: establish_root("application", app_root.into())?,
             runtime_root: establish_root("runtime", runtime_root.into())?,
-            bulk_root: None,
+            bulk_root: Arc::default(),
             configured_bulk_root: None,
         })
     }
@@ -2486,7 +2488,7 @@ fn install_file_no_replace(_source: &Path, _destination: &Path) -> io::Result<()
 }
 
 #[cfg(windows)]
-fn install_file_replace(source: &Path, destination: &Path) -> io::Result<()> {
+pub(crate) fn install_file_replace(source: &Path, destination: &Path) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::{
         MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
@@ -2517,12 +2519,12 @@ fn install_file_replace(source: &Path, destination: &Path) -> io::Result<()> {
 }
 
 #[cfg(unix)]
-fn install_file_replace(source: &Path, destination: &Path) -> io::Result<()> {
+pub(crate) fn install_file_replace(source: &Path, destination: &Path) -> io::Result<()> {
     fs::rename(source, destination)
 }
 
 #[cfg(not(any(windows, unix)))]
-fn install_file_replace(_source: &Path, _destination: &Path) -> io::Result<()> {
+pub(crate) fn install_file_replace(_source: &Path, _destination: &Path) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "atomic replacement is unsupported",

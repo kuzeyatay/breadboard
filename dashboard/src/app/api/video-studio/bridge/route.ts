@@ -21,7 +21,10 @@ export async function GET(request: Request) {
         source = { artifactId: artifact.id, conversationId: params.get("conversation") ?? "", title: artifact.title };
       } catch { /* a deleted source leaves the studio on a plain project */ }
     }
-    markStudioSeen(userId, source);
+    // Spaces says which Garden video the studio edits, so exports land there.
+    const gardenId = params.get("garden");
+    const garden = gardenId ? { gardenId, fileId: params.get("file") || null, title: params.get("title") || "Video" } : null;
+    markStudioSeen(userId, source, garden);
     return NextResponse.json({ calls: await takeCalls(userId, 25_000, request.signal) });
   } catch (error) {
     if (error instanceof ApiError) return apiErrorResponse(error);

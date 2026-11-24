@@ -24,7 +24,7 @@ export interface BrainGraphCacheEntry {
 }
 
 export interface BrainGraphCacheOptions {
-  /** Upper bound on how stale the conversation/memory/artifact sources may be. */
+  /** Upper bound on how stale the database-backed chat nodes may be. */
   maxAgeMs?: number;
   now?: () => number;
   stat?: (filePath: string) => { size: number; mtimeMs: number } | null;
@@ -45,11 +45,10 @@ function defaultStat(filePath: string): { size: number; mtimeMs: number } | null
 export function brainGraphCacheKey(
   context: Pick<BrainGraphAccessContext, "userId">,
   scope: BrainScope,
-  mode: string,
 ): string {
   const scopeKey =
     scope.kind === "organization" ? `organization:${scope.organizationId}` : scope.kind;
-  return `${context.userId}|${scopeKey}|${mode}`;
+  return `${context.userId}|${scopeKey}`;
 }
 
 /**
@@ -66,6 +65,16 @@ export function brainGraphSourceFingerprint(
   const contentRoot = process.env.QUARTZ_CONTENT_PATH;
   const gardens = gardensForScope(context, scope);
   const parts: string[] = [contentRoot ? "root" : "no-root"];
+  // A new message can change a chat node before the next Garden build.
+  // The existing scoped conversation index keeps this revision probe small.
+  if (context.database && gardens.length) {
+    try {
+      const marker = context.database.prepare(
+        "SELECT MAX(cs.updated_at) AS at, COUNT(*) AS n FROM chat_sessions cs JOIN conversations c ON c.id=cs.conversation_id WHERE cs.user_id=? AND COALESCE(c.temporary,0)=0 AND cs.cluster_id IN (SELECT value FROM json_each(?))",
+      ).get(context.userId, JSON.stringify(gardens.map(g => g.id)));
+      parts.push(JSON.stringify(marker));
+    } catch { /* Older stores fall back to the time-bounded cache. */ }
+  }
   for (const garden of gardens) {
     parts.push(garden.slug);
     if (!contentRoot) continue;
@@ -94,9 +103,8 @@ export class BrainGraphCache {
   peek(
     context: BrainGraphAccessContext,
     scope: BrainScope,
-    mode: string,
   ): BrainGraphResponse | null {
-    const key = brainGraphCacheKey(context, scope, mode);
+    const key = brainGraphCacheKey(context, scope);
     const entry = this.entries.get(key);
     if (!entry) return null;
     if (this.now() - entry.builtAt > this.maxAgeMs) {
@@ -119,12 +127,11 @@ export class BrainGraphCache {
   async build(
     context: BrainGraphAccessContext,
     scope: BrainScope,
-    mode: string,
     builder: () => Promise<BrainGraphResponse>,
   ): Promise<BrainGraphResponse> {
-    const cached = this.peek(context, scope, mode);
+    const cached = this.peek(context, scope);
     if (cached) return cached;
-    const key = brainGraphCacheKey(context, scope, mode);
+    const key = brainGraphCacheKey(context, scope);
     const pending = this.inFlight.get(key);
     if (pending) return pending;
     const fingerprint = brainGraphSourceFingerprint(context, scope, this.stat);

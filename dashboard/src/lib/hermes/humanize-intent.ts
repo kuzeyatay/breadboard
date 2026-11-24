@@ -18,6 +18,7 @@
 // rewrite is the second half of that turn rather than the whole of it.
 
 import type { HermesSurface } from "./config.ts";
+import { requestProse } from "./request-language.ts";
 
 /** The first-party skill directory name, which is also its slash command. */
 export const HUMANIZE_SKILL = "humanize";
@@ -123,7 +124,8 @@ export interface HumanizeIntentInput {
 }
 
 export function shouldAutoSelectHumanize(input: HumanizeIntentInput): boolean {
-  const text = input.text.trim();
+  // Pasted code, quotes and documents are material, not the request.
+  const text = requestProse(input.text).trim();
   // Both conversational surfaces, and neither of the unauthenticated ones: the
   // rewriter is a local service reached with a per-install credential, and the
   // score it reports is about the user's own prose. An explicit command already

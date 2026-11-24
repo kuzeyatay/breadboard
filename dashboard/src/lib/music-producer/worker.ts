@@ -213,10 +213,16 @@ export async function executeMusicWorker(input: MusicWorkerRequest & {
     const aborted = input.signal.aborted || ["cancelling", "aborted"].includes(launch.collection_state);
     const ambiguous = (submitted || ["submitting", "uncertain", "draining", "arranging"].includes(launch.provider_state)) && !launch.provider_receipt;
     const providerState = ambiguous ? "uncertain" : submitted && !["succeeded", "failed"].includes(launch.provider_state) ? "draining" : launch.provider_state;
+    // A local server that vanishes after accepting work was stopped by Runtime or crashed.
+    const managedDied = submitted && !aborted && musicError(error).code === "provider_unreachable" &&
+      (() => { try { return (JSON.parse(launch.provider_json) as AceStepConfig).managed; } catch { return false; } })();
     let summary = collected || launch.artifact_id ? "A valid audio artifact was saved before collection stopped. It remains available in this conversation’s artifacts." : aborted
       ? `Collection stopped. ${submitted || ambiguous ? "Provider computation may continue; GPU interruption is not confirmed." : "No generation was submitted."}`
-      : `${musicError(error).message}${providerState === "uncertain" ? " Submission is uncertain; retry requires an explicit new request." : ""}`;
-    if (launch.provider_receipt && !launch.artifact_id && providerState !== "failed")
+      : managedDied
+        ? "Runtime stopped the local ACE-Step service during generation, most likely because it reached its memory limit while decoding the audio. Close memory-heavy apps or ask for a shorter track, then regenerate."
+        : `${musicError(error).message}${providerState === "uncertain" ? " Submission is uncertain; retry requires an explicit new request." : ""}`;
+    // The managed server keeps tasks in process memory, so its receipts die with it.
+    if (launch.provider_receipt && !launch.artifact_id && providerState !== "failed" && !managedDied)
       summary += `\n\nTo collect this existing receipt without submitting another track, send /agents:music-producer --resume ${input.launchId} in this conversation. The provider must still retain its result.`;
     updateMusicLaunch(input.userId, input.launchId, { collection_state: aborted ? "aborted" : ambiguous ? "uncertain" : "failed", provider_state: providerState, summary });
     if (context) {

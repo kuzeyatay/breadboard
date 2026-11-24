@@ -1,24 +1,27 @@
 // One short account per day of what Recall saw, kept after the engine has
 // deleted that day.
 //
-// The engine removes everything older than RECALL_RETENTION_DAYS, text
-// included, because its database grows by hundreds of megabytes a day. A day's
-// summary (apps, windows, time spent, key text) is a few kilobytes, so those
-// are kept here without a limit and answer "what was I doing three weeks ago".
-// Like the engine's own history they belong to the machine, not to one
-// account; service.ts applies the reader's permissions before handing them on.
+// Capture retention removes both recordings and searchable detail. Store one
+// small, compressed record per finished day for longer-range activity queries.
 
 import type Database from "better-sqlite3";
+import { gzipSync, gunzipSync } from "node:zlib";
 
 import type { RecallClient } from "./client.ts";
-import { RECALL_RETENTION_DAYS } from "./engine.ts";
 
 const KEPT_LISTS = ["apps", "windows", "key_texts", "edited_files", "memories"] as const;
 const MAX_LIST_ITEMS = 40;
+const SUMMARY_LOOKBACK_DAYS = 14;
+/**
+ * Recall deleted days older than two weeks until 2026-11-24 and keeps
+ * everything since; only days before this one exist as summaries alone.
+ */
+export const RECALL_FULL_HISTORY_SINCE = "2026-11-11";
+const MAX_FIELD_BYTES = 8 * 1024;
 
 function ensureSchema(db: Database.Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS recall_daily_summaries(
-    day TEXT PRIMARY KEY, summary TEXT NOT NULL, created_at INTEGER NOT NULL)`);
+    day TEXT PRIMARY KEY, summary BLOB NOT NULL, created_at INTEGER NOT NULL)`);
 }
 
 /** The person's calendar day: "what did I do on Tuesday" means their Tuesday. */
@@ -32,11 +35,21 @@ function compact(summary: Record<string, unknown>): Record<string, unknown> {
   const kept: Record<string, unknown> = {
     total_active_minutes: summary.total_active_minutes,
     total_frames: summary.total_frames,
-    audio_summary: summary.audio_summary,
   };
+  const audio = summary.audio_summary;
+  if (audio && Buffer.byteLength(JSON.stringify(audio)) <= MAX_FIELD_BYTES) kept.audio_summary = audio;
   for (const name of KEPT_LISTS) {
     const list = summary[name];
-    if (Array.isArray(list) && list.length) kept[name] = list.slice(0, MAX_LIST_ITEMS);
+    if (!Array.isArray(list)) continue;
+    let bytes = 0;
+    const items = [];
+    for (const item of list.slice(0, MAX_LIST_ITEMS)) {
+      const size = Buffer.byteLength(JSON.stringify(item));
+      if (bytes + size > MAX_FIELD_BYTES) continue;
+      items.push(item);
+      bytes += size;
+    }
+    if (items.length) kept[name] = items;
   }
   return kept;
 }
@@ -53,16 +66,16 @@ export async function storeRecallDailySummaries(
 ): Promise<number> {
   ensureSchema(db);
   let stored = 0;
-  for (let back = 1; back < RECALL_RETENTION_DAYS; back++) {
+  for (let back = 1; back < SUMMARY_LOOKBACK_DAYS; back++) {
     const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - back);
     const day = localDay(start);
     if (db.prepare("SELECT 1 FROM recall_daily_summaries WHERE day=?").get(day)) continue;
     const end = new Date(now.getFullYear(), now.getMonth(), now.getDate() - back + 1);
     const summary = await client.activitySummary({ startTime: start.toISOString(), endTime: end.toISOString() });
     if (!(Number(summary.total_frames) > 0)) continue;
-    db.prepare("INSERT OR IGNORE INTO recall_daily_summaries(day,summary,created_at) VALUES(?,?,?)")
-      .run(day, JSON.stringify(compact(summary)), now.getTime());
-    stored++;
+    const payload = gzipSync(JSON.stringify(compact(summary)));
+    stored += db.prepare("INSERT OR IGNORE INTO recall_daily_summaries(day,summary,created_at) VALUES(?,?,?)")
+      .run(day, payload, now.getTime()).changes;
   }
   return stored;
 }
@@ -91,8 +104,14 @@ export function recallEarlierDays(
   const start = moment(startTime), end = moment(endTime);
   if (!start || !end) return [];
   ensureSchema(db);
-  const oldestHeld = localDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() - RECALL_RETENTION_DAYS + 1));
   return (db.prepare("SELECT day, summary FROM recall_daily_summaries WHERE day>=? AND day<=? AND day<? ORDER BY day LIMIT 62")
-    .all(localDay(start), localDay(end), oldestHeld) as Array<{ day: string; summary: string }>)
-    .map(row => ({ day: row.day, summary: JSON.parse(row.summary) as Record<string, unknown> }));
+    .all(localDay(start), localDay(end), RECALL_FULL_HISTORY_SINCE) as Array<{ day: string; summary: string | Buffer }>)
+    .flatMap(({ day, summary }) => {
+      try {
+        const json = typeof summary === "string" ? summary : gunzipSync(summary, { maxOutputLength: 64 * 1024 }).toString("utf8");
+        return [{ day, summary: JSON.parse(json) as Record<string, unknown> }];
+      } catch {
+        return [];
+      }
+    });
 }

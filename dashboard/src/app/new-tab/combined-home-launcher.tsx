@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { Clapperboard, ListTodo, Palette, Settings, Timer, UsersRound } from "lucide-react";
+import { ListTodo, UsersRound } from "lucide-react";
 import VSCodeIcon from "@/app/components/vscode-icon";
 import CrumbsIcon from "@/app/components/crumbs-icon";
 import BrowserHomeAccessories from "@/app/browser/browser-home-accessories";
@@ -9,8 +9,7 @@ import SavedBrowserBookmarksBar from "@/app/browser/browser-bookmarks-bar";
 import { BrowserQuickLinks } from "@/app/browser/browser-home-widgets";
 import NavigationLink from "@/app/components/navigation-link";
 import VoiceShortcut from "@/app/components/voice-shortcut";
-import OfficeShortcut from "@/app/components/office-shortcut";
-import ScreenTimeShortcut from "@/app/components/screen-time-shortcut";
+import OfficeShortcut, { KnowledgeShortcut } from "@/app/components/office-shortcut";
 import { useDesktopTabs } from "@/app/components/use-desktop-tabs";
 import { useStartupLoading } from "@/app/components/startup-readiness";
 import { cancelNavigationProgress, startNavigationProgress } from "@/app/components/navigation-progress";
@@ -37,8 +36,6 @@ const PLACES = [
   { href: "/plan", label: "Plan", icon: ListTodo },
   { href: "/code", label: "Code", icon: VSCodeIcon },
   { href: "/buzz", label: "Organization", icon: UsersRound },
-  { href: "/pomodoro", label: "Timer", icon: Timer },
-  { href: "/settings", label: "Settings", icon: Settings },
 ];
 
 /** Compose the live controls. Their data stores and UI remain the originals. */
@@ -129,15 +126,9 @@ export default function CombinedHomeLauncher({ data, navigation }: { data: Combi
               ))}
               <VoiceShortcut className={controls.destinationButton} errorClassName={controls.browserError} />
               <OfficeShortcut className={controls.destinationButton} />
-              <ScreenTimeShortcut className={controls.destinationButton} />
+              <KnowledgeShortcut className={controls.destinationButton} />
               <NavigationLink href="/crumbs" label="Crumbs" prefetch={false} className={controls.destinationButton}>
                 <CrumbsIcon size={15} aria-hidden="true" />Crumbs
-              </NavigationLink>
-              <NavigationLink href="/design" label="Design" prefetch={false} className={controls.destinationButton}>
-                <Palette size={15} aria-hidden="true" />Design
-              </NavigationLink>
-              <NavigationLink href="/video-studio" label="Video" prefetch={false} className={controls.destinationButton}>
-                <Clapperboard size={15} aria-hidden="true" />Video
               </NavigationLink>
             </nav>
             <BrowserQuickLinks navigate={url => void navigate(url)} ownerKey={data.widgetOwnerKey} active={active} />

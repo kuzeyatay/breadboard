@@ -573,6 +573,19 @@ test("a published source the user names but did not supply owes live web evidenc
   assert.equal(plan("what is a paper trail").requiresWebEvidence, false);
 });
 
+test("a named public index such as arXiv grants web research", () => {
+  // Scheduled chat #6 ran with web_search "disabled for this turn": "search
+  // official arXiv listings" and "check the arXiv abstracts" matched no verb
+  // and no object, so the plan was conversation-only.
+  const briefing = plan(
+    "Prepare a daily AI paper briefing. Search official arXiv listings or metadata for AI-related preprints first publicly announced on arXiv on the previous calendar date. Check the arXiv abstracts and rank the papers.",
+  );
+  assert.ok(briefing.requiredCapabilities.includes("web_research"));
+  assert.ok(caps("check the PubMed abstracts on statins").has("web_research"));
+  // Searching local material stays local.
+  assert.ok(!caps("search my notes for the meeting time").has("web_research"));
+});
+
 test("resources are extracted for paths, urls and target formats", () => {
   const p = plan("Convert C:\\Users\\me\\notes\\draft.md to PDF and email it, see https://example.com/spec");
   const kinds = new Set(p.requiredResources.map((r) => r.kind));
@@ -580,4 +593,14 @@ test("resources are extracted for paths, urls and target formats", () => {
   assert.ok(kinds.has("url"));
   assert.ok(kinds.has("format"));
   assert.ok(p.requiredResources.some((r) => r.kind === "path" && r.absolute === true));
+});
+
+test("installing software is command execution, and a bare acknowledgement continues it", () => {
+  assert.ok(caps("Install PowerWorld Simulator for me.").has("command_execution"));
+  const priorRequests = ["Install PowerWorld Simulator for me."];
+  for (const reply of ["downloaded", "Done", "ok it's downloaded", "go ahead"]) {
+    assert.ok(caps(reply, { priorRequests }).has("command_execution"), reply);
+  }
+  assert.ok(!caps("Explain binary trees.", { priorRequests }).has("command_execution"));
+  assert.ok(!caps("downloaded", { priorRequests: ["Explain binary trees."] }).has("command_execution"));
 });

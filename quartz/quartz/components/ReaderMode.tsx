@@ -1,5 +1,7 @@
 // @ts-ignore
 import readerModeScript from "./scripts/readermode.inline"
+// @ts-ignore
+import sourcePendingScript from "./scripts/sourcePending.inline"
 import styles from "./styles/readermode.scss"
 import { QuartzComponent, QuartzComponentConstructor, QuartzComponentProps } from "./types"
 import { i18n } from "../i18n"
@@ -37,7 +39,9 @@ const ReaderMode: QuartzComponent = ({ displayClass, cfg }: QuartzComponentProps
   )
 }
 
-ReaderMode.beforeDOMLoaded = readerModeScript
+// ReaderMode is on every page, so it carries the source-pending head script too.
+ReaderMode.beforeDOMLoaded = `${readerModeScript}
+${sourcePendingScript}`
 ReaderMode.css = styles
 
 export default (() => ReaderMode) satisfies QuartzComponentConstructor

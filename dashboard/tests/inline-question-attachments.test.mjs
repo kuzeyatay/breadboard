@@ -54,7 +54,7 @@ for (const file of ['components/hermes/agent-runtime-panel.tsx', 'gardens/[clust
     const calls = [];
     const context = vm.createContext({
       inlineSelectionThreads: new Map(), conversationLocked: false, chatContentLoading: false, canAskSelection: true,
-      setComposerSelection: () => {}, setInlineSelectionRunId: () => {},
+      setComposerSelection: () => {}, setInlineSelectionRunId: () => {}, setInlineAttemptChoice: () => {},
       onAskSelection: async (...args) => calls.push(args), sendInlineQuestion: async (...args) => calls.push(args),
     });
     vm.runInContext(callback(file, 'askInlineSelectionAgain'), context);

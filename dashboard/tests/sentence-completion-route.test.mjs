@@ -64,7 +64,8 @@ test('completion route authenticates, bounds context, preserves the draft and fo
   const response = await POST(incoming);
   assert.equal(response.status, 200);
   assert.equal(response.headers.get('Cache-Control'), 'no-store');
-  assert.deepEqual(await response.json(), { completion: ' a practical example?' });
+  assert.deepEqual(await response.json(), { completion: ' a practical example?',
+    reason: 'This continues your draft. Available context included recent messages in this chat.' });
   assert.equal(fixture.calls[0].userId, 42);
   assert.equal(fixture.calls[0].draft, 'Can you show ');
   assert.equal('model' in fixture.calls[0], false);

@@ -20,6 +20,7 @@ async function bundle(file,mocks) {
 }
 
 const sources=await bundle('src/lib/recommendations/sources.ts',{
+  '../personal-context/browser.ts':'export const browserVisitFacts=async()=>[{title:"Encoder calibration"}];',
   '../screen-time/recommendations.ts':'export const screenTimeRecommendationEvidence=()=>[];',
   'server-only':'',
   '../db.ts':'export default {prepare:sql=>globalThis.recFixture.db.prepare(sql)};',
@@ -66,6 +67,43 @@ function fixture(t) {
   };
   globalThis.recFixture=state;return state;
 }
+
+test('web search suggestions use permitted browser captures and the account’s visited Breadboard pages', async t => {
+  const state = fixture(t);
+  let reads = 0;
+  state.recall = async (user, args, options) => {
+    reads++;
+    assert.equal(user, 1);
+    assert.equal(options.forAgent, true);
+    assert.equal(args.contentType, 'screen');
+    return { hits: [
+      ['msedge.exe', 'Circuit damping - Google Search - Microsoft Edge'],
+      ['Breadboard', 'Encoder calibration'], ['Breadboard', 'Personal notebook'],
+      ['Notepad', 'Encoder calibration'], ['chrome', 'New Tab - Google Chrome'],
+      ['chrome', 'Secret topic - Incognito'], ['Breadboard', 'Private — Encoder calibration'],
+    ].map(([app, window]) => ({ app, window, text: 'Page contents', timestamp: '2026-11-24' })) };
+  };
+  const context = { surface: 'web-search' };
+  const evidence = await sources.readRecommendationEvidence(1, context);
+  assert.deepEqual(evidence.map(item => item.title), ['Circuit damping', 'Encoder calibration']);
+  const fallback = await generateRecommendations({ context, evidence, model: 'none' });
+  assert.deepEqual(fallback.map(card => card.prompt), ['Circuit damping', 'Encoder calibration']);
+  assert.deepEqual(fallback.map(card => card.reason), evidence.map(page => `Recall suggested this because you recently viewed “${page.title}”.`));
+  const question = 'How does damping affect circuit settling time?';
+  const cards = await generateRecommendations({ context, evidence, model: 'test-model', fetcher: async (_url, init) => {
+    const { messages } = JSON.parse(init.body);
+    assert.ok(messages.some(message => message.role === 'system' && message.content.includes('standalone search queries')));
+    const content = JSON.stringify([{ prompt: question, sourceIds: [evidence[0].id] }]);
+    return Response.json({ choices: [{ message: { content } }] });
+  } });
+  assert.equal(cards[0].prompt, question);
+  assert.equal(cards[0].reason, fallback[0].reason);
+  assert.deepEqual(state.calls, []);
+  assert.deepEqual(state.agendaCalls, []);
+  state.settings.agentAccess = false;
+  assert.deepEqual(await sources.readRecommendationEvidence(1, context), []);
+  assert.equal(reads, 1);
+});
 
 test('real adapters read connected mail/calendar and permitted Recall using only this account',async t=>{
   const state=fixture(t);

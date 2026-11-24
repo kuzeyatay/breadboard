@@ -41,6 +41,7 @@ const bundle = await build({ bundle: true, write: false, outfile: 'quartz-select
     import AssistantRichResponse from '@/app/components/assistant-rich-response';
     import UserMessageControls from '@/app/components/chat/user-message-controls';
     import {assistantVisibleContent} from '@/lib/hermes/assistant-visible-content';
+    import {visibleChatMessageText} from '@/lib/chat-attachments';
     import {isClarificationAnswerMessage} from '@/lib/steered-response';
     import {isInlineSelectionNotificationViewed} from '@/lib/notification-view-presence';
     import {notificationMessageKeys} from '@/lib/chat-notification-visibility';
@@ -452,15 +453,17 @@ test('Ask in chat quotes the response and Ask here supports streaming, nesting, 
   await dialog.getByTitle('Hide thinking updates').click();
   const actions=dialog.locator('[aria-label="Assistant response actions"]');
   await actions.waitFor();
-  for(const name of ['Copy response','Read response aloud','Mark response as helpful','Mark response as not helpful','More response actions']) {
+  for(const name of ['Copy response','Response feedback','Read response aloud','More response actions']) {
     assert.equal(await actions.getByRole('button',{name,exact:true}).count(),1);
   }
   assert.equal(await actions.getByRole('button',{name:'Regenerate response',exact:true}).count(),0);
   await page.evaluate(()=>Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async text=>{window.copiedAnswer=text}}}));
   await actions.getByRole('button',{name:'Copy response',exact:true}).click();
   assert.equal(await page.evaluate(()=>window.copiedAnswer),'Inline answer with **nested explanation** to select.');
-  await actions.getByRole('button',{name:'Mark response as helpful',exact:true}).click();
-  assert.equal(await actions.getByRole('button',{name:'Mark response as helpful',exact:true}).getAttribute('aria-pressed'),'true');
+  const feedback = actions.getByRole('button',{name:'Response feedback',exact:true});
+  await feedback.click();
+  await page.getByRole('menuitemcheckbox',{name:'Good response',exact:true}).click();
+  await expect(feedback).toHaveAccessibleDescription('Good response');
   await actions.getByRole('button',{name:'More response actions',exact:true}).click();
   const download=page.waitForEvent('download');
   await actions.getByRole('button',{name:'Download Markdown',exact:true}).click();

@@ -21,9 +21,15 @@ function bounds() {
   if (!open) return
   const center = document.querySelector<HTMLElement>(".center")
   if (!center) return
+  // The editor starts where the tree ends and runs to the right edge, with no reading-column gap.
+  const tree = document.querySelector<HTMLElement>(".sidebar.left")?.getBoundingClientRect()
   const rect = center.getBoundingClientRect(), top = Math.max(8, Math.min(rect.top, 100))
-  post({ type: "second-brain:file-bounds", left: Math.max(0, rect.left), top,
-    width: Math.min(rect.width, innerWidth - Math.max(0, rect.left)), height: Math.max(200, innerHeight - top - 8) })
+  // In reader mode the tree is tucked off the left edge (a 1rem strip reveals it), so the file takes the width.
+  // While the tucked tree is revealed (hover or keyboard focus) the file steps aside so the tree stays usable.
+  const reader = document.documentElement.getAttribute("reader-mode") === "on" && innerWidth > 800
+  const revealed = document.querySelector(".sidebar.left")?.matches(":hover, :has(:focus-visible)") ?? false
+  const left = reader && !revealed ? 16 : tree && tree.width > 0 && innerWidth > 800 ? tree.right : Math.max(0, rect.left)
+  post({ type: "second-brain:file-bounds", open, left, top, width: innerWidth - left - 12, height: Math.max(200, innerHeight - top) })
 }
 
 export function installGardenFiles(refresh: () => void) {
@@ -33,6 +39,9 @@ export function installGardenFiles(refresh: () => void) {
   window.addEventListener("message", event => {
     if (event.source !== window.parent || !event.data) return
     const data = event.data
+    // The parent frame is the dashboard. Its origin is adopted from whichever message comes first:
+    // waiting for the file list dropped early "viewer open" messages (and the size reply) on a slow load.
+    if (!parentOrigin && typeof data.type === "string" && data.type.startsWith("second-brain:")) { parentOrigin = event.origin; runtime[originKey] = parentOrigin }
     if (data.type === "second-brain:files" && typeof data.cluster === "string" && Array.isArray(data.files)) {
       parentOrigin = event.origin
       runtime[originKey] = parentOrigin
@@ -43,6 +52,7 @@ export function installGardenFiles(refresh: () => void) {
       open = data.open === true
       selectedId = typeof data.fileId === "string" ? data.fileId : ""
       document.documentElement.classList.toggle("garden-file-open", open)
+      showRaw(!open && data.raw === true)
       document.querySelectorAll<HTMLElement>("[data-garden-file-id]").forEach(element => element.classList.toggle("active", element.dataset.gardenFileId === selectedId))
       bounds()
     }
@@ -65,17 +75,46 @@ export function installGardenFiles(refresh: () => void) {
     post({ type: "second-brain:leave-file", url: url.href })
   }, { capture: true })
   window.addEventListener("resize", bounds)
+  document.addEventListener("readermodechange", () => requestAnimationFrame(bounds))
+  let revealFrame = 0
+  const revealChanged = () => { cancelAnimationFrame(revealFrame); revealFrame = requestAnimationFrame(bounds) }
+  for (const type of ["pointerover", "pointerout", "focusin", "focusout"]) document.addEventListener(type, revealChanged, { passive: true })
   document.addEventListener("scroll", bounds, { passive: true })
   const observer = new ResizeObserver(bounds)
   observer.observe(document.documentElement)
+  // Only a real page change closes the file view: "nav" is also re-sent on the same page (reader recovery,
+  // re-renders), and closing then left the dashboard's viewer up with this page's text and layout unhidden.
+  let navSlug = document.body.dataset.slug ?? ""
   document.addEventListener("nav", () => {
+    const slug = document.body.dataset.slug ?? ""
+    if (slug === navSlug) { bounds(); return }
+    navSlug = slug
     open = false
     document.documentElement.classList.remove("garden-file-open")
+    showRaw(false)
+    openMirroredFile()
+  })
+  openMirroredFile() // the first page's nav fired before this was installed
+}
+
+// View raw: a source's own text, shown in place of its original; the page's Open document goes back.
+function showRaw(raw: boolean) {
+  document.documentElement.classList.toggle("sb-source-raw", raw)
+}
+
+// A Spaces document's generated text note is never the page to read: reaching it (search, the map,
+// a link) opens the document itself in the file view, here in Quartz.
+function openMirroredFile() {
+  const slug = document.body.dataset.slug ?? ""
+  void fetchData.then(data => {
+    const fileId = data[slug as FullSlug]?.gardenFileMirror
+    if (fileId && document.body.dataset.slug === slug) window.parent.postMessage({ type: "second-brain:open-file", cluster: slug.split("/")[0], fileId }, "*")
   })
 }
 
 export function managedExplorerEntries(allowed: string[] | undefined | null, canonical: Iterable<ContentDetails> = [], canonicalFolders: string[] = []): ContentDetails[] {
   const entries: ContentDetails[] = []
+  canonical = [...canonical] // read twice below; callers may pass a one-shot iterator
   const diskFolders = new Map<string, FullSlug>()
   for (const folder of canonicalFolders) diskFolders.set(folder, slugifyFilePath(`${folder}/_index.md` as FilePath).replace(/\/index$/, "") as FullSlug)
   for (const entry of canonical) {
@@ -85,6 +124,13 @@ export function managedExplorerEntries(allowed: string[] | undefined | null, can
       const folder = parts.slice(0, length).join("/")
       diskFolders.set(folder, slugifyFilePath(`${folder}/_index.md` as FilePath).replace(/\/index$/, "") as FullSlug)
     }
+  }
+  // An uploaded Word document's editable copy sits beside its source note, which already lists it
+  // (and opens it), so the copy is not listed a second time.
+  const listedOriginals = new Set<string>()
+  for (const entry of canonical) {
+    const original = String(entry.sourceFile ?? "").trim(), filePath = String(entry.filePath ?? "")
+    if (original && !entry.gardenFileMirror) listedOriginals.add(`${filePath.split("/").slice(0, -1).join("/")}/${original}`.toLowerCase())
   }
   for (const [cluster, snapshot] of snapshots) {
     if (allowed && !allowed.includes(cluster)) continue
@@ -102,6 +148,7 @@ export function managedExplorerEntries(allowed: string[] | undefined | null, can
       return slug
     }
     for (const file of snapshot.files) {
+      if (file.kind === "file" && listedOriginals.has(`${cluster}/${file.path}`.toLowerCase())) continue
       const folder = file.kind === "folder" ? file.path : file.folder
       const slug = file.kind === "folder"
         ? `${folderSlug(folder)}/index` as FullSlug
@@ -156,6 +203,7 @@ export function managedFileNode(node: FileTrieNode, li: HTMLLIElement): boolean 
   icon.className = "explorer-file-type"
   icon.textContent = file.name.includes(".") ? file.name.slice(file.name.lastIndexOf(".") + 1).slice(0, 5).toUpperCase() : "FILE"
   icon.setAttribute("aria-hidden", "true")
+  icon.dataset.type = file.name.includes(".") ? file.name.slice(file.name.lastIndexOf(".") + 1).toLowerCase() : "file"
   link.prepend(icon)
   link.addEventListener("click", event => {
     if (event.ctrlKey || event.metaKey || event.shiftKey) { link.target = "_top"; return }

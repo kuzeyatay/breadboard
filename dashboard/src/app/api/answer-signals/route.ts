@@ -6,10 +6,8 @@
 // describe a turn that never happened, and every later analysis would inherit
 // it.
 //
-// Recording a signal is not allowed to fail the thing that produced it. The
-// client fires these without awaiting them, and a failure here means one signal
-// is missing from an aggregate — never a copy that did not happen or a
-// regenerate that did not run.
+// The feedback menu confirms explicit ratings after this route saves them.
+// Observations from copy, read-aloud and retry are best-effort.
 
 import { NextResponse } from "next/server";
 import { z } from "zod";
@@ -17,6 +15,7 @@ import { z } from "zod";
 import { requireUserId, RouteError, routeErrorResponse } from "@/lib/server-auth";
 import {
   ConversationStoreError,
+  getConversationForLegacyChatSession,
   getConversationForUser,
   getConversationMessageByClientId,
   getConversationMessageById,
@@ -63,6 +62,12 @@ function storeFailure(error: unknown): NextResponse | null {
   return null;
 }
 
+function resolveConversation(reference: string, userId: number) {
+  return /^\d+$/.test(reference)
+    ? getConversationForLegacyChatSession(Number(reference), userId)
+    : getConversationForUser(reference, userId);
+}
+
 /**
  * Resolve an answer the browser named, inside a conversation already proven to
  * belong to the caller. A live message still carries the client id that
@@ -87,7 +92,7 @@ export async function POST(request: Request) {
     const parsed = parseRequest(recordSignalSchema, await request.json().catch(() => null));
     if (!parsed.ok) return noStore(parsed.failure, 422);
 
-    const conversation = getConversationForUser(parsed.value.conversationId, userId);
+    const conversation = resolveConversation(parsed.value.conversationId, userId);
     const assistant = assistantRow(conversation.id, parsed.value.messageId);
     const prompt = getPrecedingUserMessage(conversation.id, assistant.order_index);
 
@@ -126,7 +131,7 @@ export async function GET(request: Request) {
     if (!conversationId) {
       return noStore({ signals: listAnswerSignals(userId, { limit: 500 }) });
     }
-    const conversation = getConversationForUser(conversationId, userId);
+    const conversation = resolveConversation(conversationId, userId);
     if (!messageId) {
       return noStore({ ratings: listConversationRatings(userId, conversation.id) });
     }
@@ -149,7 +154,7 @@ export async function DELETE(request: Request) {
     if (!conversationId || !messageId) {
       return noStore({ error: "conversationId and messageId are required." }, 400);
     }
-    const conversation = getConversationForUser(conversationId, userId);
+    const conversation = resolveConversation(conversationId, userId);
     const assistant = assistantRow(conversation.id, messageId);
     return noStore({ cleared: clearAnswerRating(userId, assistant.id), rating: null });
   } catch (error) {

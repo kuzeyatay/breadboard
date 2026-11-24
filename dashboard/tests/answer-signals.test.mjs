@@ -127,6 +127,25 @@ test("a rating can be taken back, because a misclick is not evidence", () => {
   assert.equal(signals.clearAnswerRating(1, answer.id), false);
 });
 
+test("follow-up guidance follows the rated answer on the current chat path", () => {
+  const chat = conversation();
+  const first = turn(chat, "How do I begin?", "Start by measuring.");
+  const second = turn(chat, "Why?", "A very long explanation.");
+  record(1, first, "rated_up");
+  record(1, second, "rated_down", "too_long");
+  const context = (history, source) => signals.answerFeedbackContext(chat, history, source);
+  assert.match(context([first]), /marked .* helpful/);
+  assert.match(context([first, second]), /keep the follow-up concise/);
+  assert.match(context([first, second], first.client_message_id), /quoted answer helpful/);
+  assert.match(context([first, second], `client:${first.client_message_id}:assistant`), /quoted answer helpful/);
+  assert.match(context([first, second], `id:msg_${first.id}`), /quoted answer helpful/);
+  assert.match(context([first, second], `msg_${second.id}`), /found it too long/);
+  assert.equal(context([second], first.client_message_id), "");
+  assert.equal(signals.answerFeedbackContext(conversation(2), [first]), "");
+  signals.clearAnswerRating(1, second.id);
+  assert.equal(context([first, second]), "");
+});
+
 test("a repeated implicit signal is one behaviour with a count", () => {
   const chat = conversation();
   const answer = turn(chat, "Give me the curl command.", "curl -sS https://example.test");

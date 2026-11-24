@@ -1,9 +1,13 @@
 "use client";
 
-import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowUpRight, CalendarDays, File, FileText, Hash, LayoutGrid, ListTodo, MessageSquareText, Plus, Search, Sprout, X, type LucideIcon } from "lucide-react";
 import NavigationLink from "@/app/components/navigation-link";
+import PromptSuggestionOverlay from "@/app/components/prompt-suggestion-overlay";
+import SuggestionInfo from "@/app/components/suggestion-info";
+import { handlePromptSuggestionKey } from "@/app/components/use-prompt-suggestion";
+import { useRecommendations } from "@/app/components/use-recommendations";
 import { cancelNavigationProgress, startNavigationProgress } from "@/app/components/navigation-progress";
 import { desktopTabsBridge, navigateBrowserFromHome } from "@/lib/desktop-browser-tabs";
 import { useDesktopTabs } from "@/app/components/use-desktop-tabs";
@@ -14,7 +18,7 @@ import { BrowserSuggestionList } from "@/app/browser/browser-suggestion-list";
 import { SEARCH_LABELS, SEARCH_TYPES, searchPlaces, searchScore, searchTerms, sortSearchResults,
   type BreadboardSearchResponse, type BreadboardSearchResult, type SearchFilter, type SearchType } from "@/lib/breadboard-search";
 import type { NewTabGarden } from "@/lib/new-tab-gardens";
-import { inlineCompletion, newTabSearchSuggestions, visitedHost, webDestinationUrl, type NewTabSuggestion, type SearchScope, type SearchHistoryEntry } from "@/lib/new-tab-search-suggestions";
+import { inlineCompletion, newTabSearchSuggestions, webActivityCompletion, webDestinationUrl, type InlineCompletion, type NewTabSuggestion, type SearchHistoryEntry } from "@/lib/new-tab-search-suggestions";
 import { LOCAL_DOCUMENT_ACCEPT, setLocalDocument } from "@/lib/local-document";
 import { useNewTabSearchHistory } from "./use-new-tab-search-history";
 import controls from "./new-tab-controls.module.css";
@@ -38,6 +42,11 @@ export default function NewTabSearch({ gardens, initialHistory, ownerKey, browse
   const tabs = useDesktopTabs();
   const browserSearches = useBrowserRecentSearches(browserOwnerKey);
   const visits = useBrowserHistory();
+  const recommendations = useRecommendations({ surface: "web-search", ownerKey, enabled: active });
+  const recommendation = recommendations.find(item => item.prompt.trim() && item.prompt.trim().length <= 200);
+  const firstPrompt = recommendation?.prompt.trim() ?? null;
+  const [dismissedPrompt, setDismissedPrompt] = useState<string | null>(null);
+  const promptDescriptionId = useId();
   const [query, setQuery] = useState("");
   const [submitted, setSubmitted] = useState(false);
   const [focused, setFocused] = useState(false);
@@ -46,7 +55,8 @@ export default function NewTabSearch({ gardens, initialHistory, ownerKey, browse
   const [visible, setVisible] = useState(12);
   const [retry, setRetry] = useState(0);
   const [browserError, setBrowserError] = useState(false);
-  const [acceptedScope, setAcceptedScope] = useState<SearchScope | null>(null);
+  const [accepted, setAccepted] = useState<InlineCompletion | null>(null);
+  const [caretAtEnd, setCaretAtEnd] = useState(true);
   const [dismissedInline, setDismissedInline] = useState<string | null>(null);
   const browserTarget = useRef<string | undefined>(undefined);
   const openingBrowser = useRef(false);
@@ -108,12 +118,14 @@ export default function NewTabSearch({ gardens, initialHistory, ownerKey, browse
   const unavailable = current?.data?.unavailable ?? [];
   const suggestions = newTabSearchSuggestions(query, history.items, results, browserSearches.items);
   const suggestionsOpen = active && focused && suggestions.length > 0;
-  const inline = active && focused && highlighted < 0 && dismissedInline !== query ? inlineCompletion(query, [
-    { scope: "breadboard", values: history.items.filter(entry => entry.scope === "breadboard").map(entry => entry.query) },
-    { scope: "breadboard", values: results.map(result => result.title) },
-    { scope: "web", values: [...browserSearches.items, ...history.items.filter(entry => entry.scope === "web").map(entry => entry.query)] },
-    { scope: "web", values: visits.items.map(visit => visitedHost(visit.url)).filter((host): host is string => Boolean(host)) },
-  ]) : null;
+  const idlePrompt = !query && highlighted < 0 && firstPrompt !== dismissedPrompt ? firstPrompt : null;
+  const inline = active && focused && needle && caretAtEnd && highlighted < 0 && !accepted && dismissedInline !== query
+    ? webActivityCompletion(query, [...browserSearches.items, ...history.items.filter(entry => entry.scope === "web").map(entry => entry.query)], visits.items)
+      ?? inlineCompletion(query, [
+        { scope: "breadboard", values: history.items.filter(entry => entry.scope === "breadboard").map(entry => entry.query) },
+        { scope: "breadboard", values: results.map(result => result.title), reason: "What you typed matches the title of a Breadboard search result." },
+      ])
+    : null;
 
   useEffect(() => {
     if (suggestionsOpen && highlighted >= 0) {
@@ -122,6 +134,7 @@ export default function NewTabSearch({ gardens, initialHistory, ownerKey, browse
   }, [highlighted, suggestionsOpen]);
 
   function clear() {
+    setAccepted(null); setDismissedInline(null);
     setQuery(""); setState(null); setSubmitted(false); setHighlighted(-1); setFocused(true);
     setBrowserError(false); setFilter("all"); setVisible(12); input.current?.focus();
     onSearchingChange?.(false);
@@ -161,10 +174,10 @@ export default function NewTabSearch({ gardens, initialHistory, ownerKey, browse
   }
 
   async function choose(suggestion: NewTabSuggestion) {
-    setFocused(false); setHighlighted(-1);
+    setFocused(false); setHighlighted(-1); setAccepted(null);
     if (suggestion.scope === "web") {
       setQuery(suggestion.value);
-      void browserSearches.remember(suggestion.value);
+      if (!suggestion.href) void browserSearches.remember(suggestion.value);
       await openBrowser(suggestion.href ?? webDestinationUrl(suggestion.value));
     } else if (suggestion.result) {
       void history.remember(needle, "breadboard");
@@ -174,19 +187,27 @@ export default function NewTabSearch({ gardens, initialHistory, ownerKey, browse
 
   function searchWeb() {
     if (!needle) return;
-    void choose({ value: needle, label: needle, source: "web", scope: "web" });
+    void choose({ value: needle, label: needle, source: "web", scope: "web", href: accepted?.href });
+  }
+
+  function fillPrompt(value: string) {
+    setQuery(value); setFocused(true); setSubmitted(false); setHighlighted(-1);
+    setAccepted(null); setDismissedInline(value); setBrowserError(false);
   }
 
   function handleSearchKeys(event: KeyboardEvent<HTMLInputElement>) {
     if (event.nativeEvent.isComposing) return;
+    if (handlePromptSuggestionKey(event, idlePrompt, fillPrompt, () => {
+      setDismissedPrompt(firstPrompt);
+      if (event.key === "Escape") setFocused(false);
+    })) return;
     if (event.key === "Escape") {
       event.preventDefault(); setFocused(false); setHighlighted(-1); setDismissedInline(query);
       return;
     }
-    const caretAtEnd = event.currentTarget.selectionStart === query.length && event.currentTarget.selectionEnd === query.length;
-    if (inline && ((event.key === "Tab" && !event.shiftKey) || (event.key === "ArrowRight" && caretAtEnd))) {
+    if (inline && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey && (event.key === "Tab" || event.key === "ArrowRight")) {
       event.preventDefault();
-      setQuery(inline.value); setAcceptedScope(inline.scope); setState(null); setSubmitted(false);
+      setQuery(inline.value); setAccepted(inline); setState(null); setSubmitted(false);
       return;
     }
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
@@ -198,7 +219,7 @@ export default function NewTabSearch({ gardens, initialHistory, ownerKey, browse
     } else if (event.key === "Enter") {
       event.preventDefault();
       if (suggestionsOpen && suggestions[highlighted]) void choose(suggestions[highlighted]);
-      else if (acceptedScope === "breadboard") submit();
+      else if (accepted?.scope === "breadboard") submit();
       else searchWeb();
     }
   }
@@ -232,32 +253,43 @@ export default function NewTabSearch({ gardens, initialHistory, ownerKey, browse
           }, 120);
         }}>
         <Search size={19} aria-hidden="true" />
-        <span className={controls.searchField}>
-        {inline && <span className={controls.inlineCompletion} aria-hidden="true">
-          <span className={controls.inlineTyped}>{query}</span>{inline.rest}
-          <kbd>Tab</kbd><small>{inline.scope === "web" ? "Web" : "Breadboard"}</small>
+        <div className={controls.searchField}>
+        {idlePrompt && <PromptSuggestionOverlay key={idlePrompt} placeholder="Search" text={idlePrompt} compact={false}
+          editorRef={input} reason={recommendation?.reason ?? "Recall suggested this from pages you recently viewed."} />}
+        {inline && <span className={controls.inlineCompletion}>
+          <span aria-hidden className="min-w-0 overflow-hidden text-ellipsis"><span className={controls.inlineTyped}>{query}</span>{inline.rest}</span>
+          <kbd aria-hidden>Tab</kbd>
+          <SuggestionInfo key={inline.value} editorRef={input} reason={inline.reason} />
+          <small aria-hidden>{inline.scope === "web" ? "Web" : "Breadboard"}</small>
         </span>}
         <input ref={input} type="search" value={query} maxLength={200}
           onFocus={() => setFocused(true)} onPointerDown={() => setFocused(true)}
+          onSelect={event => {
+            const field = event.currentTarget;
+            setCaretAtEnd(field.selectionStart === field.value.length && field.selectionEnd === field.value.length);
+          }}
           onChange={event => {
+            if (idlePrompt) setDismissedPrompt(idlePrompt);
             setQuery(event.target.value); setState(null); setSubmitted(false); setFocused(true);
-            setHighlighted(-1); setVisible(12); setBrowserError(false); setAcceptedScope(null);
+            setHighlighted(-1); setVisible(12); setBrowserError(false); setAccepted(null); setDismissedInline(null);
             if (!event.target.value.trim()) onSearchingChange?.(false);
           }}
-          onKeyDown={handleSearchKeys} placeholder="Search all of Breadboard…" aria-label="Search all of Breadboard"
-          role="combobox" aria-autocomplete="list" aria-expanded={suggestionsOpen}
+          onKeyDown={handleSearchKeys} placeholder={idlePrompt ? "" : "Search"} aria-label="Search all of Breadboard"
+          role="combobox" aria-autocomplete="both" aria-expanded={suggestionsOpen}
           aria-controls="new-tab-search-suggestions"
-          aria-describedby={inline ? "new-tab-inline-completion" : needle ? "breadboard-search-hint" : undefined}
+          aria-describedby={idlePrompt ? promptDescriptionId : inline ? "new-tab-inline-completion" : needle ? "breadboard-search-hint" : undefined}
+          aria-keyshortcuts={idlePrompt || inline ? "Tab Escape Alt+I" : undefined}
           aria-activedescendant={suggestionsOpen && suggestions[highlighted] ? `new-tab-search-suggestions-${highlighted}` : undefined}
           autoCapitalize="none" autoCorrect="off" autoComplete="off" spellCheck={false} />
         {inline && <span id="new-tab-inline-completion" className="sr-only">
-          Suggested: {inline.value}, {inline.scope === "web" ? "web" : "Breadboard"}. Press Tab to accept or Escape to dismiss.
+          Suggested: {inline.value}, {inline.scope === "web" ? "web" : "Breadboard"}. Press Tab to accept, Escape to dismiss, or Alt+I for the reason.
         </span>}
-        </span>
+        {idlePrompt && <span id={promptDescriptionId} className="sr-only">Suggested search: {idlePrompt}. Press Tab to use it, Escape to dismiss, or Alt+I for the reason.</span>}
+        </div>
         {query && <button type="button" onClick={clear} aria-label="Clear search" className={controls.clearSearch}>
           <X size={16} aria-hidden="true" />
         </button>}
-        {query && <button type="button" onClick={searchWeb} aria-label="Search the web" className={controls.clearSearch}>
+        {query && <button type="button" onClick={searchWeb} aria-label={accepted?.href ? "Open suggested website" : "Search the web"} className={controls.clearSearch}>
           <ArrowUpRight size={18} aria-hidden="true" />
         </button>}
         <button type="button" onClick={() => filePicker.current?.click()} aria-label="Open a file from this computer"
@@ -282,7 +314,7 @@ export default function NewTabSearch({ gardens, initialHistory, ownerKey, browse
           }} />}
       </div>
       {needle && <p id="breadboard-search-hint" className="sr-only">
-        ↑↓ to choose <span>·</span> Enter to search the web <span>·</span> Esc to close
+        ↑↓ to choose <span>·</span> Enter to {accepted?.href ? "open the suggested page" : accepted?.scope === "breadboard" ? "search Breadboard" : "search the web"} <span>·</span> Esc to close
       </p>}
       {browserError && <div role="alert" className={styles.error}>Couldn’t open Browser.
         <button type="button" onClick={() => void openBrowser(browserTarget.current)}>Retry</button>

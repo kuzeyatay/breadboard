@@ -45,7 +45,7 @@ test("Garden arithmetic reaches exact-command approval and executes through the 
       export const runtimeExternalSessionId = row => row.hermes_session_id;
       export const getActiveCapabilityDecision = () => null;
       export const recordAuditEvent = event => s().audits.push(event);`,
-    "run-store.ts": "export const getActiveRuntimeRun = () => globalThis.__gardenTerminalRouteTest.run;",
+    "run-store.ts": "export const getActiveRuntimeRun = () => globalThis.__gardenTerminalRouteTest.run; export const parseRuntimeRunDispatch = (run) => run?.dispatch ?? {};",
     "browser-terminal-context.ts": "export const getBrowserTerminalContext = () => null;",
     "@/lib/conversations/store.ts": "export const getConversationById = () => globalThis.__gardenTerminalRouteTest.conversation;",
     "@/lib/hermes/route-helpers.ts": `export { ApiError } from "@/lib/hermes/route-core.ts";

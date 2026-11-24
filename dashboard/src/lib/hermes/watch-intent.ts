@@ -17,6 +17,7 @@
 // out, with `automatic` recorded on the turn so the choice is auditable.
 
 import type { HermesSurface } from "./config.ts";
+import { requestProse } from "./request-language.ts";
 
 /**
  * Wanting something *done to* the file rather than *read out of* it. Only these
@@ -71,7 +72,8 @@ export interface WatchIntentInput {
 export function watchCommandText(
   input: WatchIntentInput,
 ): { text: string; automatic: boolean } {
-  const text = input.text.trim();
+  // Pasted code, quotes and documents are material, not the request.
+  const text = requestProse(input.text).trim();
   const prose = text.replace(ANY_URL, " ");
   const available =
     input.authenticated &&

@@ -8,12 +8,6 @@ const BrainMapClient = dynamic(() => import("./brain-map-client.tsx"), {
   loading: () => <BrainMapSkeleton />,
 });
 
-export default function BrainMapPanel({
-  initialScope,
-  onScopeChange,
-}: {
-  initialScope: string;
-  onScopeChange?: (scope: string) => void;
-}) {
-  return <BrainMapClient initialScope={initialScope} onScopeChange={onScopeChange} />;
+export default function BrainMapPanel({ initialScope }: { initialScope: string }) {
+  return <BrainMapClient initialScope={initialScope} />;
 }

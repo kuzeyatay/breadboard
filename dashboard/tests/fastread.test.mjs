@@ -34,7 +34,7 @@ function kinds(document) {
 
 /** The declaration body of the dark-mode override block. */
 function darkThemeBlock(css) {
-  const start = css.indexOf(".fastread-overlay[data-theme='dark'] {");
+  const start = css.search(/\.fastread-overlay\[data-theme=["']dark["']\] \{/);
   assert.notEqual(start, -1, 'dark theme block should exist');
   return css.slice(start, css.indexOf('}', start));
 }
@@ -785,7 +785,7 @@ test('the garden navbar renders the Fast-read button', () => {
   );
 
   assert.match(page, /import FastReadButton from '@\/app\/components\/fastread-button'/);
-  assert.match(page, /\{fastRead && <FastReadButton clusterSlug=\{clusterSlug\} initialNote=\{note\} \/>\}/);
+  assert.match(page, /\{fastRead && <FastReadButton clusterSlug=\{clusterSlug\} initialNote=\{canonicalNote\} \/>\}/);
   // The feature is spelled Fast-read everywhere it is read.
   assert.match(button, /'Opening\.\.\.' : 'Fast-read'/);
   assert.doesNotMatch(button, />\s*Fastread\s*</);
@@ -854,7 +854,8 @@ test('the PDF viewer opens Fast-read from the note, then from the file itself', 
     'utf8',
   );
 
-  assert.match(viewer, /import FastReadReader from "@\/app\/components\/fastread-reader"/);
+  // Loaded lazily: the reader is only fetched when someone opens Fast-read.
+  assert.match(viewer, /const FastReadReader = lazy\(\(\) => import\("@\/app\/components\/fastread-reader"\)\)/);
   assert.match(viewer, /fetchFastReadNote,\r?\n\s+pdfTextToMarkdown,/);
   assert.match(viewer, /\{fastReadLoading \? "Opening\.\.\." : "Fast-read"\}/);
 

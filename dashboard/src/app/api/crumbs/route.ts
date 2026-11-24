@@ -22,6 +22,7 @@ export async function GET(request: Request) {
     const query = new URL(request.url).searchParams;
     switch (query.get("view")) {
       case "status": return json(crumbs.status(userId));
+      case "ai-flags": return json(await crumbs.aiFlags(userId, query.get("url")));
       case "typeahead": return json({ people: await crumbs.typeahead(query.get("q")) });
       case "feed": {
         const scope = query.get("scope") ?? "following";
@@ -64,6 +65,7 @@ export async function POST(request: Request) {
       case "sign-out": await crumbs.signOut(userId); return json(crumbs.status(userId));
       case "visibility": crumbs.setDefaultVisibility(userId, body.value); return json(crumbs.status(userId));
       case "servers": crumbs.setServers({ indexer: body.indexer, orgStore: body.orgStore, publicMode: body.publicMode }); return json(crumbs.status(userId));
+      case "ai-flag": return json(await crumbs.aiFlag(userId, body.url, body.on));
       case "follow": return json(await crumbs.follow(userId, body.who, body.on !== false));
       case "delete": await crumbs.deleteMine(userId, body.id); return json({ deleted: true });
       case "handle": return json(await crumbs.claimHandle(userId, body.name));

@@ -8,6 +8,7 @@ import {
   MAX_REQUEST_BYTES,
 } from "../src/lib/hermes/route-core.ts";
 import { HermesRpcErrorResponse } from "../src/lib/agent-runtime/hermes-wire.ts";
+import { FAILURE_EXPLANATIONS } from "../src/lib/failure-explanations.ts";
 
 function jsonRequest(body, headers = {}) {
   return new Request("http://localhost/api/hermes/x", {
@@ -64,7 +65,7 @@ test("describeError maps a Hermes RPC error to 503 without leaking internals", (
     new HermesRpcErrorResponse(-32000, "connect ECONNREFUSED 127.0.0.1:4096"),
   );
   assert.equal(res.status, 503);
-  assert.equal(res.body.error, "The agent runtime is unavailable.");
+  assert.equal(res.body.error, FAILURE_EXPLANATIONS.runtime_unreachable);
   assert.equal(res.body.code, -32000);
   assert.equal(res.body.recoverable, true);
   assert.ok(!JSON.stringify(res.body).includes("4096"));
@@ -73,7 +74,7 @@ test("describeError maps a Hermes RPC error to 503 without leaking internals", (
 test("describeError hides internal detail message for unexpected errors", () => {
   const res = describeError(new Error("boom at /secret/path"));
   assert.equal(res.status, 500);
-  assert.equal(res.body.error, "Internal server error");
+  assert.equal(res.body.error, FAILURE_EXPLANATIONS.server_error);
   assert.equal("detail" in res.body, false);
   assert.ok(!JSON.stringify(res.body).includes("/secret/path"));
 });

@@ -2356,6 +2356,69 @@ _TOOLS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
         ),
     ),
     (
+        "bot_manage",
+        "/api/hermes/tools/bot-manage",
+        "bot_manage",
+        _schema(
+            "bot_manage",
+            (
+                "Create, change or remove the user's bots (teammates). CREATE "
+                "whenever the user asks for a bot, assistant, coach, tutor or "
+                "helper for something, even in one word ('a chess bot'); do not "
+                "ask them for details, you choose everything. Make it the best "
+                "possible teammate for that job: a short friendly name not "
+                "already on the team; a description under 180 characters; and a "
+                "personality of 5-8 sentences in this shape: 'You are <name>, the "
+                "user's <role>.' 'Works from:' the sources it uses, with tool "
+                "names (garden_search, the web, browser_terminal, calendar_*, "
+                "mcp_call for connected apps, terminal_execute_command...). "
+                "'Method:' how it does the job step by step, like an expert in "
+                "the field. 'Delivers:' the concrete outputs, with tool names "
+                "(artifact_create, document_edit, calendar_create_event, "
+                "schedule_create with a prompt starting '@<handle>' for "
+                "recurring work...). 'Quality bar:' what it never gets wrong. "
+                "'Hands off:' which teammate takes what. Choose an avatar "
+                "shape and color that fit the role, effort high for deep "
+                "engineering or research, medium for multi-step work, none for "
+                "quick everyday help. Put facts the request already gave (level, "
+                "goal, deadline, preferences) in memories. UPDATE when the user "
+                "wants a bot changed: pass its handle as bot and only the fields "
+                "to change; rewrite the whole personality when its job changes. "
+                "REMOVE only when the user asks; its chats and memories are kept."
+            ),
+            {
+                "action": {"type": "string", "enum": ["create", "update", "remove"]},
+                "bot": {
+                    "type": "string",
+                    "description": "For update and remove: the bot's @handle, e.g. \"sage\".",
+                },
+                "name": {"type": "string", "minLength": 1, "maxLength": 60},
+                "description": {"type": "string", "maxLength": 180},
+                "personality": {"type": "string", "minLength": 200, "maxLength": 5400},
+                "avatar": {
+                    "type": "object",
+                    "properties": {
+                        "shape": {"type": "string", "enum": [
+                            "clover", "flower", "star", "ghost", "mech", "circle",
+                            "hexagon", "square", "triangle", "blob", "drop", "droid",
+                            "alien", "cat", "cloud", "pill", "pebble", "puddle",
+                        ]},
+                        "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{6}$"},
+                        "face": {"type": "string", "enum": ["eyes", "mouth"]},
+                    },
+                },
+                "effort": {"type": "string", "enum": ["low", "medium", "high", "xhigh"]},
+                "memories": {
+                    "type": "array",
+                    "maxItems": 10,
+                    "items": {"type": "string", "maxLength": 500},
+                    "description": "For create: facts the request already gave, one short sentence each.",
+                },
+            },
+            ["action"],
+        ),
+    ),
+    (
         "workflow_run",
         "/api/hermes/tools/workflow",
         "workflow",
@@ -5044,6 +5107,35 @@ _TOOLS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
 )
 
 
+def _wait_for_dashboard(host: str, port: int, budget: float | None = None) -> None:
+    """Ride out a dashboard restart instead of failing the tool call.
+
+    The supervisor restarts the dashboard in seconds after a memory kill; a
+    refused connection means the request never arrived, so waiting is safe.
+    Any other error, or the budget running out, falls through to the caller.
+    """
+    import socket
+
+    if budget is None:
+        try:
+            budget = float(os.environ.get("BREADBOARD_TOOL_RESTART_WAIT_SECONDS", "90"))
+        except ValueError:
+            budget = 90.0
+    deadline = time.monotonic() + budget
+    delay = 1.0
+    while True:
+        try:
+            socket.create_connection((host, port), timeout=3).close()
+            return
+        except ConnectionRefusedError:
+            if time.monotonic() + delay > deadline:
+                return
+            time.sleep(delay)
+            delay = min(delay * 1.5, 8.0)
+        except OSError:
+            return
+
+
 def _connection_target() -> tuple[str, int]:
     raw = os.environ.get("BREADBOARD_INTERNAL_URL", "http://127.0.0.1:3000")
     parsed = urlsplit(raw)
@@ -5561,6 +5653,7 @@ def _call_breadboard(
                           else 8 * 1024 * 1024 if route_kind in {"attachment_image", "image_search"} or tool_name in {"garden_get_source_figure", "meeting_look"}
                           else _MAX_RESPONSE_BYTES)
         recover_read = route_kind == "garden" and tool_name in _GARDEN_READ_RETRY_TOOLS
+        _wait_for_dashboard(host, port)
         for attempt in range(2 if recover_read else 1):
             connection = HTTPConnection(
                 host, port,

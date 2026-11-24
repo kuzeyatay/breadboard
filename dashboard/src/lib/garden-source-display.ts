@@ -15,10 +15,12 @@ export function gardenSourceDisplay(source: {
     /\.pdf$/i.test(source.sourceFile.trim()) || isPptxSource(source.sourceType, source.sourceFile);
   const title = (filenameFirst ? source.sourceFile.trim() : "") || source.title || source.name;
   const description = source.description.trim();
+  // A name that only repeats the file name without its extension says nothing new.
+  const same = (value: string) => value === title || value === title.replace(/\.[a-z0-9]{2,5}$/i, "");
   return {
     title,
-    description: (description !== title ? description : "") ||
-      (filenameFirst && source.title.trim() !== title ? source.title.trim() : ""),
+    description: (!same(description) ? description : "") ||
+      (filenameFirst && !same(source.title.trim()) ? source.title.trim() : ""),
     hasPdf: Boolean(source.sourcePdf.trim()),
   };
 }

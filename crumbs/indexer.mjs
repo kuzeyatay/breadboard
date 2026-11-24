@@ -7,7 +7,7 @@ import { openDatabase } from "./lib/db.mjs";
 import { HttpError, rateLimit, requireAdmin, serve } from "./lib/http.mjs";
 import { moderate, localVerdict } from "./lib/moderation.mjs";
 import { accountLabels, forgetIdentity, getRecord, isDid, listRecords, parseAtUri, profileOf } from "./lib/atproto.mjs";
-import { COLLECTIONS, annotationPageUrl, parseHighlightRecord, targetDigest } from "./lib/targets.mjs";
+import { COLLECTIONS, aiFlagSite, annotationPageUrl, parseHighlightRecord, targetDigest } from "./lib/targets.mjs";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS highlights (
@@ -26,6 +26,8 @@ CREATE TABLE IF NOT EXISTS ratings (uri TEXT PRIMARY KEY, did TEXT NOT NULL, sub
 CREATE INDEX IF NOT EXISTS ratings_subject ON ratings(subject);
 CREATE TABLE IF NOT EXISTS follows (uri TEXT PRIMARY KEY, did TEXT NOT NULL, subject TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS follows_did ON follows(did);
+CREATE TABLE IF NOT EXISTS aiflags (uri TEXT PRIMARY KEY, did TEXT NOT NULL, site TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS aiflags_site ON aiflags(site);
 CREATE TABLE IF NOT EXISTS handles (name TEXT PRIMARY KEY, did TEXT NOT NULL UNIQUE);
 CREATE TABLE IF NOT EXISTS accounts (
   did TEXT PRIMARY KEY, handle TEXT, display_name TEXT, avatar TEXT, active INTEGER NOT NULL DEFAULT 1,
@@ -47,6 +49,9 @@ export function settings(env = process.env) {
     publicUrl: env.CRUMBS_PUBLIC_URL?.replace(/\/+$/, "") ?? null,
     handleDomain: env.CRUMBS_HANDLE_DOMAIN?.toLowerCase() ?? null,
     reportThreshold: Math.max(1, Number(env.CRUMBS_REPORT_THRESHOLD ?? 3)),
+    // How many different people must flag a site as AI-generated before Breadboard outlines its address yellow, then red.
+    aiFlagWarn: Math.max(1, Number(env.CRUMBS_AIFLAG_WARN ?? 3)),
+    aiFlagAlert: Math.max(1, Number(env.CRUMBS_AIFLAG_ALERT ?? 10)),
     // A community note shows once this many people other than its author rate it helpful, and helpful leads by as many.
     noteThreshold: Math.max(1, Number(env.CRUMBS_NOTE_THRESHOLD ?? 2)),
     blockedLabels: new Set((env.CRUMBS_BLOCKED_LABELS ?? "!hide,!takedown,!suspend,spam,impersonation,scam,threat,intolerant").split(",").map(value => value.trim()).filter(Boolean)),
@@ -131,6 +136,11 @@ export async function createIndexer({ db, config = settings(), gate = text => mo
       const subject = parseAtUri(record?.subject);
       if (!subject || subject.collection !== COLLECTIONS.note || typeof record.helpful !== "boolean") return;
       await db.run("INSERT INTO ratings(uri,did,subject,helpful) VALUES(?,?,?,?) ON CONFLICT(uri) DO UPDATE SET subject=excluded.subject,helpful=excluded.helpful", [uri, did, record.subject, record.helpful ? 1 : 0]);
+    } else if (collection === COLLECTIONS.aiflag) {
+      // One flag per person per site: the record key is the site itself.
+      if (aiFlagSite(`https://${rkey}/`) !== rkey) return;
+      await ensureAccount(did);
+      await db.run("INSERT INTO aiflags(uri,did,site) VALUES(?,?,?) ON CONFLICT(uri) DO NOTHING", [uri, did, rkey]);
     } else if (collection === COLLECTIONS.follow) {
       if (!isDid(record?.subject) || record.subject === did) return;
       await db.run("INSERT INTO follows(uri,did,subject) VALUES(?,?,?) ON CONFLICT(uri) DO UPDATE SET subject=excluded.subject", [uri, did, record.subject]);
@@ -153,6 +163,7 @@ export async function createIndexer({ db, config = settings(), gate = text => mo
     else if (collection === COLLECTIONS.rating) await db.run("DELETE FROM ratings WHERE uri=?", [uri]);
     else if (collection === COLLECTIONS.report) await db.run("DELETE FROM reports WHERE uri=?", [uri]);
     else if (collection === COLLECTIONS.follow) await db.run("DELETE FROM follows WHERE uri=?", [uri]);
+    else if (collection === COLLECTIONS.aiflag) await db.run("DELETE FROM aiflags WHERE uri=?", [uri]);
     else if (collection === COLLECTIONS.handle && rkey === "self") await db.run("DELETE FROM handles WHERE did=?", [did]);
   }
 
@@ -167,7 +178,7 @@ export async function createIndexer({ db, config = settings(), gate = text => mo
       const known = await db.get("SELECT did FROM accounts WHERE did=?", [event.did]);
       const status = event.account.status ?? "";
       if (status === "deleted" || status === "takendown") {
-        for (const table of ["highlights", "reports", "follows", "handles", "notes", "ratings"]) await db.run(`DELETE FROM ${table} WHERE did=?`, [event.did]);
+        for (const table of ["highlights", "reports", "follows", "handles", "notes", "ratings", "aiflags"]) await db.run(`DELETE FROM ${table} WHERE did=?`, [event.did]);
         if (known) await db.run("UPDATE accounts SET active=0 WHERE did=?", [event.did]);
       } else if (known) await db.run("UPDATE accounts SET active=? WHERE did=?", [event.account.active === false ? 0 : 1, event.did]);
     } else if (event.kind === "identity") {
@@ -187,7 +198,7 @@ export async function createIndexer({ db, config = settings(), gate = text => mo
 
   async function backfill(did) {
     let count = 0;
-    for (const collection of [COLLECTIONS.highlight, COLLECTIONS.report, COLLECTIONS.follow, COLLECTIONS.handle, COLLECTIONS.note, COLLECTIONS.rating]) {
+    for (const collection of [COLLECTIONS.highlight, COLLECTIONS.report, COLLECTIONS.follow, COLLECTIONS.handle, COLLECTIONS.note, COLLECTIONS.rating, COLLECTIONS.aiflag]) {
       for (const item of await listRecords(did, collection)) {
         const at = parseAtUri(item.uri);
         if (at) { await indexRecord(did, collection, at.rkey, item.value, item.cid ?? ""); count++; }
@@ -199,7 +210,7 @@ export async function createIndexer({ db, config = settings(), gate = text => mo
   /** After losing the database: find every account holding our records through the relay and read them back. */
   async function rebuild(log = console.log) {
     const seen = new Set();
-    for (const collection of [COLLECTIONS.highlight, COLLECTIONS.follow, COLLECTIONS.handle, COLLECTIONS.report, COLLECTIONS.note, COLLECTIONS.rating]) {
+    for (const collection of [COLLECTIONS.highlight, COLLECTIONS.follow, COLLECTIONS.handle, COLLECTIONS.report, COLLECTIONS.note, COLLECTIONS.rating, COLLECTIONS.aiflag]) {
       let cursor = "";
       do {
         const response = await fetch(`${config.relay}/xrpc/com.atproto.sync.listReposByCollection?collection=${collection}&limit=1000${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`, { signal: AbortSignal.timeout(30000) });
@@ -300,6 +311,15 @@ export async function createIndexer({ db, config = settings(), gate = text => mo
       const handle = await db.get("SELECT name FROM handles WHERE did=?", [did]);
       return { did, handle: account?.handle ?? null, displayName: account?.display_name ?? null, avatar: account?.avatar ?? null,
         crumbsHandle: handle && config.handleDomain ? `${handle.name}.${config.handleDomain}` : null, items, follows, followers: Number(followers.n) };
+    }
+    if (method === "GET" && path === "/aiflags") {
+      const site = aiFlagSite(query.get("url") ?? "");
+      if (!site) throw new HttpError(400, "Pass a web address.");
+      const row = await db.get("SELECT count(DISTINCT f.did) AS n FROM aiflags f JOIN accounts a ON a.did=f.did WHERE f.site=? AND a.active=1 AND a.hidden=0", [site]);
+      const viewer = query.get("viewer");
+      const mine = isDid(viewer) && Boolean(await db.get("SELECT 1 FROM aiflags WHERE site=? AND did=?", [site, viewer]));
+      const count = Number(row.n);
+      return { site, count, mine, level: count >= config.aiFlagAlert ? "red" : count >= config.aiFlagWarn ? "yellow" : null };
     }
     if (method === "GET" && path === "/notes") {
       const subject = String(query.get("subject") ?? "");

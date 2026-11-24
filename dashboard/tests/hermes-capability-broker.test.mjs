@@ -399,6 +399,15 @@ test("the same task and grants yield the same capabilities on every authenticate
   assert.ok(results[0].includes("filesystem_read"));
 });
 
+test("web reach does not depend on the planner recognising the phrasing", () => {
+  // A conversation-only plan still reaches the web on a signed-in turn, so a
+  // planner miss cannot answer web_search with "disabled for this turn".
+  const grant = broker("Prepare a daily briefing of yesterday's announcements.");
+  assert.equal(grant.allowedTools.websearch, true);
+  assert.equal(grant.allowedTools.webfetch, true);
+  assert.equal(broker("hello", { isolated: true }).allowedTools.websearch, false);
+});
+
 /* ------------------------------------------------------------------ */
 /* Permission requests are actionable                                  */
 /* ------------------------------------------------------------------ */

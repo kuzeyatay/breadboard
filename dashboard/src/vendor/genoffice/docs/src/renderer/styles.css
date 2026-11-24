@@ -560,6 +560,7 @@ html.genoffice-popover-open .ribbon-tabs {
   width: 22px;
   height: 22px;
   border-radius: 50%;
+  corner-shape: round;
 }
 
 .ai-panel-title .genspark-badge {
@@ -2847,6 +2848,7 @@ th.cell-rev-del {
   width: 20px;
   height: 20px;
   border-radius: 50%;
+  corner-shape: round;
   background: var(--docs-comment-accent);
   color: var(--docs-on-accent);
   font-size: 10px;
@@ -4808,6 +4810,7 @@ th.cell-rev-del {
   background: var(--docs-paper);
   border: 2px solid var(--word-blue);
   border-radius: 50%;
+  corner-shape: round;
   cursor: nwse-resize;
   z-index: 2;
 }
@@ -5415,6 +5418,7 @@ body.docs-crop-active
   width: 12px;
   height: 12px;
   border-radius: 50%;
+  corner-shape: round;
   background: var(--color-brand-secondary);
 }
 
@@ -5586,6 +5590,7 @@ body.docs-crop-active
 .ai-typing-dot-shrink {
   background: var(--color-brand-secondary);
   border-radius: 50%;
+  corner-shape: round;
 }
 
 .ai-typing-dot-grow {
@@ -5819,6 +5824,7 @@ body.docs-crop-active
   color: var(--docs-ok-ink);
   background: var(--docs-ok-bg);
   border-radius: 999px;
+  corner-shape: round;
   padding: 2px 9px;
 }
 
@@ -5860,6 +5866,7 @@ body.docs-crop-active
   width: 5px;
   height: 5px;
   border-radius: 50%;
+  corner-shape: round;
   background: currentColor;
 }
 
@@ -5964,6 +5971,7 @@ body.docs-crop-active
   width: 6px;
   height: 6px;
   border-radius: 50%;
+  corner-shape: round;
   background: var(--color-border-strong);
 }
 
@@ -6039,6 +6047,7 @@ body.docs-crop-active
   padding: 0;
   border: none;
   border-radius: 50%;
+  corner-shape: round;
   background: var(--docs-chip-remove-bg);
   color: var(--docs-chip-remove-ink);
   font-size: 15px;
@@ -6168,6 +6177,7 @@ body.docs-crop-active
   gap: 5px;
   padding: 2px 4px 2px 9px;
   border-radius: 999px;
+  corner-shape: round;
   border: 1px solid var(--border);
   background: var(--docs-chip-bg);
   font-size: 11.5px;
@@ -6188,6 +6198,7 @@ body.docs-crop-active
   height: 16px;
   border: none;
   border-radius: 50%;
+  corner-shape: round;
   background: none;
   color: var(--text-dim);
   font-size: 13px;
@@ -6713,6 +6724,7 @@ body.docs-crop-active
 
 .protect-dialog .protect-check input[type='radio'] + .ctl {
   border-radius: 50%;
+  corner-shape: round;
 }
 
 .protect-dialog .protect-check input[type='radio']:checked + .ctl {
@@ -6768,6 +6780,7 @@ body.docs-crop-active
   height: 56px;
   margin: 0 auto 14px;
   border-radius: 50%;
+  corner-shape: round;
   background: var(--accent-soft);
   color: var(--accent);
 }
@@ -7065,6 +7078,7 @@ body.docs-crop-active
   border: 1px solid var(--border-strong);
   background: var(--surface);
   border-radius: 999px;
+  corner-shape: round;
   padding: 5px 13px;
   font-size: 12.5px;
   cursor: pointer;
@@ -7086,6 +7100,7 @@ body.docs-crop-active
   width: 6px;
   height: 6px;
   border-radius: 50%;
+  corner-shape: round;
   background: var(--docs-ok-dot);
 }
 
@@ -7253,6 +7268,7 @@ body.docs-crop-active
   width: 10px;
   height: 10px;
   border-radius: 50%;
+  corner-shape: round;
   background: var(--docs-knob-dot);
   transition: left 0.15s;
 }
@@ -8123,6 +8139,7 @@ ruby.doc-ruby rt {
 
 .ink-width-dot {
   border-radius: 50%;
+  corner-shape: round;
   display: inline-block;
 }
 

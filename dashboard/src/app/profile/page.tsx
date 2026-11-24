@@ -26,7 +26,7 @@ export const metadata: Metadata = {
 };
 
 /**
- * The page behind the profile chip in the navbar.
+ * Settings for the local account.
  *
  * The stats are read on the server in one pass: they come from half a dozen
  * tables and none of them are worth a client round-trip, since nothing on this
@@ -40,8 +40,29 @@ export default async function ProfilePage({
     tab?: string | string[];
     scope?: string | string[];
     organization?: string | string[];
+    returnTo?: string | string[];
   }>;
 }) {
+  const requested = await searchParams;
+  const first = (value?: string | string[]) => (Array.isArray(value) ? value[0] : value);
+  const rawTab = first(requested.tab);
+  const returnTo = first(requested.returnTo);
+  if (rawTab === "recall") {
+    const query = new URLSearchParams({ tab: "recall" });
+    if (returnTo) query.set("returnTo", returnTo);
+    redirect(`/screen-time?${query}`);
+  }
+  // Knowledge has its own page now; old `?tab=knowledge` (and `?tab=brain`)
+  // links land there with their scope.
+  if (rawTab === "knowledge" || rawTab === "brain") {
+    const query = new URLSearchParams();
+    const scope = first(requested.scope);
+    const organization = first(requested.organization);
+    if (scope) query.set("scope", scope);
+    if (organization) query.set("organization", organization);
+    redirect(query.size ? `/knowledge?${query}` : "/knowledge");
+  }
+
   const session = await getServerSession(authOptions);
   if (!session?.user) redirect("/auth/login?callbackUrl=/settings");
 
@@ -57,23 +78,10 @@ export default async function ProfilePage({
   const calendars = getCalendarStore()
     .listCalendars(userId)
     .filter((calendar) => calendar.sourceUrl || calendar.caldavUrl || calendar.googleCalendarId);
-  const requested = await searchParams;
-  const rawTab = Array.isArray(requested.tab) ? requested.tab[0] : requested.tab;
-  // `brain` remains a backwards-compatible deep link; the user-facing surface
-  // and all new URLs use the clearer Knowledge name.
-  const initialTab = rawTab === "knowledge" || rawTab === "brain" ? "knowledge" : "profile";
-  const rawScope = Array.isArray(requested.scope) ? requested.scope[0] : requested.scope;
-  const rawOrganization = Array.isArray(requested.organization)
-    ? requested.organization[0]
-    : requested.organization;
-  const initialBrainScope =
-    rawScope === "organization" && rawOrganization
-        ? rawOrganization.slice(0, 320)
-        : "all";
-
   return (
     <ProfileClient
       stats={stats}
+      returnTo={returnTo}
       initialThoughtTopologyAutoUpdate={thoughtTopologyAutoUpdateEnabled(userId)}
       initialWebPdfCleanup={webPdfCleanupEnabled(userId)}
       initialAskPasswordAtStartup={askPasswordAtStartup(userId)}
@@ -86,8 +94,6 @@ export default async function ProfilePage({
       contactTotal={contacts.countContacts(userId)}
       syncedCalendars={calendars}
       calendarVaultConfigured={caldavVaultConfigured()}
-      initialTab={initialTab}
-      initialBrainScope={initialBrainScope}
       initialIdentity={getIdentity(db, userId)}
     />
   );

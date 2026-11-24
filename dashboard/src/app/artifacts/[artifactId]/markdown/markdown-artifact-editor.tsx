@@ -9,6 +9,7 @@ import {
 } from "react";
 import { Pencil } from "lucide-react";
 import AssistantComposer from "@/app/components/assistant-composer";
+import { UserMessageText } from "@/app/components/hermes/command-text";
 import BreadboardLoader from "@/app/components/breadboard-loader";
 import ChatMarkdown from "@/app/components/chat-markdown";
 import { ConfirmDialog } from "@/app/components/confirm-dialog";
@@ -498,7 +499,7 @@ export default function MarkdownArtifactEditor({
                   ? "ml-7 rounded-2xl rounded-br-md border border-[var(--line)] bg-[var(--paper-strong)] px-3.5 py-3 text-sm"
                   : "text-sm leading-6"}
               >
-                {entry.role === "assistant" ? <ChatMarkdown content={entry.text} compact /> : entry.text}
+                {entry.role === "assistant" ? <ChatMarkdown content={entry.text} compact /> : <UserMessageText content={entry.text} />}
                 {entry.error ? <p className="mt-2 text-xs text-[#a44539]">{entry.error}</p> : null}
                 <ChatModelChangeSeparators labels={modelChangesFor(entry, index)} visible={!(assistantBusy && index === chat.length - 1)} />
               </div>

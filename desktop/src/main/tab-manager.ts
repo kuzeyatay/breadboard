@@ -243,6 +243,8 @@ interface BrowserPage extends PageFindState {
   organizationOpen?: boolean;
   organizationWidth?: number;
   annotationTarget?: BrowserAnnotationTarget;
+  /** The flag count the trusted page last reported, for the site it was about. */
+  aiFlags?: { site: string; level: "yellow" | "red" };
   annotationMarkers?: Array<{ id: string; target: BrowserAnnotationTarget; count?: number; preview?: string }>;
   /** Rail plus drawer width, continuously updated while its edge is dragged. */
   terminalWidth: number;
@@ -325,6 +327,11 @@ type LiveBrowserPage = BrowserPage & {
   view: WebContentsView;
   contents: WebContents;
 };
+
+/** The site an AI flag names (see aiFlagSite in dashboard/src/lib/browser-annotations.ts). */
+function aiFlagHost(url: string): string | null {
+  try { return new URL(url).hostname.toLowerCase().replace(/^www\./, ""); } catch { return null; }
+}
 
 function liveBrowserPage(browser: BrowserPage | undefined): LiveBrowserPage | null {
   if (!browser?.view || !browser.contents || browser.contents.isDestroyed()) return null;
@@ -465,7 +472,7 @@ interface Tab extends PageFindState {
   /** Temporarily parked for input/inspection without changing the visible page. */
   automationPreparing?: boolean;
   highlighted?: boolean;
-  /** Set from the tab menu: idle unloading never discards this tab. */
+  /** Set from the tab menu: idle unloading never discards this tab. Unset = on for Terminal tabs (keepsLoaded). */
   keepLoaded?: boolean;
   menu?: Menu;
   splitPreparation?: AbortController;
@@ -1466,7 +1473,7 @@ export class TabManager {
           if (!tab) continue;
           tab.anchored = savedTab.anchored;
           tab.highlighted = savedTab.highlighted === true;
-          tab.keepLoaded = savedTab.keepLoaded === true;
+          tab.keepLoaded = typeof savedTab.keepLoaded === "boolean" ? savedTab.keepLoaded : undefined;
           tab.groupId = savedTab.groupId;
           // Older sessions persisted the browser home as "New tab". Keep the
           // trusted browser surface named consistently after an upgrade.
@@ -2171,7 +2178,7 @@ export class TabManager {
       return true;
     }
     if (!isTabStripCommand(command)) {
-      const allowed = ["back", "forward", "reload", "browser-navigate", "browser-stop", "browser-menu",
+      const allowed = ["back", "forward", "reload", "browser-navigate", "browser-stop", "browser-menu", "browser-open-settings",
         "browser-translation-menu", "browser-translate", "browser-translation-restore", "browser-downloads-popover",
         "browser-downloads-close", "browser-extensions-popover", "browser-extensions-close", "browser-address-suggestions", "browser-toolbar-error", "browser-organization"].includes(command.type);
       const target = tabById(host, request.targetId ?? -1);
@@ -2672,6 +2679,12 @@ export class TabManager {
         void this.browserMenuAction(host, tab, "picture-in-picture");
         return true;
       }
+      case "browser-open-settings": {
+        if (!senderTab) return false;
+        const shellUrl = this.toolbarShellUrl(senderTab);
+        if (!shellUrl) return false;
+        return this.openTab(host, new URL("/settings", shellUrl).href, { background: false, origin: "link", from: senderTab }) !== null;
+      }
       case "browser-menu": {
         const tab = host.tabs.find(candidate => candidate.contents.id === sender.id && candidate.id === host.activeId);
         if (!tab || !this.toolbarShellUrl(tab)) return false;
@@ -2748,6 +2761,26 @@ export class TabManager {
         this.layout(host); this.broadcast(host);
         if (command.open) tab.contents.focus();
         return true;
+      }
+      case "browser-ai-flags": {
+        const tab = senderTab;
+        if (!tab?.browser) return false;
+        tab.browser.aiFlags = command.site && command.level ? { site: command.site, level: command.level } : undefined;
+        this.broadcast(host);
+        return true;
+      }
+      case "browser-ai-flag-confirm": {
+        // A native question, because the website view covers anything the trusted page could draw there.
+        if (!senderTab?.browser) return false;
+        return dialog.showMessageBox(host.window, {
+          type: "question", title: "Flag website as AI", message: `Flag ${command.site} as AI-generated?`,
+          detail: "Your flag is public: it is saved in your Crumbs account. When enough people flag a website, Breadboard outlines its address yellow, then red. Click the flag again to take yours back.",
+          buttons: ["Flag website", "Cancel"], defaultId: 0, cancelId: 1, checkboxLabel: "Don't show this again", noLink: true,
+        }).then(answer => {
+          if (answer.response !== 0) return false;
+          if (answer.checkboxChecked && this.browserPreferences.skipAiFlagConfirm()) this.broadcastAll();
+          return true;
+        }, () => false);
       }
       case "browser-terminal": {
         const tab = senderTab;
@@ -2890,7 +2923,7 @@ export class TabManager {
     const menu = Menu.buildFromTemplate(tabContextMenuTemplate({
       anchored: tab.anchored,
       highlighted: tab.highlighted,
-      keepLoaded: tab.keepLoaded,
+      keepLoaded: this.keepsLoaded(tab),
       private: Boolean(tab.browser?.privatePartition || host.privateBrowsing),
       hasLink: Boolean(tab.url),
       canCloseOthers: host.tabs.some(other => other !== tab && !other.anchored),
@@ -2944,7 +2977,7 @@ export class TabManager {
         this.flushSession();
         return;
       case "keep-loaded":
-        tab.keepLoaded = !tab.keepLoaded;
+        tab.keepLoaded = !this.keepsLoaded(tab);
         this.flushSession();
         return;
       case "copy-link":
@@ -3065,7 +3098,6 @@ export class TabManager {
             this.publishNotificationToast(tab.contents, { type: "error", message: "No video is ready for Picture in Picture on this page. Start a video and try again." });
           }
           return;
-        case "profile": internal("/settings"); return;
         case "settings": internal("/browser/settings"); return;
         case "appearance": internal("/browser/settings?section=appearance"); return;
         case "new-tab": this.openBrowserTab(host); return;
@@ -3274,7 +3306,7 @@ export class TabManager {
           tab.title = entry.title;
           tab.anchored = entry.anchored;
           tab.highlighted = entry.highlighted === true;
-          tab.keepLoaded = entry.keepLoaded === true;
+          tab.keepLoaded = typeof entry.keepLoaded === "boolean" ? entry.keepLoaded : undefined;
           members.push(tab);
         }
         const savedTree = [{ ...saved, parentId: undefined }, ...(saved.groups ?? [])];
@@ -3478,7 +3510,7 @@ export class TabManager {
   }
 
   private async canUnloadIdleTab(tab: Tab): Promise<boolean> {
-    if (tab.keepLoaded || tab.automationRunId || tab.browser?.automationRunId || tab.automationPreparing || tab.voiceOverlay ||
+    if (this.keepsLoaded(tab) || tab.automationRunId || tab.browser?.automationRunId || tab.automationPreparing || tab.voiceOverlay ||
         tab.learnActivity?.active || tab.loading || tab.pageLoading || tab.recovering) return false;
     const pages = [tab.sharedChrome ? null : tab.contents, tab.browser?.contents ?? null]
       .filter((contents): contents is WebContents => !!contents && !contents.isDestroyed());
@@ -4186,6 +4218,7 @@ export class TabManager {
               organizationOpen: tab.browser.organizationOpen === true,
               organizationWidth: tab.browser.organizationWidth,
               annotationTarget: tab.browser.annotationTarget,
+              ...(tab.browser.aiFlags && !tab.browser.showingHome && tab.browser.aiFlags.site === aiFlagHost(tab.url) ? { aiFlagLevel: tab.browser.aiFlags.level } : {}),
               downloadsOpen: host.downloadsPopover?.ownerId === tab.id,
               extensionsOpen: host.extensionsPopover?.ownerId === tab.id,
               terminalWidth: tab.browser.terminalWidth,
@@ -4885,9 +4918,10 @@ export class TabManager {
     });
     // Adopted popup contents already exist; a session change alone cannot update them.
     view.webContents.setUserAgent(userAgent);
-    // No Google sign-in hand-off here: an ordinary tab that lands on a Google sign-in page
-    // stays in the tab (2026-11-20: opening gemini.google.com popped up Edge). Only the
-    // provider pages below, where signing in is the point, hand off to Edge/Chrome.
+    // Google rejects sign-in from Electron, so interactive sign-in pages hand off to Edge/Chrome
+    // and the cookies come back into this session. The 2026-11-20 gemini.google.com popup was
+    // Google's silent passive=1209600 check being mistaken for sign-in; isGoogleSignInPage skips it.
+    attachGoogleSignInHandoff(view.webContents, browserSession, message => this.log(message));
     view.setBackgroundColor(browserPageBackgroundColor(this.options.theme()));
     // Background automation still needs a real viewport for layout and input.
     // Size the unattached view without putting it in front of the user's page.
@@ -6529,10 +6563,20 @@ export class TabManager {
     // as a new tab, even when selection races the deferred crash callback.
     if (tab.terminalReady && !tab.contents.isCrashed()) return false;
     if (tab.recovering && !tab.recoveryAttempt?.directTerminal) return false;
+    return this.isTerminalTab(tab);
+  }
+
+  private isTerminalTab(tab: Tab): boolean {
+    if (tab.browser || !this.newTabUrl) return false;
     try {
       const home = new URL(this.newTabUrl), url = new URL(tab.url);
       return home.origin === url.origin && home.pathname === url.pathname;
     } catch { return false; }
+  }
+
+  /** "Never offload tab": the user's explicit choice, else on for Terminal tabs. */
+  private keepsLoaded(tab: Tab): boolean {
+    return tab.keepLoaded ?? this.isTerminalTab(tab);
   }
 
   /** The document has arrived and the renderer has composited it where it now sits. */

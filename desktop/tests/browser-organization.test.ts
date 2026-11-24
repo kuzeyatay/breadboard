@@ -44,3 +44,18 @@ test("Organization commands validate targets and bound marker batches", () => {
   assert.ok(isTabsCommand({type:"browser-organization",open:true,width:480}));
   assert.equal(isTabsCommand({type:"browser-organization",open:true,width:"480"}),false);
 });
+test("AI flags: the outline command and the confirm question validate, and \"Don't show this again\" persists", () => {
+  assert.ok(isTabsCommand({type:"browser-ai-flags",site:"slop.example",level:"red"}));
+  assert.ok(isTabsCommand({type:"browser-ai-flags",site:null,level:null}));
+  assert.equal(isTabsCommand({type:"browser-ai-flags",site:"slop.example",level:"green"}),false);
+  assert.equal(isTabsCommand({type:"browser-ai-flags",site:"<script>",level:"red"}),false);
+  assert.ok(isTabsCommand({type:"browser-ai-flag-confirm",site:"slop.example"}));
+  assert.equal(isTabsCommand({type:"browser-ai-flag-confirm"}),false);
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "bb-aiflag-"));
+  try {
+    const store = new BrowserPreferenceStore(directory);
+    assert.equal(store.snapshot().aiFlagConfirm, undefined);
+    assert.ok(store.skipAiFlagConfirm());
+    assert.equal(new BrowserPreferenceStore(directory).snapshot().aiFlagConfirm, false);
+  } finally { fs.rmSync(directory, {recursive:true,force:true}); }
+});

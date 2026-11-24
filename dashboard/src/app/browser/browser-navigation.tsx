@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { Settings } from "lucide-react";
 import NavbarFlowerWind from "@/app/components/navbar-flower-wind";
 import { useDesktopTabs } from "@/app/components/use-desktop-tabs";
 import { browserBookmarksControl, sendDesktopTabsCommand as sendTabsCommand, type DesktopTabsCommand, type DesktopTabView } from "@/lib/desktop-browser-tabs";
@@ -245,7 +246,8 @@ export default function BrowserNavigation({ tab, showFlowers, restoreOwnerKey, o
             </svg>
           </button>
         </div>
-        <form className="browser-address-form" onSubmit={navigateFromAddress}>
+        <form className="browser-address-form" onSubmit={navigateFromAddress} data-ai-flag={browser?.aiFlagLevel}
+          title={browser?.aiFlagLevel === "red" ? "Many people flagged this website as AI-generated" : browser?.aiFlagLevel === "yellow" ? "Some people flagged this website as AI-generated" : undefined}>
           <span className="browser-address-security" aria-hidden="true">
             {browser?.address ? (
               <BrowserSiteIcon
@@ -339,6 +341,13 @@ export default function BrowserNavigation({ tab, showFlowers, restoreOwnerKey, o
         </span>}
         <BrowserDownloadsButton active={isActive} open={browser?.downloadsOpen ?? false} />
         <BrowserMenuControls profileLabel={restoreOwnerKey} onPanel={onPanel} />
+        <button type="button" className="browser-toolbar-button" aria-label="Settings" title="Settings"
+          onClick={() => {
+            if (tabs) void sendDesktopTabsCommand({ type: "browser-open-settings" });
+            else window.location.assign("/settings");
+          }}>
+          <Settings aria-hidden="true" />
+        </button>
       </div>
 
       <BrowserBookmarksBar ownerKey={restoreOwnerKey} bookmarkStore={bookmarkStore} navigate={navigate} normalizedAddress={normalizedAddress} />

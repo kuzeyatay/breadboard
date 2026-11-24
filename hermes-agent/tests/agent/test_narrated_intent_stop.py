@@ -106,3 +106,49 @@ def test_flag_is_registered_as_ephemeral_scaffolding():
 
     for flags in (_SYNTHETIC_USER_FLAGS, _VERIFICATION_CONTINUATION_FLAGS, _EPHEMERAL_SCAFFOLDING_FLAGS):
         assert "_narrated_intent_synthetic" in flags
+
+
+# ── Hand-back detection (Breadboard chat 1211) ─────────────────────────
+from agent.narrated_intent_stop import build_handback_nudge, looks_like_handback
+
+
+@pytest.mark.parametrize("text", [
+    "I can’t access Downloads or run the installer from this chat. Open the installer and follow the wizard.",
+    "PowerWorld is still not installed. The vendor routes the download through its demo request form. "
+    "Complete that form and tell me when the Windows installer is in Downloads so I can continue the setup.",
+    "I don't have access to your file system. Please run the script yourself.",
+    "Run `pip install numpy` and let me know once it finishes.",
+])
+def test_handback_detected(text):
+    assert looks_like_handback(text)
+
+
+@pytest.mark.parametrize("text", [
+    # Instructions the user asked for, no waiting on them.
+    "To install it, open the installer from Downloads and follow the wizard.",
+    # Genuine human-only blockers.
+    "I can't open the portal without your password. Enter it in the sign-in window and tell me when.",
+    "Complete the CAPTCHA on the form and let me know once it's done.",
+    # A plain answer.
+    "At 12:00 the panels generate 267 kW and the neighbourhood exports 112 kW.",
+    "I can't help with that request.",
+])
+def test_handback_not_detected(text):
+    assert not looks_like_handback(text)
+
+
+def test_handback_nudge_requires_host_tools():
+    text = "I can’t access Downloads or run the installer from this chat."
+    assert build_handback_nudge(final_response=text, tool_names={"garden_search"}) is None
+    assert build_handback_nudge(final_response=text, tool_names={"terminal_execute_command"})
+    assert build_handback_nudge(final_response=text, tool_names={"computer_use"}, attempts=1) is None
+
+
+def test_handback_live_phrasings_2026_11_21():
+    # Seen live from gpt-6.1-terra on the chat-1211 replay.
+    assert looks_like_handback(
+        "Please approve access to your Downloads folder so I can locate and run the PowerWorld installer."
+    )
+    assert looks_like_handback(
+        "I can’t access the installer yet because the Downloads folder hasn’t been approved for this turn."
+    )

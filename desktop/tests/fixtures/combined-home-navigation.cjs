@@ -33,7 +33,7 @@ app.whenReady().then(async () => {
     'next/link': `export default ({children})=>children;`,
     '@/app/components/page-appearance': `export default ()=>null;`,
     '@/app/components/use-page-appearance': `export const usePageAppearance=()=>({ready:true,hasWallpaper:false});`,
-    '@/app/components/hermes/use-chat-greeting': `export const useChatGreeting=()=>({greeting:{}});`,
+    '@/app/components/hermes/use-chat-greeting': `export const useChatGreeting=()=>({greeting:{}, suggestionSources:{}});`,
     '@/app/components/hermes/dashboard-agent-terminal': `export default ()=>null;`,
     './browser-navigation': `export default ()=>null;`,
     './browser-home-accessories': `export default ()=>null;`,
@@ -146,10 +146,20 @@ app.whenReady().then(async () => {
   };
   await search(base, 'Existing profile');
   await until(() => base.executeJavaScript(`document.querySelector('[role=listbox]')?.textContent.includes('Existing profile search')`), 'existing account search restored');
+  assert.equal(await base.executeJavaScript(`document.querySelector('[role=combobox]').placeholder`), 'Search');
+  const pressSearchKey = key => base.executeJavaScript(`document.querySelector('[role=combobox]').dispatchEvent(new KeyboardEvent('keydown',{key:${JSON.stringify(key)},bubbles:true,cancelable:true}))`);
+  manager.tabs.browserHistory.visit(origin + '/website?from=home#saved', 'Saved trail maps');
+  await search(base, 'Saved trail');
+  await until(() => base.executeJavaScript(`document.querySelector('#new-tab-inline-completion')?.textContent.includes('Saved trail maps')`), 'visited page suggested inline');
+  assert.equal(await base.executeJavaScript(`document.querySelector('[role=combobox]').value`), 'Saved trail');
+  await pressSearchKey('Escape');
+  assert.equal(await base.executeJavaScript(`document.getElementById('new-tab-inline-completion')`), null);
+  await search(base, 'Saved tr');
+  await until(() => base.executeJavaScript(`!!document.getElementById('new-tab-inline-completion')`), 'inline suggestion restored after typing');
+  await pressSearchKey('Tab');
+  assert.equal(await base.executeJavaScript(`document.querySelector('[role=combobox]').value`), 'Saved trail maps');
   // The app home creates a browser in the current slot and releases page loading.
-  await search(base, origin + '/website?from=home#saved');
-  await until(() => base.executeJavaScript(`!!document.querySelector('[data-source=web] button')`), 'web destination option');
-  await base.executeJavaScript(`document.querySelector('[role=combobox]').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}))`);
+  await pressSearchKey('Enter');
   await until(() => host.tabs.find(tab => tab.id === host.activeId)?.browser?.contents?.getURL() === origin + '/website?from=home#saved' && !host.pending, 'website revealed from app home');
   const browserTab = host.tabs.find(tab => tab.id === host.activeId);
   await until(() => !browserTab.loading && !browserTab.pageLoading, 'loading finishes');

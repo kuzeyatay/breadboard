@@ -9,6 +9,15 @@ import { suggestionPageBody, type SuggestionPage } from '@/lib/browser-terminal'
 
 const NO_MESSAGES: readonly PromptSuggestionMessage[] = [];
 
+export function handlePromptSuggestionKey(event: KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>, text: string | null, accept: (text: string) => void, dismiss: () => void) {
+  if (!text || event.nativeEvent.isComposing || event.keyCode === 229 || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return false;
+  if (event.key !== 'Tab' && event.key !== 'Escape') return false;
+  event.preventDefault();
+  dismiss();
+  if (event.key === 'Tab') accept(text);
+  return true;
+}
+
 export function usePromptSuggestion({ messages = NO_MESSAGES, selection, conversationKey, model, value, enabled, onChange, personalize = false, gardenSlug, pageTitle, page, conversationId, documentConversationId, temporary = false }: {
   /** The page beside the chat: an empty composer suggests a question about it. */
   page?: SuggestionPage | null;
@@ -36,7 +45,7 @@ export function usePromptSuggestion({ messages = NO_MESSAGES, selection, convers
   const hasSelection = excerpt !== 'null';
   const pageKey = page ? JSON.stringify([page.title, page.browser, page.text?.length]) : null;
   const key = JSON.stringify([conversationKey, documentConversationId, model, messages.at(-1)?.clientMessageId, transcript, excerpt, personalize, gardenSlug, pageTitle, pageKey, temporary, revision]);
-  const [result, setResult] = useState<{ key: string; text: string } | null>(null);
+  const [result, setResult] = useState<{ key: string; text: string; reason: string } | null>(null);
   const [dismissedKey, setDismissedKey] = useState<string | null>(null);
   const attempted = useRef(new Set<string>());
   useEffect(() => {
@@ -72,8 +81,16 @@ export function usePromptSuggestion({ messages = NO_MESSAGES, selection, convers
         });
         if (!response.ok) return;
         const payload = await response.json();
-        const text = normalizePromptSuggestion(hasContext ? payload.suggestion : pageOpener ? payload.suggestions?.[0] : payload.recommendations?.[0]?.prompt);
-        if (!controller.signal.aborted && text) setResult({ key, text });
+        const card = payload.recommendations?.[0];
+        const text = normalizePromptSuggestion(hasContext ? payload.suggestion : pageOpener ? payload.suggestions?.[0] : card?.prompt);
+        if (controller.signal.aborted || !text) return;
+        let reason = 'This follows up on the recent messages in this chat.';
+        if (hasSelection) reason = 'This question is based on the passage you highlighted.';
+        else if (pageOpener) reason = `This question is based on the page you have open${page?.title ? ` (“${page.title}”)` : ''}.`;
+        else if (!hasContext) reason = card?.sourceLabel
+          ? `This prompt draws on your activity in ${card.sourceLabel}.`
+          : 'This prompt comes from your personalized recommendations.';
+        setResult({ key, text, reason });
       } catch {
         // Suggestions are optional; leave the ordinary composer available.
       } finally {
@@ -86,12 +103,7 @@ export function usePromptSuggestion({ messages = NO_MESSAGES, selection, convers
   const text = eligible && result?.key === key ? result.text : null;
   const dismiss = () => setDismissedKey(key);
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (!text || event.nativeEvent.isComposing || event.keyCode === 229 || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return false;
-    if (event.key !== 'Tab' && event.key !== 'Escape') return false;
-    event.preventDefault();
-    dismiss();
-    if (event.key === 'Tab') onChange(text);
-    return true;
+    return handlePromptSuggestionKey(event, text, onChange, dismiss);
   }
-  return { text, descriptionId, dismiss, handleKeyDown };
+  return { text, reason: result?.reason ?? '', descriptionId, dismiss, handleKeyDown };
 }

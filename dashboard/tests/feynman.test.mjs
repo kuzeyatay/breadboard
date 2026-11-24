@@ -154,3 +154,13 @@ test("Feynman's public retrieval counts as web evidence in the final answer", ()
   const report = reportWebGrounding("The paper reports an experiment.", [{ id: "feynman", kind, success: true, title: "Feynman", timestamp: new Date().toISOString(), details: {} }], true);
   assert.equal(report.satisfied, true);
 });
+
+test("an arXiv 429 is waited out with Retry-After instead of dropping the source", async () => {
+  let arxivCalls = 0;
+  const network = transport({ arxiv: () => (++arxivCalls === 1
+    ? new Response("slow down", { status: 429, headers: { "retry-after": "0.01" } })
+    : new Response(atom)) });
+  const result = await researchFeynman({ query: "CRISPR gene editing benchmark", limit: 5 }, network);
+  assert.equal(arxivCalls, 2);
+  assert.equal(result.sources.find((s) => s.source === "arXiv")?.status, "ok");
+});

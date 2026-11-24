@@ -1,6 +1,6 @@
 "use client";
 
-// Settings → Recall: the local record of what happened on this computer, and
+// Screen Time → Recall settings: the local record of what happened on this computer, and
 // the limits on it.
 //
 // This tab is unusual among Settings sections in that switching something on
@@ -12,6 +12,8 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { RECALL_SETTINGS_CHANGED_EVENT } from "./recall-autostart-lifecycle";
+import { recallStorageMessage } from "@/lib/recall/errors";
+import type { RecallStorageIssue } from "@/lib/recall/runtime-service";
 
 const ACTIVE_POLL_MS = 3_000;
 const INSTALL_POLL_MS = 2_000;
@@ -40,6 +42,8 @@ interface RecallStatusPayload {
   install: { installed: boolean; version: string | null; pinnedVersion: string; supported: boolean };
   installStatus: { phase: string; message: string; stalled: boolean } | null;
   process: { running: boolean; startedAt: string | null; managed: boolean };
+  desiredRecording: boolean;
+  storageIssue: RecallStorageIssue | null;
   reachable: boolean;
   health: {
     status: string;
@@ -240,7 +244,7 @@ export default function SettingsRecall() {
     );
   }
 
-  const recording = status.reachable && status.health?.status !== "unhealthy";
+  const recording = !status.storageIssue && status.reachable && status.health?.status !== "unhealthy";
   const lastFrame = relativeTime(status.health?.lastFrameTimestamp);
   const lastAudio = relativeTime(status.health?.lastAudioTimestamp);
 
@@ -262,7 +266,7 @@ export default function SettingsRecall() {
               recording ? "bg-[#4F805E]" : "bg-[var(--ink-muted)]"
             }`}
           />
-          {recording ? "Recording" : status.process.running ? "Starting" : "Not recording"}
+          {status.storageIssue ? "Paused" : recording ? "Recording" : status.process.running ? "Starting" : "Not recording"}
         </span>
         {recording && lastFrame ? (
           <span className="text-xs text-[var(--ink-muted)]">
@@ -314,12 +318,31 @@ export default function SettingsRecall() {
 
       {/* --- Capture ------------------------------------------------------- */}
       <section className="space-y-3 rounded-2xl border border-[var(--line)] p-4">
+        {status.storageIssue && (
+          <div className="space-y-2 text-xs leading-5 text-[var(--ink-muted)]" role="status">
+            <p>{installing ? status.installStatus?.message : recallStorageMessage[status.storageIssue]}</p>
+            {status.storageIssue === "history-needs-repair" && (
+              <>
+                {!installing && status.installStatus?.message && /history|repair/i.test(status.installStatus.message)
+                  && <p>{status.installStatus.message}</p>}
+                <button type="button" className={secondaryButton}
+                  disabled={busy !== null || installing || status.process.running}
+                  onClick={() => void post("/api/recall/install", undefined, "repair")}>
+                  {installing ? "Repairing…" : "Repair history"}
+                </button>
+              </>
+            )}
+          </div>
+        )}
         <div className="flex items-start justify-between gap-4">
           <div>
             <h3 className="text-sm font-medium text-[var(--ink-heading)]">Capture</h3>
             <p className="mt-0.5 text-xs leading-5 text-[var(--ink-muted)]">
               Capture starts by default when Breadboard opens. Recordings stay on this device;
               text retrieved in chats is shared with your selected model. Stopping keeps existing recordings.
+            </p>
+            <p className="mt-1 text-xs leading-5 text-[var(--ink-muted)]">
+              Recall keeps recordings and searchable text for 14 days, with compressed daily summaries for older activity.
             </p>
           </div>
           <button
@@ -347,7 +370,7 @@ export default function SettingsRecall() {
           <button
             type="button"
             className={secondaryButton}
-            disabled={busy !== null || !settings?.captureEnabled || status.process.running}
+            disabled={busy !== null || !settings?.captureEnabled || status.process.running || !!status.storageIssue}
             onClick={() => void post("/api/recall/control", { action: "start" }, "start")}
           >
             Start recording
@@ -355,7 +378,7 @@ export default function SettingsRecall() {
           <button
             type="button"
             className={secondaryButton}
-            disabled={busy !== null || !status.process.running}
+            disabled={busy !== null || !status.desiredRecording}
             onClick={() => void post("/api/recall/control", { action: "stop" }, "stop")}
           >
             Stop recording

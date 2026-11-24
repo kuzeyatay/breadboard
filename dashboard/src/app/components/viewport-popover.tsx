@@ -32,7 +32,10 @@ export default function ViewportPopover({
   onClose,
   role = "menu",
   portal = true,
+  topLayer = false,
   open = true,
+  id,
+  restoreFocusOnEscape = true,
   maxHeight: heightLimit = Infinity,
 }: {
   anchorRef: RefObject<HTMLElement | null>;
@@ -43,7 +46,11 @@ export default function ViewportPopover({
   role?: "dialog" | "menu";
   /** Nested popovers stay in the parent's DOM tree for outside-click handling. */
   portal?: boolean;
+  /** Escape transformed ancestors while retaining the popover's DOM position. */
+  topLayer?: boolean;
   open?: boolean;
+  id?: string;
+  restoreFocusOnEscape?: boolean;
   maxHeight?: number;
 }) {
   const popoverRef = useRef<HTMLDivElement>(null);
@@ -60,10 +67,13 @@ export default function ViewportPopover({
 
   useLayoutEffect(() => {
     if (!open) return;
+    const popover = popoverRef.current;
+    if (!popover) return;
+    if (topLayer) popover.showPopover();
+
     const place = () => {
       const anchor = anchorRef.current;
-      const popover = popoverRef.current;
-      if (!anchor || !popover) return;
+      if (!anchor) return;
 
       const anchorRect = anchor.getBoundingClientRect();
       const viewportWidth = window.innerWidth;
@@ -118,7 +128,7 @@ export default function ViewportPopover({
       if (popoverRef.current?.querySelector('[data-viewport-popover]:not([hidden])')) return;
       event.stopPropagation();
       onCloseRef.current();
-      anchorRef.current?.focus();
+      if (restoreFocusOnEscape) anchorRef.current?.focus();
     };
 
     place();
@@ -127,29 +137,44 @@ export default function ViewportPopover({
     window.addEventListener("resize", place);
     window.addEventListener("scroll", place, true);
     const resizeObserver = new ResizeObserver(place);
-    if (popoverRef.current) resizeObserver.observe(popoverRef.current);
-    if (anchorRef.current) resizeObserver.observe(anchorRef.current);
+    resizeObserver.observe(popover);
+
+    // A top-layer panel stays visible even after its trigger scrolls out of view.
+    const intersectionObserver = topLayer ? new IntersectionObserver(([entry]) => {
+      if (!entry.isIntersecting) onCloseRef.current();
+    }) : null;
+    if (anchorRef.current) {
+      resizeObserver.observe(anchorRef.current);
+      intersectionObserver?.observe(anchorRef.current);
+    }
 
     return () => {
+      if (topLayer) popover.hidePopover();
       document.removeEventListener("pointerdown", closeOutside, true);
       document.removeEventListener("keydown", closeOnEscape, true);
       window.removeEventListener("resize", place);
       window.removeEventListener("scroll", place, true);
       resizeObserver.disconnect();
+      intersectionObserver?.disconnect();
     };
-  }, [anchorRef, open, heightLimit]);
+  }, [anchorRef, open, heightLimit, topLayer, restoreFocusOnEscape]);
 
   if (typeof document === "undefined") return null;
 
   const panel = (
     <div
       ref={popoverRef}
+      id={id}
       data-viewport-popover=""
+      popover={topLayer ? "manual" : undefined}
       hidden={!open}
       role={role}
       aria-label={ariaLabel}
       className={className}
       style={{
+        margin: topLayer ? 0 : undefined,
+        right: topLayer ? "auto" : undefined,
+        bottom: topLayer ? "auto" : undefined,
         left: position.left,
         top: position.top,
         maxHeight: position.maxHeight || undefined,

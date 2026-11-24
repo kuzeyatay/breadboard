@@ -49,6 +49,9 @@ export function chatMarkdownHref(value: string): string | null {
     }
   }
   if (/^mailto:[^\s]+$/i.test(href)) return href;
+  // Models cite produced files as artifact:<id>; the pane opens the download URL.
+  const artifact = /^artifact:(art_[a-zA-Z0-9-]+)$/.exec(href);
+  if (artifact) return `/api/hermes/artifacts/${artifact[1]}/download`;
   // Preserve native app routes and Markdown footnotes. A relative disk path
   // has no reliable base in a chat and must not become a broken browser tab.
   if (href.startsWith('/')) return gardenSourcePdfViewerHref(href) ?? href;

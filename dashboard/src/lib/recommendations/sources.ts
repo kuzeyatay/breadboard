@@ -16,7 +16,10 @@ import { collectRecommendationEvidence } from './collect.ts';
 import { cleanRecommendationText as text, scopedRecommendationEvidence, type RecommendationContext, type RecommendationEvidence } from './types.ts';
 import type { ConnectedAppProxyRequest } from '../connected-apps/types.ts';
 import { calendarRecommendationEvidence } from './calendar-context.ts';
-import { recallRecommendationEvidence, recallTopicQuery } from './recall-context.ts';
+import { recallRecommendationEvidence, recallTopicQuery, webRecallEvidence } from './recall-context.ts';
+import { browserVisitFacts } from '../personal-context/browser.ts';
+import { looksPrivatePage } from '../browser-annotations.ts';
+import { dashboardDataDir } from '../runtime-paths.ts';
 import { recommendationClock } from './clock.ts';
 import { activityRecommendationEvidence, connectedAppName, connectionRecommendationEvidence } from './activity-context.ts';
 
@@ -210,6 +213,16 @@ export async function readRecommendationEvidence(userId: number, context: Recomm
   if (context.gardenSlug) return collectRecommendationEvidence([
     async () => scopedRecommendationEvidence(localEvidence(userId, context), context),
   ]);
+  if (context.surface === 'web-search') return collectRecommendationEvidence([async () => {
+    const settings = getRecallSettings(userId);
+    const config = getRecallConfig();
+    if (!config.enabled || !settings.captureEnabled || !settings.agentAccess) return [];
+    const [visits, recent] = await Promise.all([
+      browserVisitFacts(dashboardDataDir(), userId, url => !looksPrivatePage(url), 100),
+      searchRecall(userId, { contentType: 'screen', limit: 40 }, { forAgent: true, config: { ...config, requestTimeoutMs: 3000 } }),
+    ]);
+    return webRecallEvidence(recent.hits, visits.map(visit => visit.title));
+  }]);
   let calendar: RecommendationEvidence[] = [];
   try {
     const schedule = agenda(getCalendarStore(), userId, { from: context.localDate, days: CALENDAR_DAYS, limit: 200, includeDescriptions:true });

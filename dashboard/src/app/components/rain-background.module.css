@@ -18,6 +18,7 @@
   width: 1px;
   height: var(--rain-length);
   border-radius: 999px;
+  corner-shape: round;
   background: linear-gradient(transparent, var(--rain-color));
   opacity: var(--rain-opacity);
   animation: rainfall var(--rain-duration) var(--rain-delay) linear infinite;

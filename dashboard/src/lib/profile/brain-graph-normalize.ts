@@ -1,8 +1,6 @@
 import type {
   BrainEdge,
   BrainGraphFragment,
-  BrainGraphLimits,
-  BrainGraphResponse,
   BrainNode,
   BrainNodeKind,
   OptionalBrainNodeKind,
@@ -134,12 +132,11 @@ export interface NormalizedBrainGraph {
   nodes: BrainNode[];
   edges: BrainEdge[];
   counts: Record<string, number>;
-  truncated: boolean;
 }
 
+/** Merge, sanitize and endpoint-close the fragments. Nothing is capped. */
 export function normalizeBrainGraph(
   fragments: readonly BrainGraphFragment[],
-  limits: Pick<BrainGraphLimits, "maxNodes" | "maxEdges">,
 ): NormalizedBrainGraph {
   const nodesById = new Map<string, BrainNode>();
   for (const fragment of fragments) {
@@ -190,69 +187,13 @@ export function normalizeBrainGraph(
     });
   }
 
-  let truncated = fragments.some((fragment) => fragment.truncated === true);
-  let nodes = [...nodesById.values()];
-  if (nodes.length > limits.maxNodes) {
-    truncated = true;
-    nodes = nodes
-      .sort(
-        (left, right) =>
-          (right.metrics?.importance ?? 0) - (left.metrics?.importance ?? 0) ||
-          left.id.localeCompare(right.id),
-      )
-      .slice(0, limits.maxNodes);
-  }
-  nodes.sort((left, right) => left.id.localeCompare(right.id));
-
-  const visibleIds = new Set(nodes.map((node) => node.id));
-  let edges = [...edgesByKey.values()].filter(
-    (edge) => visibleIds.has(edge.source) && visibleIds.has(edge.target),
-  );
-  if (edges.length > limits.maxEdges) {
-    truncated = true;
-    edges = edges
-      .sort(
-        (left, right) =>
-          Number(right.explicit) - Number(left.explicit) ||
-          (right.weight ?? 1) - (left.weight ?? 1) ||
-          left.id.localeCompare(right.id),
-      )
-      .slice(0, limits.maxEdges);
-  }
-  edges.sort((left, right) => left.id.localeCompare(right.id));
+  const nodes = [...nodesById.values()].sort((left, right) => left.id.localeCompare(right.id));
+  const edges = [...edgesByKey.values()].sort((left, right) => left.id.localeCompare(right.id));
 
   const counts: Record<string, number> = {};
   for (const node of nodes) counts[node.kind] = (counts[node.kind] ?? 0) + 1;
   counts.total = nodes.length;
   counts.edges = edges.length;
 
-  return { nodes, edges, counts, truncated };
-}
-
-export function mergeBrainGraphResponse(
-  current: BrainGraphResponse,
-  fragment: BrainGraphResponse,
-): BrainGraphResponse {
-  const normalized = normalizeBrainGraph(
-    [
-      { nodes: current.nodes, edges: current.edges },
-      { nodes: fragment.nodes, edges: fragment.edges },
-    ],
-    { maxNodes: 2_000, maxEdges: 5_000 },
-  );
-  return {
-    ...current,
-    revision: fragment.revision,
-    nodes: normalized.nodes,
-    edges: normalized.edges,
-    counts: normalized.counts,
-    truncated: current.truncated || fragment.truncated || normalized.truncated,
-    warnings: [...current.warnings, ...fragment.warnings].filter(
-      (warning, index, all) =>
-        all.findIndex(
-          (candidate) =>
-            candidate.source === warning.source && candidate.code === warning.code,
-        ) === index,
-    ),
-  };
+  return { nodes, edges, counts };
 }

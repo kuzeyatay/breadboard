@@ -302,6 +302,15 @@ app.whenReady().then(async () => {
   page.emit("before-input-event", { preventDefault() { prevented = true; } }, key("j"));
   await until(async () => await chrome.executeJavaScript("window.testPanel") === "downloads", "Ctrl+J works from web page focus");
   assert.equal(prevented, true);
+  const browserTabId = manager.stateFor(chrome).selfId;
+  assert.equal(await manager.handleCommand(page, { type: "browser-open-settings" }), false, "external pages cannot open Breadboard settings");
+  assert.equal(await manager.handleCommand(chrome, { type: "browser-open-settings" }), true);
+  await until(() => {
+    const state = manager.stateFor(chrome);
+    return state.tabs.find(tab => tab.id === state.activeId)?.url === origin + "/settings";
+  }, "toolbar gear opens Breadboard settings");
+  assert.equal(await manager.handleCommand(chrome, { type: "activate", id: browserTabId }), true);
+  await until(() => manager.stateFor(chrome).presentedId === browserTabId, "browser returns after opening settings");
   await choose("settings");
   await until(() => manager.stateFor(chrome).tabs.some(tab => tab.url === origin + "/browser/settings"), "settings opens in a trusted local tab");
   // Its in-page toolbar navigates by turning this tab into a browser tab.

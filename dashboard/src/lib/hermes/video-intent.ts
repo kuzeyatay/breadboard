@@ -9,6 +9,7 @@
 // the interactive visualizer, which keeps anything meant to be played with.
 
 import type { HermesSurface } from "./config.ts";
+import { requestProse } from "./request-language.ts";
 
 /**
  * Two skills share the renderer. Video makes flat motion graphics and is what a
@@ -87,7 +88,8 @@ export interface VideoIntentInput {
 }
 
 export function shouldAutoSelectVideo(input: VideoIntentInput): boolean {
-  const text = input.text.trim();
+  // Pasted code, quotes and documents are material, not the request.
+  const text = requestProse(input.text).trim();
   const available =
     input.authenticated &&
     (input.surface === "dashboard_terminal" || input.surface === "garden_chat");

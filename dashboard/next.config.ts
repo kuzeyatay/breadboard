@@ -1,4 +1,5 @@
 import type { NextConfig } from "next";
+import { availableParallelism } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { livekitRuntimeTraceIncludes } from "./scripts/livekit-runtime-packages.mjs";
@@ -170,6 +171,10 @@ const nextConfig: NextConfig = {
     pagesBufferLength: 1,
   },
   experimental: {
+    // Each page-data worker loads the dashboard server modules into its own heap.
+    ...(desktopBuild && process.platform === "win32"
+      ? { cpus: Math.min(2, availableParallelism()) }
+      : {}),
     // Next documents this as a low-risk reduction in webpack's peak memory.
     // The custom webpack hook below is deterministic and is reloaded inside
     // every worker, so each server/edge/client compiler can exit and return its

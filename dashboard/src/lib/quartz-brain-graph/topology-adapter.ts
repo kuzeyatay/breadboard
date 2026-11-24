@@ -3,8 +3,12 @@ import type {
   BrainGraphResponse,
   BrainNode,
 } from "../profile/brain-graph-types.ts";
+import { detectTopics } from "./topics.ts";
 
 export interface TopologyPayload {
+  sourceHierarchy?: Array<{ id: string; source: string; target: string }>;
+  sourceConnectionCount?: number;
+  isPagePath?: boolean;
   garden: {
     id: number;
     slug: string;
@@ -17,6 +21,7 @@ export interface TopologyPayload {
     parentId: string | null;
     title: string;
     depth: number;
+    gardenTone?: number;
     nodeCount: number;
     summary: { state: string; text: string };
     pageSlug?: string;
@@ -29,13 +34,16 @@ export interface TopologyPayload {
     relPath: string;
     folderId: string;
     title: string;
-    kind?: "markdown" | "source" | "internal-concept";
+    kind?: "markdown" | "source" | "internal-concept" | "chat";
     knowledgeType: string;
     sourceType?: string;
     summary: { state: string; text: string };
     primaryConcepts: string[];
     supportingConcepts: string[];
     wordCount?: number;
+    activityTimes?: number[];
+    /** Leiden topic group; the renderer colors pages by `index`. */
+    topic?: { index: number; label: string };
     x?: number;
     y?: number;
   }>;
@@ -44,6 +52,7 @@ export interface TopologyPayload {
     source: string;
     target: string;
     structural?: boolean;
+    changedAt?: number;
     origin?: "inferred" | "authored" | "provenance";
     score?: number;
     threshold?: number;
@@ -99,10 +108,9 @@ function edgeScore(edge: BrainEdge): number {
 /**
  * Rebuild the authorized Garden hierarchy in the renderer's native payload.
  *
- * The profile graph contains conversations, memories, runs, and other account
- * objects too. Quartz's Thought Topology deliberately describes Gardens, so
- * this projection keeps Garden/folder/page nodes and their semantic lines and
- * leaves the unrelated account graph out of the canvas.
+ * The Knowledge graph holds Gardens only — Quartz's Thought Topology
+ * deliberately describes Gardens — so this keeps Garden/folder/page nodes,
+ * the viewer's chats beside the pages they cited, and their semantic lines.
  */
 export function projectBrainGraphToQuartzTopology(
   graph: BrainGraphResponse,
@@ -152,6 +160,7 @@ export function projectBrainGraphToQuartzTopology(
     },
   }];
 
+  const gardenTones = new Map([...gardenIds].sort().map((id, i) => [id, i % 8]));
   for (const garden of gardenNodes) {
     const directCount = pageNodes.filter((node) => node.gardenSlug === garden.gardenSlug).length;
     folders.push({
@@ -160,6 +169,7 @@ export function projectBrainGraphToQuartzTopology(
       parentId: rootId,
       title: garden.label,
       depth: 1,
+      gardenTone: gardenTones.get(garden.id),
       nodeCount: directCount,
       summary: summary(garden),
       pageSlug: garden.gardenSlug,
@@ -204,7 +214,9 @@ export function projectBrainGraphToQuartzTopology(
       ? "source"
       : node.kind === "concept"
         ? "internal-concept"
-        : "markdown";
+        : node.kind === "conversation"
+          ? "chat"
+          : "markdown";
     return {
       id: node.id,
       slug: node.id,
@@ -217,16 +229,22 @@ export function projectBrainGraphToQuartzTopology(
       summary: summary(node),
       primaryConcepts: concepts(node),
       supportingConcepts: [],
+      activityTimes: node.activityTimes,
       wordCount: finiteNumber(node.metrics?.wordCount) ?? finiteNumber(node.metrics?.activity) ?? 0,
     };
   });
 
+  const mapIds = new Set([...gardenIds, ...folderIds, ...pageIds]);
+  const sourceHierarchy = graph.edges
+    .filter(edge => edge.relation === "contains" && !edge.semanticRelation && mapIds.has(edge.source) && mapIds.has(edge.target))
+    .map(({ id, source, target }) => ({ id, source, target }));
+
   const edges: TopologyPayload["edges"] = graph.edges
     .filter(
       (edge) =>
-        pageIds.has(edge.source) &&
-        pageIds.has(edge.target) &&
-        !STRUCTURAL_RELATIONS.has(edge.relation),
+        mapIds.has(edge.source) &&
+        mapIds.has(edge.target) &&
+        (edge.relation !== "contains" || Boolean(edge.semanticRelation)),
     )
     .map((edge) => ({
       id: edge.id,
@@ -234,22 +252,36 @@ export function projectBrainGraphToQuartzTopology(
       target: edge.target,
       origin: edge.explicit ? "authored" : "inferred",
       score: edgeScore(edge),
+      changedAt: edge.changedAt,
       threshold: finiteNumber(edge.threshold) ?? 0.68,
       relationType: edge.semanticRelation ?? edge.relation.replaceAll("_", "-"),
       direction: edge.direction === "directed" ? "directed" as const : "undirected" as const,
       explanation: {
         state: edge.explanation ? "ready" : "degraded",
-        text:
-          edge.explanation ??
-          `${nodeById.get(edge.source)?.label ?? "These pages"} and ${nodeById.get(edge.target)?.label ?? "this page"} are connected.`,
+        text: edge.explanation ?? "",
       },
       evidence: (edge.evidence ?? []).map((label) => ({ kind: "claim", label })),
     }));
 
+  // Chats sit beside the pages they cited; topics describe the pages alone.
+  const topics = detectTopics(
+    nodes
+      .filter((node) => node.kind !== "chat")
+      .map((node) => ({ id: node.id, title: node.title, concepts: node.primaryConcepts })),
+    graph.edges.filter(edge => pageIds.has(edge.source) && pageIds.has(edge.target) && !STRUCTURAL_RELATIONS.has(edge.relation))
+      .map(edge => ({ source: edge.source, target: edge.target, weight: edgeScore(edge) })),
+  );
+  const nodeIndex = new Map(nodes.map((node, index) => [node.id, index]));
+  for (const topic of topics) {
+    for (const id of topic.memberIds) {
+      nodes[nodeIndex.get(id)!].topic = { index: topic.index, label: topic.label };
+    }
+  }
+
   const organizationId = graph.scope.kind === "organization" ? graph.scope.organizationId : null;
   const scopeLabel = organizationId
     ? `${graph.scopeOptions.find((option) => option.organizationId === organizationId)?.label ?? "Organization"} gardens`
-    : "All accessible gardens";
+    : "Knowledge";
 
   return {
     payload: {
@@ -265,6 +297,8 @@ export function projectBrainGraphToQuartzTopology(
       folders,
       nodes,
       edges,
+      sourceHierarchy,
+      sourceConnectionCount: sourceHierarchy.length + edges.length,
       build: {
         state: graph.warnings.length > 0 ? "degraded" : "ready",
         threshold: 0.68,
@@ -274,4 +308,63 @@ export function projectBrainGraphToQuartzTopology(
     hrefByNodeId,
     gardenCount: gardenNodes.length,
   };
+}
+
+/**
+ * The payload narrowed to `keepIds` (a topic, or a path): those pages, the
+ * lines between them, and only the folders that lead down to them, so the
+ * renderer does not draw every empty Garden and folder around a small view.
+ */
+export function filterTopologyPayload(
+  payload: TopologyPayload,
+  keepIds: ReadonlySet<string>,
+): TopologyPayload {
+  const nodes = payload.nodes.filter((node) => keepIds.has(node.id));
+  const folderById = new Map(payload.folders.map((folder) => [folder.id, folder]));
+  const keptFolders = new Set<string>();
+  for (const node of nodes) {
+    for (let id: string | null = node.folderId; id && !keptFolders.has(id); id = folderById.get(id)?.parentId ?? null) {
+      keptFolders.add(id);
+    }
+  }
+  return {
+    ...payload,
+    folders: payload.folders.filter((folder) => keptFolders.has(folder.id)),
+    nodes,
+    edges: payload.edges.filter((edge) => keepIds.has(edge.source) && keepIds.has(edge.target)),
+  };
+}
+
+/** Fewest-step chain of connections from `from` to `to`, or null when none. */
+export function shortestTopologyPath(
+  edges: TopologyPayload["edges"],
+  from: string,
+  to: string,
+): string[] | null {
+  if (from === to) return [from];
+  const neighbors = new Map<string, string[]>();
+  const link = (a: string, b: string) => {
+    const list = neighbors.get(a);
+    if (list) list.push(b);
+    else neighbors.set(a, [b]);
+  };
+  for (const edge of edges) {
+    link(edge.source, edge.target);
+    link(edge.target, edge.source);
+  }
+  const previous = new Map<string, string>([[from, from]]);
+  const queue = [from];
+  for (let index = 0; index < queue.length; index += 1) {
+    for (const next of neighbors.get(queue[index]) ?? []) {
+      if (previous.has(next)) continue;
+      previous.set(next, queue[index]);
+      if (next === to) {
+        const path = [to];
+        while (path[0] !== from) path.unshift(previous.get(path[0])!);
+        return path;
+      }
+      queue.push(next);
+    }
+  }
+  return null;
 }

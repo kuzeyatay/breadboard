@@ -192,6 +192,7 @@ const GARDEN_READ_TOOLS = [
 const GARDEN_WRITE_TOOLS = [
   "garden_run_proposal_validation",
   "garden_save_note",
+  "garden_save_file",
   "garden_decide_proposals",
   "garden_create_folder",
   "garden_move_page",
@@ -475,6 +476,14 @@ export function brokerCapabilities(input: BrokerInput): CapabilityGrant {
 
     granted.add(capability);
   }
+
+  // Reading the public web is reach, not obligation, and it is read-only, so
+  // like terminal_execute_command it must not hinge on the lexical planner.
+  // A missed phrasing ("search official arXiv listings") used to answer
+  // web_search with "disabled for this turn" and the model gave up. Whether
+  // the turn *owes* web evidence is still the plan's call. Every signed-in
+  // surface gets the same reach; anonymous/isolated turns never do.
+  if (!isolated) granted.add("web_research");
 
   const authorizedRoots = [...usedRoots.values()];
   const allowedTools = buildToolMap(

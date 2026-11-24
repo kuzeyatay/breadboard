@@ -85,13 +85,14 @@ export function recordVisit(href: string): void {
 }
 
 const isSettingsPath = (pathname: string | undefined) => pathname === '/settings' || pathname === '/profile';
+const isSettingsSection = (pathname: string | undefined) => isSettingsPath(pathname) || pathname === '/screen-time';
 
 /** A fresh Settings tab has no trail of its own, so carry its source in the link. */
 export function withProfileReturnTo(href: string, sourceHref: string): string {
   const destination = parse(href);
   const source = normalize(sourceHref);
   if (!destination || destination.origin !== window.location.origin ||
-      !isSettingsPath(destination.pathname) || !source || isSettingsPath(parse(source)?.pathname)) return href;
+      !isSettingsPath(destination.pathname) || !source || isSettingsSection(parse(source)?.pathname)) return href;
   destination.searchParams.set('returnTo', `${source}${parse(sourceHref)?.hash ?? ''}`);
   return `${destination.pathname}${destination.search}${destination.hash}`;
 }
@@ -109,10 +110,10 @@ export function resolveBackHref(currentHref: string, fallbackHref: string): stri
 
   // A source carried across tabs takes precedence over any copied session
   // history. Only same-origin, non-auth pages can become return destinations.
-  const returnTo = isSettingsPath(current.pathname) ? current.searchParams.get('returnTo') : null;
+  const returnTo = isSettingsSection(current.pathname) ? current.searchParams.get('returnTo') : null;
   const returnHref = returnTo ? normalize(returnTo) : null;
   if (returnTo && returnHref && parse(returnHref)?.pathname !== current.pathname &&
-      !(isSettingsPath(current.pathname) && isSettingsPath(parse(returnHref)?.pathname))) {
+      !(isSettingsSection(current.pathname) && isSettingsSection(parse(returnHref)?.pathname))) {
     return `${returnHref}${parse(returnTo)?.hash ?? ''}`;
   }
 
@@ -121,7 +122,7 @@ export function resolveBackHref(currentHref: string, fallbackHref: string): stri
     const candidate = parse(trail[index]);
     if (!candidate) continue;
     if (candidate.pathname === current.pathname) continue;
-    if (isSettingsPath(candidate.pathname) && isSettingsPath(current.pathname)) continue;
+    if (isSettingsSection(candidate.pathname) && isSettingsSection(current.pathname)) continue;
     return `${candidate.pathname}${candidate.search}`;
   }
 

@@ -152,6 +152,7 @@ body .ai-input-footer .ai-send-btn {
   margin-left: 0;
   border: 1px solid #3f5f58;
   border-radius: 999px;
+  corner-shape: round;
   background: #4f6f68;
   color: #fffefb;
   transition:
@@ -411,6 +412,7 @@ body .ai-applied-tag::before {
   height: 8px;
   flex-shrink: 0;
   border-radius: 50%;
+  corner-shape: round;
   background: var(--signal-live, #2f9e5a);
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--signal-live, #2f9e5a) 38%, transparent);
 }

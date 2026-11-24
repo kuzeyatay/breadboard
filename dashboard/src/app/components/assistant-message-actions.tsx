@@ -16,6 +16,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { Reply } from "lucide-react";
+import AnswerFeedbackMenu, { localFeedbackKey } from "./answer-feedback-menu";
 import StarMessageButton from "./star-message-button";
 import EvidencePanel from "@/app/components/hermes/evidence-panel";
 import BreadboardLoader from "@/app/components/breadboard-loader";
@@ -33,12 +34,10 @@ import { loadSpeechSettings } from "@/lib/speech/settings-client";
 import { playVoicePassages } from "@/lib/speech/voice-playback";
 import {
   type AnswerSignalKind,
-  clearAnswerRating,
-  fetchAnswerRating,
+  addressable,
   recordAnswerSignal,
 } from "@/lib/hermes/answer-signal-client";
 
-type Feedback = "up" | "down" | null;
 type SpeechState = "idle" | "loading" | "playing";
 type DictationState = "idle" | "preparing";
 
@@ -92,15 +91,6 @@ const NO_RECORDED_EVIDENCE: VerificationSummary = {
   unsupportedClaims: [],
   assumptions: [],
 };
-
-function contentKey(content: string): string {
-  let hash = 2166136261;
-  for (let index = 0; index < content.length; index += 1) {
-    hash ^= content.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return `breadboard:assistant-feedback:${(hash >>> 0).toString(36)}`;
-}
 
 async function copyToClipboard(content: string): Promise<void> {
   if (!navigator.clipboard?.writeText) {
@@ -280,7 +270,6 @@ export default function AssistantMessageActions({
   branch,
 }: Props) {
   const [copied, setCopied] = useState(false);
-  const [feedback, setFeedback] = useState<Feedback>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [evidenceOpen, setEvidenceOpen] = useState(false);
   const [humanizerEnabled] = useHumanizerMode();
@@ -312,7 +301,6 @@ export default function AssistantMessageActions({
   } = useContext(MessageActionsSlotContext);
   const starConversationId = contextualConversationId ?? conversationId;
   const starMessageId = contextualMessageId ?? messageId;
-  const storageKey = useMemo(() => contentKey(content), [content]);
   const displayedVerification = verification ?? contextualVerification ?? NO_RECORDED_EVIDENCE;
   const responseBranch = branch ?? contextualBranch;
   const completedAt =
@@ -330,10 +318,14 @@ export default function AssistantMessageActions({
    * working thumb by not having been wired yet.
    */
   const signalTarget = useMemo(
-    () => ({ conversationId: conversationId ?? null, messageId: messageId ?? null }),
-    [conversationId, messageId],
+    () => ({
+      conversationId: conversationId === undefined ? contextualConversationId : conversationId,
+      messageId: messageId === undefined ? contextualMessageId : messageId,
+    }),
+    [conversationId, messageId, contextualConversationId, contextualMessageId],
   );
-  const durableSignals = Boolean(conversationId?.trim() && messageId?.trim());
+  const durableSignals = addressable(signalTarget);
+  const localKey = useMemo(() => durableSignals ? undefined : localFeedbackKey(content), [durableSignals, content]);
 
   /**
    * Record a side observation about this answer. Deliberately not awaited by
@@ -347,24 +339,6 @@ export default function AssistantMessageActions({
     },
     [durableSignals, signalTarget],
   );
-
-  useEffect(() => {
-    if (!durableSignals) {
-      const stored = localStorage.getItem(storageKey);
-      setFeedback(stored === "up" || stored === "down" ? stored : null);
-      return;
-    }
-    // The stored rating is the truth once an answer is addressable, and it
-    // follows the account rather than the browser it was given in.
-    let active = true;
-    void fetchAnswerRating(signalTarget).then((rating) => {
-      if (!active) return;
-      setFeedback(rating === "rated_up" ? "up" : rating === "rated_down" ? "down" : null);
-    });
-    return () => {
-      active = false;
-    };
-  }, [durableSignals, signalTarget, storageKey]);
 
   /**
    * The evidence panel is anchored, not stacked: it is measured against the
@@ -557,24 +531,6 @@ export default function AssistantMessageActions({
     }
   }
 
-  /**
-   * Pressing a thumb, including pressing the same one twice to take it back.
-   *
-   * The optimistic local update comes first either way: the row has to respond
-   * at the speed of the click, and a rating is not worth a spinner.
-   */
-  function setRating(rating: Exclude<Feedback, null>) {
-    const next = feedback === rating ? null : rating;
-    setFeedback(next);
-    if (!durableSignals) {
-      if (next) localStorage.setItem(storageKey, next);
-      else localStorage.removeItem(storageKey);
-      return;
-    }
-    if (next) void recordAnswerSignal(signalTarget, next === "up" ? "rated_up" : "rated_down");
-    else void clearAnswerRating(signalTarget);
-  }
-
   function downloadResponse() {
     downloadMarkdown(content);
     setMenuOpen(false);
@@ -678,6 +634,10 @@ export default function AssistantMessageActions({
           </svg>
         )}
       </button>
+      <AnswerFeedbackMenu
+        key={localKey ?? JSON.stringify([signalTarget.conversationId, signalTarget.messageId])}
+        target={signalTarget} localKey={localKey} className={actionClass}
+      />
       <div className="relative">
         <button
           type="button"
@@ -707,30 +667,6 @@ export default function AssistantMessageActions({
           </div>
         ) : null}
       </div>
-      <button
-        type="button"
-        onClick={() => setRating("up")}
-        className={`${actionClass} ${feedback === "up" ? "bg-[var(--paper-strong)] text-[var(--ink-heading)]" : ""}`}
-        title="Helpful"
-        aria-label="Mark response as helpful"
-        aria-pressed={feedback === "up"}
-      >
-        <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7} aria-hidden="true">
-          <path strokeLinecap="round" strokeLinejoin="round" d="M7 10v10H4a2 2 0 0 1-2-2v-6a2 2 0 0 1 2-2h3Zm0 10h9.2a3 3 0 0 0 2.94-2.42l1.1-5.5A2.56 2.56 0 0 0 17.73 9H14l.55-2.74A2.73 2.73 0 0 0 11.87 3L7 10Z" />
-        </svg>
-      </button>
-      <button
-        type="button"
-        onClick={() => setRating("down")}
-        className={`${actionClass} ${feedback === "down" ? "bg-[var(--paper-strong)] text-[var(--ink-heading)]" : ""}`}
-        title="Not helpful"
-        aria-label="Mark response as not helpful"
-        aria-pressed={feedback === "down"}
-      >
-        <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7} aria-hidden="true">
-          <path strokeLinecap="round" strokeLinejoin="round" d="M7 14V4H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h3Zm0-10h9.2a3 3 0 0 1 2.94 2.42l1.1 5.5A2.56 2.56 0 0 1 17.73 15H14l.55 2.74A2.73 2.73 0 0 1 11.87 21L7 14Z" />
-        </svg>
-      </button>
       {onReply && content.trim() ? (
         <button type="button" onClick={() => onReply(content)} className={actionClass}
           title="Reply" aria-label="Reply to message">

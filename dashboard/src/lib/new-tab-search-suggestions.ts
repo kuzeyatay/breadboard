@@ -52,41 +52,56 @@ export function newTabSearchSuggestions(query: string, history: SearchHistoryEnt
   ];
 }
 
-export interface InlineCompletion { value: string; rest: string; scope: SearchScope }
+type VisitedDestination = { value: string; href: string; reason: string };
+export interface InlineCompletion { value: string; rest: string; scope: SearchScope; reason: string; href?: string }
 
 /**
  * One ghost completion for the search box, picked from past activity. Each
  * list is most-recent-first; earlier entries and repeats count more, so a
  * site visited daily beats a search made once. The higher-scoring scope wins.
- * ponytail: rank-decay heuristic, no timestamps; add visit-time weighting if it guesses wrong.
  */
-export function inlineCompletion(query: string, lists: ReadonlyArray<{ scope: SearchScope; values: readonly string[] }>): InlineCompletion | null {
+export function inlineCompletion(query: string, lists: ReadonlyArray<{ scope: SearchScope; reason?: string; values: readonly (string | VisitedDestination | null)[] }>): InlineCompletion | null {
   const needle = query.trimStart().toLocaleLowerCase();
   if (!needle || query !== query.trimStart()) return null;
-  let best: { score: number; value: string; scope: SearchScope } | null = null;
+  let best: InlineCompletion | null = null;
+  let bestScore = 0;
   const scores = new Map<string, number>();
-  for (const { scope, values } of lists) {
-    values.slice(0, 500).forEach((candidate, rank) => {
-      const value = candidate.trim();
-      if (value.length <= needle.length || !value.toLocaleLowerCase().startsWith(needle)) return;
-      const key = `${scope}:${value.toLocaleLowerCase()}`;
+  for (const { scope, values, reason = `What you typed matches one of your recent ${scope === "web" ? "web" : "Breadboard"} searches.` } of lists) {
+    for (const [rank, candidate] of values.slice(0, 500).entries()) {
+      if (!candidate) continue;
+      const value = (typeof candidate === "string" ? candidate : candidate.value).trim();
+      if (value.length <= query.length || value.length > 200 || !value.toLocaleLowerCase().startsWith(needle)) continue;
+      const href = typeof candidate === "string" ? undefined : candidate.href;
+      const key = JSON.stringify([scope, value.toLocaleLowerCase(), href]);
       const score = (scores.get(key) ?? 0) + 1 / (1 + rank / 5);
       scores.set(key, score);
-      if (!best || score > best.score) best = { score, value, scope };
-    });
+      if (score > bestScore) {
+        bestScore = score;
+        const rest = value.slice(query.length);
+        best = { value: query + rest, rest, scope, reason: typeof candidate === "string" ? reason : candidate.reason, ...(href && { href }) };
+      }
+    }
   }
-  if (!best) return null;
-  const { value, scope } = best as { value: string; scope: SearchScope };
-  const rest = value.slice(query.length);
-  return { value: query + rest, rest, scope };
+  return best;
 }
 
-/** Hostname without "www.", the part people type to get back to a site. */
-export function visitedHost(url: string): string | null {
-  try {
-    const { protocol, hostname } = new URL(url);
-    return protocol === "https:" || protocol === "http:" ? hostname.replace(/^www\./u, "") : null;
-  } catch { return null; }
+export function webActivityCompletion(query: string, searches: readonly string[], visits: readonly { url: string; title: string }[]): InlineCompletion | null {
+  if (!query || query !== query.trimStart()) return null;
+  const needle = query.toLocaleLowerCase();
+  const matches = (value: string) => value.length > query.length && value.length <= 200 && value.toLocaleLowerCase().startsWith(needle);
+  const destinations = visits.slice(0, 500).map((visit): VisitedDestination | null => {
+    let url: URL;
+    try { url = new URL(visit.url); } catch { return null; }
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) return null;
+    const site = /^https?:\/\//u.test(needle) ? url.origin
+      : needle.startsWith("www.") ? url.host : url.host.replace(/^www\./u, "");
+    if (matches(site)) return { value: site, href: url.origin + "/", reason: `You visited ${url.host}, and its address starts with what you typed.` };
+    const path = site + url.pathname;
+    if (url.pathname !== "/" && matches(path)) return { value: path, href: url.href, reason: `This matches a page address you visited on ${url.host}.` };
+    const title = visit.title.trim();
+    return matches(title) ? { value: title, href: url.href, reason: `This matches the title of a page you visited on ${url.host}.` } : null;
+  });
+  return inlineCompletion(query, [{ scope: "web", values: searches }, { scope: "web", values: destinations }]);
 }
 
 export function webDestinationUrl(value: string): string {

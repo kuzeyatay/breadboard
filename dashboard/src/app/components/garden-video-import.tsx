@@ -153,15 +153,6 @@ function PlayIcon({ playing = false }: { playing?: boolean }) {
   );
 }
 
-function VideoPanelIcon() {
-  return (
-    <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} aria-hidden="true">
-      <rect x="3.75" y="6.25" width="11.5" height="11.5" rx="2" />
-      <path strokeLinecap="round" strokeLinejoin="round" d="m15.25 10 4.25-2v8l-4.25-2" />
-    </svg>
-  );
-}
-
 function VolumeIcon({ muted }: { muted: boolean }) {
   return (
     <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} aria-hidden="true">
@@ -1006,7 +997,7 @@ export default function GardenVideoImport({
               <span>
                 Keep the media files
                 <span className="block text-[10px] text-gray-600">
-                  Off: Breadboard keeps no copy and plays the original file from where it is, so keep it there (YouTube media is never stored by Breadboard).
+                  Off: Breadboard keeps no copy and plays the original file from where it is, so keep it there. On: a YouTube video is downloaded and kept in the Garden too, so it plays here and can be edited in Video.
                 </span>
               </span>
             </label>
@@ -1137,17 +1128,6 @@ export default function GardenVideoImport({
                 const filename = mediaSourceFilename(source);
                 const description = mediaSourceDescription(source);
                 const kind = mediaSourceKind(source);
-                const playing = playingSourceSlug === source.slug;
-                const localPlaybackUrl = source.sourceMedia
-                  ? `/api/gardens/${encodeURIComponent(clusterSlug)}/media/${encodeURIComponent(source.slug)}`
-                  : "";
-                const externalPlaybackUrl =
-                  !localPlaybackUrl &&
-                  source.sourceType.toLowerCase() === "youtube" &&
-                  /^https?:\/\//i.test(source.originalFilename)
-                    ? source.originalFilename
-                    : "";
-                const canPlay = Boolean(localPlaybackUrl || externalPlaybackUrl);
                 const selectedForChat = selectedSourceSlugs.includes(source.slug);
                 const selectionControl =
                   onColorButtonClick && onFlagSource ? (
@@ -1161,13 +1141,13 @@ export default function GardenVideoImport({
                       onFlagSource={(flagColor) => onFlagSource(source.slug, flagColor)}
                     />
                   ) : null;
-                if (kind === "audio" && localPlaybackUrl) {
+                if (kind === "audio" && source.sourceMedia) {
                   return (
                     <AudioSourceRow
                       key={source.slug}
                       source={source}
-                      src={localPlaybackUrl}
-                      active={playing}
+                      src={`/api/gardens/${encodeURIComponent(clusterSlug)}/media/${encodeURIComponent(source.slug)}`}
+                      active={playingSourceSlug === source.slug}
                       selected={selectedForChat}
                       selectionControl={selectionControl}
                       isOwner={isOwner}
@@ -1188,39 +1168,6 @@ export default function GardenVideoImport({
                   >
                     <div className="group flex items-start gap-2.5 px-3 py-2">
                       {selectionControl}
-                      {externalPlaybackUrl ? (
-                        <a
-                          href={externalPlaybackUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="neu-button-icon mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-gray-700 text-[var(--botanical)] transition-[border-color,background-color,color,transform] duration-150 hover:border-[var(--botanical)] active:scale-[0.96]"
-                          aria-label={`Open ${filename} on YouTube`}
-                          title="Open on YouTube"
-                        >
-                          <VideoPanelIcon />
-                        </a>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setPlayingSourceSlug((current) =>
-                              current === source.slug ? null : source.slug,
-                            )
-                          }
-                          disabled={!canPlay}
-                          className={`neu-button-icon mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border transition-[border-color,background-color,color,transform] duration-150 active:scale-[0.96] disabled:cursor-not-allowed disabled:text-gray-700 disabled:active:scale-100 ${
-                            playing
-                              ? "border-[var(--botanical)] bg-[color-mix(in_srgb,var(--botanical)_10%,var(--paper-raised))] text-[var(--botanical)]"
-                              : "border-gray-700 text-[var(--botanical)] hover:border-[var(--botanical)]"
-                          }`}
-                          aria-label={`${playing ? "Close player for" : "Open player for"} ${filename}`}
-                          aria-expanded={playing}
-                          title={canPlay ? (playing ? "Close video player" : "Open video player") : "Original media is unavailable"}
-                        >
-                          <VideoPanelIcon />
-                        </button>
-                      )}
-
                       <div className="min-w-0 flex-1">
                         <Link
                           href={source.href}
@@ -1259,13 +1206,6 @@ export default function GardenVideoImport({
                       ) : null}
                     </div>
 
-                    {playing && localPlaybackUrl ? (
-                      <div className="px-3 pb-3 pl-[3.875rem]">
-                        <video key={localPlaybackUrl} className="max-h-48 w-full rounded-md bg-black" controls autoPlay preload="metadata" src={localPlaybackUrl}>
-                          Your browser cannot play this video file.
-                        </video>
-                      </div>
-                    ) : null}
                   </li>
                 );
               })}

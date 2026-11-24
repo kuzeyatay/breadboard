@@ -1,5 +1,5 @@
 import fs from "node:fs/promises";
-import os from "node:os";
+import { claudeRoot, profileDir, profileRows } from "../../scripts/claude-profiles.mjs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 
@@ -147,18 +147,6 @@ export function claudeUsageRowsFromResponse(
   ].filter((row): row is ClaudeUsageLimitRow => row !== null);
 }
 
-function credentialPath(): string {
-  const configured = process.env.CLAUDE_CONFIG_DIR?.trim();
-  const configDir = configured
-    ? path.resolve(configured)
-    : path.join(os.homedir(), ".claude");
-  return path.join(configDir, ".credentials.json");
-}
-
-function cachePath(): string {
-  return path.join(path.dirname(credentialPath()), ".breadboard", "usage-cache.json");
-}
-
 /** Restore only a report belonging to the currently authenticated credential. */
 async function restoreUsageCache(state: ClaudeUsageCache, file: string): Promise<void> {
   try {
@@ -221,10 +209,10 @@ async function saveUsageCache(state: ClaudeUsageCache, file: string): Promise<vo
   }
 }
 
-async function readCredential() {
+async function readCredential(file: string) {
   let raw: string;
   try {
-    raw = await fs.readFile(credentialPath(), "utf8");
+    raw = await fs.readFile(file, "utf8");
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       throw new Error("Claude Code is not signed in.");
@@ -249,8 +237,8 @@ async function readCredential() {
 
 type ClaudeCredential = Awaited<ReturnType<typeof readCredential>>;
 
-function credentialKey(credential: ClaudeCredential): string {
-  return createHash("sha256").update(credentialPath()).update(credential.accessToken).digest("hex");
+function credentialKey(credential: ClaudeCredential, file: string): string {
+  return createHash("sha256").update(file).update(credential.accessToken).digest("hex");
 }
 
 /**
@@ -260,7 +248,7 @@ function credentialKey(credential: ClaudeCredential): string {
 export async function readClaudeUsageLimits(
   publicModelId: string,
   capturedAt = new Date(),
-  options: { recoverSession?: () => Promise<void> } = {},
+  options: { recoverSession?: (profile: string) => Promise<void> } = {},
 ): Promise<ClaudeUsageLimitsPayload> {
   const model = claudeSubscriptionModelId(publicModelId);
   if (!model) {
@@ -275,8 +263,15 @@ export async function readClaudeUsageLimits(
     };
   }
 
-  const credential = await readCredential();
-  const key = credentialKey(credential);
+  const root = claudeRoot();
+  const accounts = profileRows(root);
+  // When every account is resting the preferred account still has a useful reset time.
+  const profile = accounts.find(row => row.resetAt <= Date.now()) ?? accounts[0];
+  if (!profile) throw new Error("Claude Code is not signed in.");
+  const directory = profileDir(root, profile.id);
+  const credentialFile = path.join(directory, ".credentials.json");
+  const credential = await readCredential(credentialFile);
+  const key = credentialKey(credential, credentialFile);
   if (shared.__breadboardClaudeUsage?.credentialKey !== key) {
     shared.__breadboardClaudeUsage = { credentialKey: key, nextAttemptAt: 0, rateLimits: 0 };
   }
@@ -288,7 +283,7 @@ export async function readClaudeUsageLimits(
       || Date.now() < (state.nextRecoveryAt ?? 0)) return cachedUsage(state, model, new Date());
     return readClaudeUsageLimits(publicModelId, new Date(), options);
   } else {
-    const file = cachePath();
+    const file = path.join(directory, ".breadboard", "usage-cache.json");
     state.pending = (async () => {
       if (!state.restored) {
         await restoreUsageCache(state, file);
@@ -312,10 +307,10 @@ export async function readClaudeUsageLimits(
         state.nextRecoveryAt = Date.now() + SESSION_RECOVERY_INTERVAL_MS;
         await saveUsageCache(state, file);
         try {
-          await options.recoverSession();
-          const refreshed = await readCredential();
-          if (state.credentialKey !== credentialKey(refreshed)) state.snapshot = undefined;
-          state.credentialKey = credentialKey(refreshed);
+          await options.recoverSession(profile.id);
+          const refreshed = await readCredential(credentialFile);
+          if (state.credentialKey !== credentialKey(refreshed, credentialFile)) state.snapshot = undefined;
+          state.credentialKey = credentialKey(refreshed, credentialFile);
           await fetchClaudeUsage(state, refreshed, model, new Date());
         } catch {
           state.error = "Claude’s session could not be refreshed. We’ll retry automatically.";

@@ -31,7 +31,9 @@ import {
   useMemo,
   useRef,
   useState,
+  type ReactNode,
 } from "react";
+import type { ChatTextSelectionReference } from "@/lib/chat-text-selection";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import {
   queueArtifactAiEdit,
@@ -138,12 +140,18 @@ interface Props {
    */
   fastRead?: boolean;
   showNavbarFlowers?: boolean;
+  /** Inside a Garden file view, which has its own header and Bread in the page corner: no header, no PDF assistant. */
+  framed?: boolean;
   /** Enables the cross-page review handoff for an artifact-owned PDF. */
   aiEditArtifact?: ArtifactAiEditTarget;
   /** Keep highlights and assistant chats in memory only, never saved. */
   temporary?: boolean;
   /** A stable same-origin address naming this document when `sourceUrl` is not one (a blob: URL). */
   documentIdentity?: string;
+  /** Extra controls at the start of the toolbar's action group (the Garden reader's View raw). */
+  toolbarActions?: ReactNode;
+  /** In a framed view, keeps the selection menu (Ask here, highlights) and sends Ask in chat here. */
+  onAskInChat?: (selection: ChatTextSelectionReference) => void;
 }
 
 function Spinner({ className = "h-4 w-4" }: { className?: string }) {
@@ -350,9 +358,12 @@ export default function PdfViewerClient({
   embeddedInBrowser = false,
   fastRead = false,
   showNavbarFlowers = true,
+  framed = false,
   aiEditArtifact,
   temporary = false,
   documentIdentity,
+  toolbarActions,
+  onAskInChat,
 }: Props) {
   const router = useRouter();
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -1374,7 +1385,7 @@ export default function PdfViewerClient({
         }
       `}</style>
 
-      <header className="breadboard-flower-navbar relative flex flex-wrap items-center justify-between gap-3 border-b border-gray-800 px-4 py-3">
+      {!framed && <header className="breadboard-flower-navbar relative flex flex-wrap items-center justify-between gap-3 border-b border-gray-800 px-4 py-3">
         <NavbarFlowerWind showFlowers={showNavbarFlowers} />
         <div className="relative z-10 flex min-w-0 items-center gap-3">
           {!embeddedInBrowser && <button
@@ -1578,7 +1589,7 @@ export default function PdfViewerClient({
             {exporting ? "Preparing" : "Print"}
           </button>
         </div>
-      </header>
+      </header>}
 
       {aiEditArtifact && artifactReviewOpen ? (
         <div data-enter-submit-scope className="flex flex-wrap items-end gap-3 border-b border-gray-800 bg-gray-950 px-4 py-3">
@@ -1766,6 +1777,7 @@ export default function PdfViewerClient({
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          {toolbarActions}
           <button
             type="button"
             onClick={downloadEdited}
@@ -1934,7 +1946,8 @@ export default function PdfViewerClient({
           )}
         </Suspense>
         <Suspense fallback={null}>
-          {(!embeddedInBrowser || pageReady) && <PdfAssistant
+          {(!framed || onAskInChat) && (!embeddedInBrowser || pageReady) && <PdfAssistant
+            onAskInChat={onAskInChat}
             key={identity}
             documentKey={pdfAssistantDocumentKey(identity)}
             gardenSlug={assistantGardenSlug || clusterSlug || undefined}

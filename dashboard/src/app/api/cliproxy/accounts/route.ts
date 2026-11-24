@@ -6,7 +6,7 @@ import {
   deleteAccount,
 } from "@/lib/cliproxy/management";
 import { withCliproxyLease } from "@/lib/cliproxy/runtime-lease";
-import { CLAUDE_CODE_ACCOUNT_FILE } from "@/lib/claude-code";
+import { claudeProfileId } from "@/lib/claude-code";
 import { runtimeAuthorityErrorResponse } from "@/lib/runtime-v2/authority-errors.ts";
 import { requireUserId, routeErrorResponse, RouteError } from "@/lib/server-auth";
 
@@ -41,7 +41,7 @@ export async function DELETE(request: Request) {
     if (!file?.trim()) throw new RouteError(400, "A credential file is required.");
 
     const name = file.trim();
-    if (name === CLAUDE_CODE_ACCOUNT_FILE) {
+    if (claudeProfileId(name)) {
       await deleteAccount(userId, name, request.signal);
     } else {
       await withCliproxyLease(
@@ -62,13 +62,14 @@ export async function DELETE(request: Request) {
  */
 export async function PATCH(request: Request) {
   try {
-    await requireUserId();
+    const userId = await requireUserId();
 
     const payload = (await request.json().catch(() => ({}))) as { file?: unknown };
     const file = typeof payload.file === "string" ? payload.file.trim() : "";
     if (!file) throw new RouteError(400, "A credential file is required.");
 
-    await withCliproxyLease("subscription-switch", () => activateAccount(file));
+    if (claudeProfileId(file)) await activateAccount(file, userId, request.signal);
+    else await withCliproxyLease("subscription-switch", () => activateAccount(file));
     return NextResponse.json({ ok: true }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     return failure(error);

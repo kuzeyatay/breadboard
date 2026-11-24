@@ -34,6 +34,8 @@ interface Props {
   onPanelWidthChange?: (width: number) => void;
   quartzIframeRef?: RefObject<HTMLIFrameElement | null>;
   quartzOrigin?: string;
+  /** The page or file on screen: each has its own chats. */
+  pageKey?: string;
 }
 
 export default function GardenAssistantSwitch(props: Props) {

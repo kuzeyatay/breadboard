@@ -37,10 +37,12 @@ import AgentRuntimePanel from "./agent-runtime-panel";
 import VoiceTerminalSurface, { type VoiceTerminalSurfaceOptions } from "./voice-terminal-surface";
 import { voiceRequestOptions, type VoiceRequestOptions } from "@/lib/speech/voice-request";
 import StarredMessagesPanel from "./starred-messages-panel";
+import AssistantPanelHeader, { AssistantEmptyState } from "../chat/assistant-panel-header";
+import { CODE_ORIGIN_LABEL } from "@/lib/conversations/origin-label.ts";
 import WorkspaceSideChat from "./workspace-side-chat";
 import ArchivedChatsPanel from "./archived-chats-panel";
 import { initialStarredMessageTarget, type StarredMessageTarget } from "../use-starred-message-jump";
-import ChatGreetingEmptyState from "./chat-greeting-empty-state";
+import ChatGreetingEmptyState, { ChatSuggestionCards } from "./chat-greeting-empty-state";
 import { usePageSuggestions } from "../use-page-suggestions";
 import { captureWorkspaceView } from "@/lib/workspace-view";
 import ConnectModelNotice from "./connect-model-notice";
@@ -299,6 +301,8 @@ import {
   boltSlidesUserMessage,
   taskFromBoltSlidesCommand,
 } from "@/lib/bolt-slides/identity.ts";
+import { runtimeAgentRoute, withChatContext } from "@/lib/hermes/runtime-agent-intent.ts";
+import { videoCapabilityRoute } from "@/lib/hermes/video-capability.ts";
 import {
   classroomUserMessage,
   taskFromClassroomCommand,
@@ -945,6 +949,8 @@ function RuntimeTerminal({
   const openedNotificationChatRef = useRef<string | null>(null);
   const voicePresentation = presentation === "voice";
   const drawerPresentation = presentation !== "dock";
+  // Bread inside VS Code: the assistant layout (one header line, history popover, starred beside the chat), no rail.
+  const codePresentation = restoreOwnerKey === "code";
   const voiceStopRef = useRef<(() => void | Promise<void>) | null>(null);
   // Retain the selected voice pair through the full worker hand-off. Typed-chat
   // preferences stay independent, including gaps between parent and worker runs.
@@ -1455,7 +1461,7 @@ function RuntimeTerminal({
   // What a blank chat says, and the four openers under it. Both are drawn from
   // pools that step forward on the hour and narrow to what the reader has been
   // doing, so this is the only thing the empty state needs from up here.
-  const chatGreeting = useChatGreeting({ scope, temporary: temporaryChat || privateBrowser, browser: drawerPresentation, pageTitle:viewingWebsite, enabled: !voicePresentation });
+  const chatGreeting = useChatGreeting({ scope, temporary: temporaryChat || privateBrowser, browser: drawerPresentation, pageTitle:viewingWebsite, enabled: !voicePresentation, ...(codePresentation ? { garden: newChatWorkspace } : {}) });
   // The chat to come back to when the reader leaves temporary mode, so the
   // toggle behaves like a detour rather than a reset.
   const chatBeforeTemporary = useRef<string | null>(null);
@@ -1467,7 +1473,8 @@ function RuntimeTerminal({
     () => ({
       title: "New chat",
       temporary: temporaryChat,
-      browser: presentation === "drawer",
+      browser: presentation === "drawer" && restoreOwnerKey !== "code",
+      code: restoreOwnerKey === "code",
       allowPersonalContext:scope !== "public" && !privateBrowser,
       pageTitle:privateBrowser ? undefined : viewingWebsite || undefined,
       voice: voicePresentation,
@@ -1475,7 +1482,7 @@ function RuntimeTerminal({
       workspaceSlug: newChatWorkspace?.slug,
       restoreLastConversation: false,
     }),
-    [temporaryChat, presentation, voicePresentation, newChatWorkspace, viewingWebsite, privateBrowser, scope],
+    [temporaryChat, presentation, voicePresentation, newChatWorkspace, viewingWebsite, privateBrowser, scope, restoreOwnerKey],
   );
   const session = useAgentSession("dashboard_terminal", sessionCreateOptions);
   const { begin: beginAttachmentPreparation, busy: extractingAttachments, error: attachmentUploadError } =
@@ -6614,6 +6621,7 @@ const launchCareerOpsRun = useCallback(
     string[]
   >([]);
 
+  const bypassNaturalRouteRef = useRef(false);
   const submit = useCallback(
     async (textOverride?: string, voice?: import('@/lib/speech/voice-request').VoiceRequestOptions) => {
       // Nothing may be dispatched into a chat that is still arriving -- not a
@@ -6636,6 +6644,16 @@ const launchCareerOpsRun = useCallback(
         launchHopsRef.current = 0;
         launchRoundOriginsRef.current.clear();
         awaitedLaunchesRef.current.clear();
+      }
+      // The one Video capability picks the engine that fits and sends the brief
+      // as that engine's own command, so its launcher below runs unchanged.
+      const videoRoute = videoCapabilityRoute(text, {
+        hasVideo: chatAttachments.some((attachment) => attachment.type === "video"),
+      });
+      if (videoRoute) {
+        setInput("");
+        void submit(videoRoute, voice);
+        return;
       }
       // Calendar-backed class reminders need the user's actual event times, so
       // they have their own deterministic server planner before the generic
@@ -7350,6 +7368,37 @@ if (careerOpsAgent) {
         setChatAttachments([]);
         setAttachmentStatus("");
         void launchVideoUseRun(text, editableVideo, { userContent: text });
+        return;
+      }
+      // A plain request that is a runtime agent's job ("can you create a
+      // slide?") goes to that agent, sent as its command so the launcher above
+      // handles it exactly as if it had been typed. Only what a person typed or
+      // said, and never with attachments the agent would drop; the hand-off
+      // chain's own messages stay Hermes turns. If the agent cannot start, the
+      // session withdraws its preview and this message is answered here.
+      const bypassNaturalRoute = bypassNaturalRouteRef.current;
+      bypassNaturalRouteRef.current = false;
+      const agentRoute =
+        !bypassNaturalRoute && (textOverride === undefined || voice) && chatAttachments.length === 0
+          ? runtimeAgentRoute(text, "dashboard_terminal")
+          : null;
+      if (agentRoute) {
+        const recent = session.messages
+          .filter((message) => !message.internalAgentContinuation)
+          .slice(-2)
+          .map((message) => message.content);
+        setInput("");
+        session.routeNextLaunchNaturally(text, () => {
+          // The person asked for the outcome, not for this agent by command, so
+          // an agent that cannot start is not their failure to read about: the
+          // ordinary assistant answers the same message instead.
+          bypassNaturalRouteRef.current = true;
+          void submit(text, voice);
+        });
+        void submit(
+          agentRoute.needsContext ? withChatContext(agentRoute.commandText, recent) : agentRoute.commandText,
+          voice,
+        );
         return;
       }
       }
@@ -8905,6 +8954,17 @@ if (careerOpsAgent) {
         ? session.sessionId
         : null
     : null;
+  const codeChatItems = useMemo(
+    () => sidebarChats.filter((chat) => chat.titlePrefix === CODE_ORIGIN_LABEL).map((chat) => ({ id: chat.id, title: chat.title, updatedAt: chat.updatedAt, active: chat.active })),
+    [sidebarChats],
+  );
+  const searchTerminalChats = useCallback(async (query: string, signal: AbortSignal) => {
+    if (!query) return sidebarChats.filter((chat) => chat.titlePrefix !== CODE_ORIGIN_LABEL).slice(0, 10)
+      .map((chat) => ({ id: chat.id, title: `${chat.titlePrefix ? `${chat.titlePrefix}: ` : ""}${chat.title}`, updatedAt: chat.updatedAt, active: chat.active }));
+    const response = await fetch(`/api/hermes/sessions/search?${new URLSearchParams({ q: query, surface: "dashboard_terminal" })}`, { signal, cache: "no-store" });
+    const body = response.ok ? await response.json() as { results?: Array<{ id: string; title: string; updatedAt: string }> } : {};
+    return (body.results ?? []).map((hit) => ({ id: hit.id, title: hit.title, updatedAt: hit.updatedAt }));
+  }, [sidebarChats]);
   const railChats: TerminalSidebarChat[] = useMemo(
     () =>
       pendingChatId !== null
@@ -9462,6 +9522,21 @@ if (careerOpsAgent) {
         </>
       ) : null}
 
+      {codePresentation ? (
+        <AssistantPanelHeader
+          title={sidebarChats.find((chat) => chat.id === session.sessionId)?.title ?? "New chat"}
+          starredOpen={sidePanel === "starred"}
+          onToggleStarred={() => togglePanel("starred")}
+          items={codeChatItems}
+          activeId={session.sessionId}
+          currentLabel="Code chats"
+          onOpen={(id) => openHistorySession(id)}
+          searchOthers={searchTerminalChats}
+          onOpenOther={(item) => openHistorySession(item.id)}
+          onNewChat={startNewSavedChat}
+          newChatDisabled={blankSavedChatSelected}
+        />
+      ) : (
       <header
         onPointerDown={drawerPresentation ? undefined : handleResizeStart}
         onPointerMove={drawerPresentation ? undefined : handleResizeMove}
@@ -9573,6 +9648,7 @@ if (careerOpsAgent) {
           </>
         ) : null}
       </header>
+      )}
 
       {bodyRendered ? (
         // The standalone dock keeps its paper floor; the combined home gives
@@ -9597,6 +9673,7 @@ if (careerOpsAgent) {
             {/* The rail is always mounted. Closed, it keeps a narrow column of
               actions and its divider; there is no toolbar button to bring it
               back, so it must never leave the layout entirely. */}
+            {codePresentation ? null : (
             <TerminalSidebar
               surface="tinted"
               collapsed={terminalRailCollapsed}
@@ -9654,6 +9731,7 @@ if (careerOpsAgent) {
                 )
               }
             />
+            )}
 
             <div data-terminal-chat className="relative flex min-w-0 flex-1 flex-col">
               <input
@@ -10052,7 +10130,22 @@ onClearCareerOps={() => {
                   // — but the greeting itself is chosen by the hour and by what
                   // this person has actually been doing, not written into the
                   // markup.
-                  <>
+                  codePresentation ? (
+                    <>
+                      <ConnectModelNotice />
+                      <AssistantEmptyState
+                        line={newChatWorkspace ? `What should we work on in ${newChatWorkspace.name}? Ask about this code, or start writing.` : "What should we work on? Ask about this code, or start writing."}
+                        // In VS Code only openers about the open repository's garden; nothing generic.
+                        cards={<ChatSuggestionCards
+                          suggestions={(newChatWorkspace ? chatGreeting.suggestions : []).slice(0, 2)}
+                          suggestionDetails={chatGreeting.suggestionDetails}
+                          suggestionScopeKey={newChatWorkspace?.slug ?? ""}
+                          disabled={runtimeUnavailable}
+                          onSelectSuggestion={fillComposerWithPrompt}
+                        />}
+                      />
+                    </>
+                  ) : <>
                     <ConnectModelNotice />
                     <ChatGreetingEmptyState
                       greeting={chatGreeting.greeting}

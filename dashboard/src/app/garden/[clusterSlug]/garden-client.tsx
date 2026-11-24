@@ -25,6 +25,7 @@ import { useQuartzReaderLayout } from '../use-quartz-reader-layout';
 import { useQuartzNavigationProgress } from '../use-quartz-navigation-progress';
 import GardenDocumentEditorBridge from '../garden-document-editor-bridge';
 import GardenFilesBridge from '../garden-files-bridge';
+import GardenSourceView from '../garden-source-view';
 import GardenMarkdownArtifacts from '../garden-markdown-artifacts';
 
 interface Props {
@@ -169,6 +170,9 @@ export default function GardenClient({
     note && isMarkdownDocumentSlug(note, clusterSlug)
       ? { cluster: clusterSlug, slug: note, loading: true } : null,
   );
+  // The page on screen names the Assistant's history: a Garden file over it, else the Quartz note ('' = garden home).
+  const [pageSlug, setPageSlug] = useState(() => note && note !== 'index' ? note : '');
+  const [openFileId, setOpenFileId] = useState<string | null>(null);
   const [assistantSelection, setAssistantSelection] = useState<QuartzAssistantSelectionRequest | null>(null);
   const [topologyInvestigation, setTopologyInvestigation] =
     useState<QuartzTopologyInvestigationRequest | null>(null);
@@ -304,6 +308,7 @@ export default function GardenClient({
           readerUrl.hash = '';
           window.history.replaceState(window.history.state, '', readerUrl);
         }
+        setPageSlug(slug && slug !== 'index' ? slug : '');
         if (cluster) {
           setActiveCluster(cluster);
           window.dispatchEvent(new CustomEvent('sb:active-cluster', { detail: { cluster } }));
@@ -770,11 +775,13 @@ export default function GardenClient({
         onPanelWidthChange={setAssistantWidth}
         quartzIframeRef={iframeRef}
         quartzOrigin={quartzOrigin}
+        pageKey={openFileId ? `file:${openFileId}` : pageSlug}
       />
 
       <Toaster toasts={toasts} onDismiss={dismissToast} />
       <GardenDocumentEditorBridge iframeRef={iframeRef} quartzOrigin={quartzOrigin} />
-      <GardenFilesBridge iframeRef={iframeRef} quartzOrigin={quartzOrigin} initialCluster={clusterSlug} onSelectCluster={setActiveCluster} onSelectDocument={setActiveMarkdown} />
+      <GardenFilesBridge iframeRef={iframeRef} quartzOrigin={quartzOrigin} initialCluster={clusterSlug} onSelectCluster={setActiveCluster} onSelectDocument={setActiveMarkdown} onSelectFile={setOpenFileId} />
+      <GardenSourceView iframeRef={iframeRef} quartzOrigin={quartzOrigin} onAsk={setAssistantSelection} />
       <GardenMarkdownArtifacts iframeRef={iframeRef} quartzOrigin={quartzOrigin} />
     </div>
   );

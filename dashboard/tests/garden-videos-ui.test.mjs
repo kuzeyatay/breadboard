@@ -144,7 +144,7 @@ test("recordings share the document select and highlight control", () => {
   );
 });
 
-test("completed recordings live under Video & audio with exact names and a single playback transport", () => {
+test("recordings keep their transcript links and only audio has sidebar playback controls", () => {
   assert.match(source, /const mediaSourceDocuments = sourceDocuments\.filter/);
   assert.match(source, /const documentSourceDocuments = sourceDocuments\.filter/);
   assert.match(source, /mediaSources=\{gardenMediaSources\}/);
@@ -169,11 +169,8 @@ test("completed recordings live under Video & audio with exact names and a singl
     /aria-label=\{isPlaying \? `Pause \$\{filename\}` : `Play \$\{filename\}`\}/,
   );
   assert.match(componentSource, /className=\{styles\.scrubber\}/);
-  assert.match(
-    componentSource,
-    /aria-label=\{`\$\{playing \? "Close player for" : "Open player for"\} \$\{filename\}`\}/,
-  );
-  assert.match(componentSource, /<video[\s\S]*?controls autoPlay preload="metadata"/);
+  assert.doesNotMatch(componentSource, /VideoPanelIcon|Open player for|Open on YouTube|<video\b/);
+  assert.match(componentSource, /href=\{source\.href\}[\s\S]*?title="Open transcript Markdown"/);
   assert.match(
     componentSource,
     /\/api\/gardens\/\$\{encodeURIComponent\(clusterSlug\)\}\/media\//,

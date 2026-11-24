@@ -10,14 +10,14 @@ const buildSource = fs.readFileSync(
 test("every direct standalone dashboard build preserves Windows commit headroom", () => {
   assert.match(
     buildSource,
-    /import \{ assertWindowsCommitHeadroom \} from "\.\/commit-preflight\.mjs";/u,
+    /const buildMemory = dashboardBuildMemoryPlan\(\);/u,
   );
   assert.match(
     buildSource,
-    /assertWindowsCommitHeadroom\(\{\s*operation: "standalone dashboard build",\s*estimateMb: 11_264,\s*\}\);/u,
+    /assertWindowsCommitHeadroom\(\{\s*operation: "standalone dashboard build",\s*estimateMb: buildMemory\.estimateMb,\s*\}\);/u,
   );
   assert.ok(
-    buildSource.indexOf("assertWindowsCommitHeadroom") <
+    buildSource.indexOf("assertWindowsCommitHeadroom({") <
       buildSource.indexOf("beginDashboardBuild(repoRoot)"),
     "resource admission must precede any managed build-tree mutation",
   );

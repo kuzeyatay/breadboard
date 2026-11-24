@@ -14,6 +14,7 @@
 // this skill. The request has to actually ask for a three-dimensional thing.
 
 import type { HermesSurface } from "./config.ts";
+import { requestProse } from "./request-language.ts";
 
 /** The first-party skill directory name, which is also its slash command. */
 export const IMAGE_TO_3D_SKILL = "image-to-3d";
@@ -77,7 +78,8 @@ export interface ImageTo3dIntentInput {
 export function imageTo3dCommandText(
   input: ImageTo3dIntentInput,
 ): { text: string; automatic: boolean } {
-  const text = input.text.trim();
+  // Pasted code, quotes and documents are material, not the request.
+  const text = requestProse(input.text).trim();
   const prose = text.replace(ANY_URL, " ");
   const available =
     input.authenticated &&

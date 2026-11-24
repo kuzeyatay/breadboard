@@ -49,7 +49,7 @@ export default function RecallAutoStart() {
       })
       .catch(() => {
         // A missing session is deliberately quiet. Authenticated Recall state
-        // and installation errors are explained by Settings → Recall.
+        // and installation errors are explained in Screen Time's Recall settings.
       });
 
     return () => {

@@ -1,5 +1,6 @@
 import type { HermesSurface } from "./config.ts";
 import { PATENT_DISCLOSURE_SKILL } from "./patent-disclosure-source.ts";
+import { requestProse } from "./request-language.ts";
 
 const CHINESE_PATENT_TASK =
   /(?:读专利|专利(?:交底书|交底|挖掘|点|查新|检索|解读|分析|对比|答复|案例入库|政策动向)|交底书|实用新型(?:专利)?|外观设计专利|审查意见(?:通知书)?[^，。]{0,12}答复|权利要求(?:分析|解读))/u;
@@ -41,7 +42,8 @@ export function patentDisclosureCommandText(input: {
   internalContinuation?: boolean;
   priorMessages?: ReadonlyArray<{ role: string; content: string }>;
 }): { text: string; automatic: boolean } {
-  const text = input.text.trim();
+  // Pasted code, quotes and documents are material, not the request.
+  const text = requestProse(input.text).trim();
   const available = input.authenticated &&
     (input.surface === "dashboard_terminal" || input.surface === "garden_chat");
   const automatic = available && input.internalContinuation !== true &&

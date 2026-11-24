@@ -1,7 +1,7 @@
 import type { MenuItemConstructorOptions } from "electron";
 
 export type BrowserMenuAction =
-  | "profile" | "new-tab" | "new-window" | "new-private-tab" | "new-private-window" | "history" | "visited-pages" | "bookmarks" | "downloads"
+  | "new-tab" | "new-window" | "new-private-tab" | "new-private-window" | "history" | "visited-pages" | "bookmarks" | "downloads"
   | "extensions" | "appearance" | "print" | "save" | "translate" | "find"
   | "zoom-in" | "zoom-out" | "zoom-reset" | "fullscreen" | "picture-in-picture" | "settings"
   | "developer-tools" | "copy-link" | "help" | "report" | "about" | "quit";
@@ -22,8 +22,6 @@ export function browserMenuTemplate(
     id: action, label, accelerator, enabled, registerAccelerator: false, click: () => run(action),
   });
   return [
-    item("Settings", "profile"),
-    { type: "separator" },
     item("New Tab", "new-tab", "CommandOrControl+T"),
     item("New Window", "new-window", "CommandOrControl+N"),
     item("New Private Tab", "new-private-tab", "CommandOrControl+Shift+P"),
@@ -50,7 +48,7 @@ export function browserMenuTemplate(
     { ...item("Full Screen", "fullscreen", "F11"), type: "checkbox", checked: context.fullscreen },
     item("Picture in Picture", "picture-in-picture", "Alt+P", context.hasPage),
     { type: "separator" },
-    item("Settings", "settings"),
+    item("Browser settings", "settings"),
     { label: "More Tools", submenu: [
       item("Developer Tools", "developer-tools", "CommandOrControl+Shift+I", context.hasPage),
       item("Copy Page Link", "copy-link", undefined, context.hasPage),

@@ -36,6 +36,7 @@ import {
 import { isChatHighlight } from "@/lib/conversations/highlights";
 import { reconcileMaxResearchConversation } from "@/lib/max-research/conversation-persistence.ts";
 import { reconcileVibeTradingConversation } from "@/lib/vibe-trading/conversation-persistence.ts";
+import { settleDelegatedWork } from "@/lib/conversations/settle-delegated-work.ts";
 import {
   normalizeGenerativeUiResources,
   type GenerativeUiResource,
@@ -518,6 +519,7 @@ async function readSessions(
   includeUsername: boolean,
   historySurface: ChatHistorySurface,
   sessionId?: number,
+  pageKey: string | null = null,
 ) {
   let rows: ChatSessionRow[];
   const sessionFilter = sessionId === undefined ? "" : " AND cs.id = ?";
@@ -536,13 +538,13 @@ async function readSessions(
          FROM chat_sessions cs
          JOIN users u ON u.id = cs.user_id
          LEFT JOIN conversations c ON c.id = cs.conversation_id
-         WHERE cs.cluster_id = ? AND cs.history_surface = ?${sessionFilter}${historyFilter}
+         WHERE cs.cluster_id = ? AND cs.history_surface = ? AND cs.page_key = COALESCE(?, cs.page_key)${sessionFilter}${historyFilter}
          ORDER BY cs.updated_at DESC, cs.id DESC`,
       )
       .all(
         ...(sessionId === undefined
-          ? [clusterId, historySurface]
-          : [clusterId, historySurface, sessionId]),
+          ? [clusterId, historySurface, pageKey]
+          : [clusterId, historySurface, pageKey, sessionId]),
       ) as ChatSessionRow[];
   } else if (filterUserId !== null) {
     rows = db
@@ -552,13 +554,13 @@ async function readSessions(
                 c.temporary AS temporary, c.archived_at AS archived_at
          FROM chat_sessions cs
          LEFT JOIN conversations c ON c.id = cs.conversation_id
-         WHERE cs.cluster_id = ? AND cs.user_id = ? AND cs.history_surface = ?${sessionFilter}${historyFilter}
+         WHERE cs.cluster_id = ? AND cs.user_id = ? AND cs.history_surface = ? AND cs.page_key = COALESCE(?, cs.page_key)${sessionFilter}${historyFilter}
          ORDER BY cs.updated_at DESC, cs.id DESC`,
       )
       .all(
         ...(sessionId === undefined
-          ? [clusterId, filterUserId, historySurface]
-          : [clusterId, filterUserId, historySurface, sessionId]),
+          ? [clusterId, filterUserId, historySurface, pageKey]
+          : [clusterId, filterUserId, historySurface, pageKey, sessionId]),
       ) as ChatSessionRow[];
   } else {
     rows = db
@@ -568,13 +570,13 @@ async function readSessions(
                 c.temporary AS temporary, c.archived_at AS archived_at
          FROM chat_sessions cs
          LEFT JOIN conversations c ON c.id = cs.conversation_id
-         WHERE cs.cluster_id = ? AND cs.history_surface = ?${sessionFilter}${historyFilter}
+         WHERE cs.cluster_id = ? AND cs.history_surface = ? AND cs.page_key = COALESCE(?, cs.page_key)${sessionFilter}${historyFilter}
          ORDER BY cs.updated_at DESC, cs.id DESC`,
       )
       .all(
         ...(sessionId === undefined
-          ? [clusterId, historySurface]
-          : [clusterId, historySurface, sessionId]),
+          ? [clusterId, historySurface, pageKey]
+          : [clusterId, historySurface, pageKey, sessionId]),
       ) as ChatSessionRow[];
   }
 
@@ -586,6 +588,7 @@ async function readSessions(
     if (row.user_id === currentUserId && row.conversation_id != null) {
       await reconcileMaxResearchConversation(currentUserId, row.conversation_id);
       await reconcileVibeTradingConversation(currentUserId, row.conversation_id);
+      await settleDelegatedWork(currentUserId, row.conversation_id, sessionId !== undefined);
     }
   }
 
@@ -743,10 +746,11 @@ function readSessionSummaries(
   currentUserId: number,
   filterUserId: number | null,
   historySurface: ChatHistorySurface,
+  pageKey: string | null = null,
 ) {
   const rows = db
     .prepare(
-      `SELECT cs.id, cs.user_id, cs.title, cs.created_at, cs.updated_at,
+      `SELECT cs.id, cs.user_id, cs.title, cs.created_at, cs.updated_at, cs.page_key,
               u.username AS owner_username,
               c.id AS conversation_row_id, c.public_id AS conversation_public_id,
               c.pinned_at AS pinned_at, c.highlight AS highlight,
@@ -754,14 +758,14 @@ function readSessionSummaries(
        FROM chat_sessions cs
        JOIN users u ON u.id = cs.user_id
        LEFT JOIN conversations c ON c.id = cs.conversation_id
-       WHERE cs.cluster_id = ? AND cs.history_surface = ?${filterUserId !== null ? " AND cs.user_id = ?" : ""}
+       WHERE cs.cluster_id = ? AND cs.history_surface = ? AND cs.page_key = COALESCE(?, cs.page_key)${filterUserId !== null ? " AND cs.user_id = ?" : ""}
          AND COALESCE(c.temporary, 0) = 0
        ORDER BY (c.pinned_at IS NOT NULL) DESC, cs.updated_at DESC, cs.id DESC`,
     )
     .all(
       ...(filterUserId !== null
-        ? [clusterId, historySurface, filterUserId]
-        : [clusterId, historySurface]),
+        ? [clusterId, historySurface, pageKey, filterUserId]
+        : [clusterId, historySurface, pageKey]),
     ) as Array<
     ChatSessionRow & {
       conversation_row_id: number | null;
@@ -769,6 +773,7 @@ function readSessionSummaries(
       pinned_at: string | null;
       highlight: string | null;
       temporary: number | null;
+      page_key: string;
     }
   >;
 
@@ -821,12 +826,19 @@ function readSessionSummaries(
     // highlight rather than as a color the rail cannot paint.
     highlight: isChatHighlight(row.highlight) ? row.highlight : null,
     latestAssistantVersion: latestAssistantVersions.get(row.id) ?? null,
+    /** The reader page or file this Assistant chat belongs to ('' = garden home). */
+    pageKey: row.page_key,
     active:
       running.has(row.id) ||
       (row.conversation_row_id !== null &&
         externalActivity.get(row.conversation_row_id)?.externalAgentActive ===
           true),
   }));
+}
+
+/** A Quartz page slug or `file:<id>`; anything else (or nothing) means no page filter. */
+function chatPageKey(value: unknown): string | null {
+  return typeof value === "string" && value.length <= 400 && !/[\x00-\x1f]/.test(value) ? value : null;
 }
 
 export async function GET(request: Request) {
@@ -837,6 +849,8 @@ export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const clusterSlug = searchParams.get("clusterSlug")?.trim();
   const historySurface = chatHistorySurface(searchParams.get("historySurface"));
+  // The reader's Assistant asks for one page's chats; without it every chat in the garden is listed.
+  const pageKey = chatPageKey(searchParams.get("pageKey"));
   if (!clusterSlug) {
     return NextResponse.json(
       { error: "clusterSlug is required" },
@@ -880,6 +894,7 @@ export async function GET(request: Request) {
         userId,
         includePublicChats ? null : userId,
         historySurface,
+        pageKey,
       ),
     });
   }
@@ -891,6 +906,7 @@ export async function GET(request: Request) {
     includePublicChats,
     historySurface,
     sessionId,
+    pageKey,
   );
   return NextResponse.json({ sessions });
 }
@@ -923,9 +939,9 @@ export async function POST(request: Request) {
 
   const result = db
     .prepare(
-      "INSERT INTO chat_sessions (cluster_id, user_id, title, history_surface) VALUES (?, ?, ?, ?)",
+      "INSERT INTO chat_sessions (cluster_id, user_id, title, history_surface, page_key) VALUES (?, ?, ?, ?, ?)",
     )
-    .run(access.id, userId, cleanTitle(body.title), historySurface);
+    .run(access.id, userId, cleanTitle(body.title), historySurface, chatPageKey(body.pageKey) ?? "");
 
   ensureConversationForLegacyChatSession(
     Number(result.lastInsertRowid),

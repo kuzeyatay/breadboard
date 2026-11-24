@@ -551,6 +551,7 @@ export class HermesRuntimeAdapter implements AgentRuntime {
       "garden_run_proposal_validation",
       "garden_list_files",
       "garden_save_note",
+      "garden_save_file",
       "garden_decide_proposals",
       "garden_create_folder",
       "garden_move_page",

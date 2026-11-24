@@ -228,20 +228,6 @@ test("the CAD viewer releases textures, WebGL context, and canvas buffers", () =
   assert.match(viewer, /refs\.current = null;/);
 });
 
-test("the brain graph WebGL probe releases the context it only tests", () => {
-  const graph = source("src/lib/quartz-brain-graph/renderer.ts");
-
-  assert.match(
-    graph,
-    /getExtension\("WEBGL_lose_context"\)\?\.loseContext\(\);/,
-  );
-  assert.match(graph, /canvas\.width = 0;/);
-  assert.match(graph, /canvas\.height = 0;/);
-  assert.match(
-    graph,
-    /app\.destroy\(true, \{ children: true, texture: true, textureSource: true \}\);/,
-  );
-});
 
 test("the work timer closes Web Audio and disconnects finished chimes", () => {
   const timer = source("src/app/components/work-timer-shortcut.tsx");

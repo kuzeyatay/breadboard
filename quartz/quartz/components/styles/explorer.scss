@@ -679,6 +679,75 @@ html.explorer-modal-open {
   opacity: .6;
   text-align: center;
 }
+// Known types wear the Spaces badge: a coloured chip with the same letters and colours as the Spaces page.
+.explorer-file-type[data-type] {
+  flex: 0 0 auto;
+  min-width: 18px;
+  height: 16px;
+  margin-inline: 4px 5px;
+  padding: 0 3px;
+  border-radius: 4px;
+  font: 700 7.5px/16px var(--bodyFont);
+  color: #fff;
+  opacity: 1;
+  background: #8a8f98;
+}
+.explorer-file-type:is([data-type="pdf"]) { background: #c42b2b; }
+.explorer-file-type:is([data-type="docx"], [data-type="doc"], [data-type="odt"], [data-type="rtf"]) { background: #2b6fd6; font-size: 0; &::after { content: "W"; font-size: 9px; } }
+.explorer-file-type:is([data-type="xlsx"], [data-type="xls"], [data-type="csv"], [data-type="ods"]) { background: #1f8a4c; font-size: 0; &::after { content: "X"; font-size: 9px; } }
+.explorer-file-type:is([data-type="pptx"], [data-type="ppt"], [data-type="odp"]) { background: #c8462d; font-size: 0; &::after { content: "P"; font-size: 9px; } }
+.explorer-file-type:is([data-type="md"], [data-type="markdown"]) { background: #7a4fd1; }
+.explorer-file-type:is([data-type="html"], [data-type="htm"]) { background: #14857a; }
+.explorer-file-type:is([data-type="affine"]) { background: #1e96eb; font-size: 0; &::after { content: "A"; font-size: 9px; } }
+.explorer-file-type:is([data-type="png"], [data-type="jpg"], [data-type="jpeg"], [data-type="webp"]) { background: #d1477a; }
+.explorer-file-type:is([data-type="mp4"], [data-type="webm"], [data-type="mov"], [data-type="mkv"], [data-type="m4v"]) { background: #334155; color: #fff; font-size: 0; &::after { content: "\25B6\FE0E"; font-size: 8px; } }
+.explorer-file-type:is([data-type="mp3"], [data-type="m4a"], [data-type="wav"], [data-type="ogg"], [data-type="oga"], [data-type="flac"], [data-type="aac"], [data-type="opus"]) { background: #0f8f8a; font-size: 0; &::after { content: "♪"; font-size: 9px; } }
 .garden-file-open .center { visibility: hidden; }
 .garden-file-open { overflow: hidden; }
+// A file's editor fills everything right of the tree, and the tree column shrinks to the tree
+// (html raises this above readermode.scss's :root[reader-mode="on"] rules). Reader mode still
+// works with a file open: the tree tucks off the left edge as usual and the file takes the width.
+@media all and not ($mobile) {
+  html:root.garden-file-open[reader-mode="on"] .page > #quartz-body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-areas: "grid-header" "grid-center";
+    column-gap: 0;
+    padding-inline: 0;
+    & > .center { max-width: none; margin-inline: 0; }
+    & .sidebar.right, & footer { display: none; }
+  }
+  html:root.garden-file-open:not([reader-mode="on"]) .page > #quartz-body {
+    grid-template-columns: 19rem minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-areas: "grid-sidebar-left grid-header" "grid-sidebar-left grid-center";
+    column-gap: 0;
+    padding-inline: 0;
+    & .sidebar.left {
+      position: sticky;
+      inset-inline-start: auto;
+      width: auto;
+      padding-inline: 1rem .75rem;
+      clip-path: none;
+      opacity: 1;
+    }
+    & .sidebar.right, & footer { display: none; }
+  }
+}
 .explorer-file-add { flex-shrink: 0; }
+// The tree sits where reader mode puts it (1rem from the left edge), so toggling reader mode or
+// opening a file never shifts it. Reader mode's own rule is more specific and keeps the same 1rem.
+@media all and not ($mobile) {
+  .page > #quartz-body > .sidebar.left { padding-inline-start: 1rem; }
+}
+@media all and ($tablet) {
+  // Below desktop the page body already pads 1rem.
+  .page > #quartz-body > .sidebar.left { padding-inline-start: 0; }
+}
+
+// A source note is covered by its original in Breadboard (sourcePending.inline.ts marks it before
+// first paint). Its text, the map and backlinks stay hidden until the viewer opens (garden-file-open
+// then hides them) or the dashboard says there is none, which it always does; after 12s they show regardless.
+.sb-source-pending:not(.garden-file-open):not(.sb-source-raw) :is(.center, .sidebar.right, footer) { visibility: hidden; animation: sb-source-wait 0s 12s both; }
+@keyframes sb-source-wait { to { visibility: visible; } }
+

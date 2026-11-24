@@ -227,7 +227,7 @@ test("Assistant history is separate from Garden Chat history", () => {
   assert.match(assistant, /historySurface=assistant/);
   assert.match(assistant, /historySurface:\s*'assistant'/);
   assert.match(sessionsRoute, /cs\.history_surface = \?/);
-  assert.match(sessionsRoute, /history_surface\) VALUES \(\?, \?, \?, \?\)/);
+  assert.match(sessionsRoute, /history_surface, page_key\) VALUES \(\?, \?, \?, \?, \?\)/);
   assert.match(database, /"chat_sessions",\s*\n\s*"history_surface"/);
 });
 

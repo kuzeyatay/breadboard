@@ -10,6 +10,7 @@ import AuthenticationSync from "@/app/components/authentication-sync";
 import CurrentLocationAutoRefresh from "@/app/components/current-location-autorefresh";
 import DesktopTitleBar from "@/app/components/desktop-title-bar";
 import { chunkRecoveryScript } from "@/app/components/chunk-recovery";
+import { friendlyFetchScript } from "@/lib/failure-explanations";
 import { interactionHydrationBootstrapScript } from "@/app/components/interaction-hydration-bridge";
 import InteractionHydrationGate from "@/app/components/interaction-hydration-gate";
 import NavigationProgress from "@/app/components/navigation-progress";
@@ -108,6 +109,7 @@ export default function RootLayout({
         <script dangerouslySetInnerHTML={{ __html: themeInitializationScript }} />
         <script dangerouslySetInnerHTML={{ __html: desktopChromeScript }} />
         <script dangerouslySetInnerHTML={{ __html: chunkRecoveryScript }} />
+        <script dangerouslySetInnerHTML={{ __html: friendlyFetchScript }} />
         <script dangerouslySetInnerHTML={{ __html: interactionHydrationBootstrapScript }} />
       </head>
       <body className="min-h-full flex flex-col">

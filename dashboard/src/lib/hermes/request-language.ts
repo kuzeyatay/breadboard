@@ -35,7 +35,7 @@ const VERBS = [
   "move", "copy", "duplicate", "organi[sz]e", "sort", "tidy", "group", "consolidate",
   "flatten", "archive", "unzip", "zip", "extract", "relocate", "reorgani[sz]e", "restructure", "stage",
   "delete", "remove", "erase", "purge", "trash", "wipe", "discard",
-  "run", "execute", "invoke", "launch", "start", "rerun", "re-run",
+  "run", "execute", "invoke", "launch", "start", "rerun", "re-run", "install", "reinstall",
   "convert", "export", "render", "transform", "transcribe", "caption", "subtitle", "diari[sz]e", "re-?encode", "trim", "clip",
   "upload", "download", "fetch", "pull\\s+down", "grab",
   "email", "e-mail", "send", "post", "publish", "share", "submit", "tweet", "notify",

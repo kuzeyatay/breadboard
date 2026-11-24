@@ -6,13 +6,14 @@ import { AUTH_CHANGED_EVENT } from '@/lib/auth-events';
 import { RECALL_SETTINGS_CHANGED_EVENT } from './recall-autostart-lifecycle';
 import { RECOMMENDATION_REFRESH_EVENT, RECOMMENDATION_TTL_MS, type Recommendation } from '@/lib/recommendations/types';
 
-export function useRecommendations({ gardenSlug, pageTitle, enabled = true, temporary = false, scope = 'mine' }: {
+export function useRecommendations({ gardenSlug, pageTitle, enabled = true, temporary = false, scope = 'mine', surface, ownerKey }: {
   gardenSlug?: string | null; pageTitle?: string | null; enabled?: boolean;
+  surface?: 'web-search'; ownerKey?: string;
   temporary?: boolean; scope?: 'mine' | 'public';
 } = {}) {
   const [personalize] = usePersonalize();
   const allowed = enabled && personalize && !temporary && scope !== 'public';
-  const key = JSON.stringify([gardenSlug, pageTitle, allowed]);
+  const key = JSON.stringify([gardenSlug, pageTitle, allowed, surface, ownerKey]);
   const [state, setState] = useState<{ key: string; items: Recommendation[] } | null>(null);
   useEffect(() => {
     if (!allowed) return;
@@ -39,7 +40,7 @@ export function useRecommendations({ gardenSlug, pageTitle, enabled = true, temp
         const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
         const response = await fetch('/api/recommendations', { method:'POST', cache:'no-store',
           headers:{'Content-Type':'application/json'}, signal,
-          body:JSON.stringify({gardenSlug,pageTitle,localDate,localTime,timeZone,scope,temporary,personalize:true,refresh}),
+          body:JSON.stringify({gardenSlug,pageTitle,localDate,localTime,timeZone,scope,surface,temporary,personalize:true,refresh}),
         });
         if (!response.ok) throw new Error('Recommendations unavailable');
         const payload = await response.json();
@@ -81,6 +82,6 @@ export function useRecommendations({ gardenSlug, pageTitle, enabled = true, temp
       window.removeEventListener('focus', visible);
       document.removeEventListener('visibilitychange', visible);
     };
-  }, [allowed, key, gardenSlug, pageTitle, scope, temporary]);
+  }, [allowed, key, gardenSlug, pageTitle, scope, surface, temporary]);
   return allowed && state?.key === key ? state.items : [];
 }

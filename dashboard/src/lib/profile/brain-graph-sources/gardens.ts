@@ -4,6 +4,11 @@ import {
   readThoughtTopology,
   readThoughtTopologyCache,
 } from "../../thought-topology/storage.ts";
+import {
+  CHAT_LINK_FLOOR,
+  crossGardenChatLinks,
+  withViewerChats,
+} from "../../thought-topology/chat-nodes.ts";
 import type {
   ThoughtTopology,
   ThoughtTopologyCache,
@@ -28,7 +33,6 @@ import {
 import type {
   BrainEdge,
   BrainGraphFragment,
-  BrainGraphLimits,
   BrainNode,
   BrainNodeKind,
   BrainRelation,
@@ -37,11 +41,14 @@ import type {
 
 interface GardenFragment extends BrainGraphFragment {
   crossGardenDocuments: CrossGardenDocument[];
+  /** Topology node id (page or `chat:N`) -> the map's node id. */
+  brainIdByTopologyId: ReadonlyMap<string, string>;
 }
 
 function topologyNodeKind(node: TopologyNode): BrainNodeKind {
   if (node.kind === "source") return "source";
   if (node.kind === "internal-concept") return "concept";
+  if (node.kind === "chat") return "conversation";
   return "page";
 }
 
@@ -58,7 +65,6 @@ function gardenFragment(
   context: BrainGraphAccessContext,
   scope: BrainScope,
   garden: AuthorizedGarden,
-  perGardenLimit: number,
 ): GardenFragment {
   const nodes: BrainNode[] = [];
   const edges: BrainEdge[] = [];
@@ -119,6 +125,7 @@ function gardenFragment(
       nodes,
       edges,
       crossGardenDocuments: [],
+      brainIdByTopologyId: new Map(),
       warnings: [{
         source: "thought-topology",
         code: `content_path_unavailable:${garden.slug}`,
@@ -127,12 +134,14 @@ function gardenFragment(
     };
   }
 
-  const topology = readThoughtTopology(path.join(contentRoot, garden.slug));
-  if (!topology) {
+  const gardenDir = path.join(contentRoot, garden.slug);
+  const stored = readThoughtTopology(gardenDir);
+  if (!stored) {
     return {
       nodes,
       edges,
       crossGardenDocuments: [],
+      brainIdByTopologyId: new Map(),
       warnings: [{
         source: "thought-topology",
         code: `topology_unavailable:${garden.slug}`,
@@ -141,14 +150,21 @@ function gardenFragment(
     };
   }
 
-  const cache = readThoughtTopologyCache(path.join(contentRoot, garden.slug));
+  // The viewer's own chats in this Garden, beside the pages they cited or
+  // asked about — the same nodes the Garden's own map draws.
+  const topology = withViewerChats(stored, {
+    userId: context.userId,
+    clusterId: garden.id,
+    gardenSlug: garden.slug,
+    gardenDir,
+  });
+  const cache = readThoughtTopologyCache(gardenDir);
   return topologyFragment(topology, cache, {
     nodes,
     edges,
     garden,
     gardenId,
     organizationId: org?.publicId,
-    perGardenLimit,
   });
 }
 
@@ -161,7 +177,6 @@ function topologyFragment(
     garden: AuthorizedGarden;
     gardenId: string;
     organizationId?: string;
-    perGardenLimit: number;
   },
 ): GardenFragment {
   const { garden, gardenId, organizationId } = context;
@@ -176,13 +191,7 @@ function topologyFragment(
     if (!folder.path) folderIdByTopologyId.set(folder.id, gardenId);
   }
   const folders = allFolders.filter((folder) => Boolean(folder.path));
-  const pageBudget = Math.max(0, context.perGardenLimit - folders.length - 1);
-  const pages = [...topology.nodes]
-    .sort(
-      (left, right) =>
-        right.wordCount - left.wordCount || left.slug.localeCompare(right.slug),
-    )
-    .slice(0, pageBudget);
+  const pages = topology.nodes;
 
   for (const folder of folders) {
     const nodeId = knowledgeNodeId(garden.slug, "folder", folder.path || folder.id);
@@ -240,13 +249,16 @@ function topologyFragment(
       kind,
       label: page.title,
       subtitle: page.summary.text || undefined,
-      href: `/garden/${encodeURIComponent(garden.slug)}?note=${encodeURIComponent(page.slug)}`,
+      href: kind === "conversation"
+        ? `/gardens/${encodeURIComponent(garden.slug)}?chat=${encodeURIComponent(page.id.replace(/^chat:/, ""))}`
+        : `/garden/${encodeURIComponent(garden.slug)}?note=${encodeURIComponent(page.slug)}`,
       origins: ["canonical", "thought-topology"],
       organizationId,
       gardenId,
       gardenSlug: garden.slug,
       updatedAt: topology.build.generatedAt,
-      expandable: kind !== "concept",
+      expandable: false,
+      activityTimes: page.activityTimes,
       metrics: { wordCount: page.wordCount },
       metadata: {
         graphModel: "thought-topology",
@@ -256,7 +268,8 @@ function topologyFragment(
       },
     });
     const cached = cache?.nodes[page.id];
-    crossGardenDocuments.push({
+    // A chat links to its own Garden's pages only.
+    if (kind !== "conversation") crossGardenDocuments.push({
       id: nodeId,
       folderId: folderIdByTopologyId.get(page.folderId) ?? gardenId,
       gardenSlug: garden.slug,
@@ -305,6 +318,7 @@ function topologyFragment(
       origin,
       explicit: edge.origin !== "inferred",
       confidence: edge.score,
+      changedAt: edge.changedAt,
       threshold: edge.threshold ?? topology.build.threshold,
       weight: edge.score,
       organizationId,
@@ -320,7 +334,7 @@ function topologyFragment(
     nodes,
     edges,
     crossGardenDocuments,
-    truncated: topology.nodes.length > pages.length,
+    brainIdByTopologyId: pageIdByTopologyId,
     warnings: topology.build.state === "ready"
       ? []
       : [{
@@ -336,12 +350,9 @@ export const gardensBrainSource = {
   buildOverview(
     context: BrainGraphAccessContext,
     scope: BrainScope,
-    limits: BrainGraphLimits,
   ): BrainGraphFragment {
     const gardens = gardensForScope(context, scope);
-    const fragments = gardens
-      .slice(0, limits.maxGardens)
-      .map((garden) => gardenFragment(context, scope, garden, limits.maxKnowledgeNodesPerGarden));
+    const fragments = gardens.map((garden) => gardenFragment(context, scope, garden));
     const crossGardenEdges = buildCrossGardenEdges(
       fragments.flatMap((fragment) => fragment.crossGardenDocuments),
     );
@@ -350,28 +361,51 @@ export const gardensBrainSource = {
       edges: [
         ...fragments.flatMap((fragment) => fragment.edges),
         ...crossGardenEdges,
+        ...crossGardenChatEdges(context, gardens, fragments),
       ],
       warnings: fragments.flatMap((fragment) => fragment.warnings ?? []),
-      truncated:
-        gardens.length > limits.maxGardens || fragments.some((fragment) => fragment.truncated),
     };
   },
-  expand(
-    context: BrainGraphAccessContext,
-    scope: BrainScope,
-    nodeId: string,
-    _depth: number,
-    limits: BrainGraphLimits,
-  ): BrainGraphFragment {
-    const garden = gardensForScope(context, scope).find(
-      (candidate) => gardenNodeId(candidate.slug) === nodeId,
-    );
-    if (!garden) return { nodes: [], edges: [] };
-    return gardenFragment(
-      context,
-      scope,
-      garden,
-      Math.min(900, limits.maxKnowledgeNodesPerGarden * 2),
-    );
-  },
 };
+
+/** A chat in one Garden to the closest pages of the viewer's other Gardens. */
+function crossGardenChatEdges(
+  context: BrainGraphAccessContext,
+  gardens: readonly AuthorizedGarden[],
+  fragments: readonly GardenFragment[],
+): BrainEdge[] {
+  const contentRoot = process.env.QUARTZ_CONTENT_PATH;
+  if (!contentRoot) return [];
+  const bySlug = new Map(gardens.map((garden, index) => [garden.slug, { garden, fragment: fragments[index] }]));
+  const links = crossGardenChatLinks(
+    context.userId,
+    gardens.map((garden) => ({
+      clusterId: garden.id,
+      slug: garden.slug,
+      gardenDir: path.join(contentRoot, garden.slug),
+    })),
+  );
+  return links.flatMap((link) => {
+    const from = bySlug.get(link.fromSlug);
+    const to = bySlug.get(link.toSlug);
+    const source = from?.fragment.brainIdByTopologyId.get(`chat:${link.chatId}`);
+    const target = to?.fragment.brainIdByTopologyId.get(link.pageId);
+    if (!from || !to || !source || !target) return [];
+    const asked = link.question.length > 140 ? `${link.question.slice(0, 139)}…` : link.question;
+    return [{
+      id: brainEdgeId(source, target, "related_to", "thought-topology"),
+      source,
+      target,
+      relation: "related_to" as const,
+      origin: "thought-topology" as const,
+      explicit: false,
+      confidence: link.score,
+      threshold: CHAT_LINK_FLOOR,
+      weight: link.score,
+      semanticRelation: "cross-garden-related",
+      direction: "undirected",
+      explanation: `You asked "${asked}" in ${from.garden.name}; this page in ${to.garden.name} is close to it.`,
+      evidence: ["Cross-Garden match: " + from.garden.name + " ↔ " + to.garden.name, "Close to a question in this chat"],
+    }];
+  });
+}

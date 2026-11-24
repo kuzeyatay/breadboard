@@ -82,6 +82,10 @@ export interface ScheduledChatJobRow {
   lease_owner: string | null;
   /** When that claim stops being believed. See `LEASE_SECONDS`. */
   lease_expires_at: string | null;
+  /** First occurrence a retried run is still catching up on, else null. */
+  missed_due_at: string | null;
+  /** Set on claimed rows only: the occurrence this run is for. */
+  due_at?: string;
 }
 
 /**
@@ -504,6 +508,7 @@ export class ScheduledChatJobStore {
         if (updated.changes > 0) {
           claimed.push({
             ...job,
+            due_at: job.missed_due_at ?? job.next_run_at,
             next_run_at: nextRunAt,
             enabled: job.one_shot === 1 ? 0 : job.enabled,
             lease_owner: this.owner,
@@ -565,7 +570,9 @@ export class ScheduledChatJobStore {
       this.db
         .prepare(
           `UPDATE scheduled_chat_jobs
-           SET last_run_at = ?, last_status = ?, last_error = ?, last_conversation_id = ?,
+           SET last_run_at = ?, last_status = ?, last_error = ?,
+               last_conversation_id = COALESCE(?, last_conversation_id),
+               missed_due_at = CASE WHEN ? = 'ok' THEN NULL ELSE missed_due_at END,
                enabled = CASE WHEN ? = 'met' THEN 0 ELSE enabled END,
                run_count = run_count + 1, updated_at = datetime('now')
            WHERE id = ?`,
@@ -575,12 +582,31 @@ export class ScheduledChatJobStore {
           outcome.status,
           outcome.error ? outcome.error.slice(0, 500) : null,
           outcome.conversationId ?? null,
+          outcome.status,
           outcome.objectiveDecision ?? null,
           id,
         );
       this.releaseLease(id);
     });
     record();
+  }
+
+  /**
+   * Try a run that could not start again soon, instead of waiting for the next
+   * occurrence (a daily job missed at boot would otherwise skip a whole day).
+   * Never pushes past the regular next occurrence; remembers the original due
+   * time so the eventual run knows it is late.
+   */
+  retrySoon(id: number, dueAt: string, retryAt: Date): boolean {
+    const at = retryAt.toISOString();
+    return this.db
+      .prepare(
+        `UPDATE scheduled_chat_jobs
+         SET next_run_at = ?, enabled = 1, missed_due_at = COALESCE(missed_due_at, ?),
+             updated_at = datetime('now')
+         WHERE id = ? AND (one_shot = 1 OR next_run_at > ?)`,
+      )
+      .run(at, dueAt, id, at).changes > 0;
   }
 
   /** How many of a user's schedules are currently armed. */

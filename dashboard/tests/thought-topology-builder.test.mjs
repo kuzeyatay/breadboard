@@ -532,7 +532,7 @@ test("recorded source anchors connect learning pages and notes even without sema
   assert.equal(edges.some((edge) => edge.evidence.some((item) => /missing|conflicting/.test(item.label))), false);
   const bookEdge = edges.find((edge) => edge.target === "page:book");
   assert.equal(bookEdge.evidence.length, 2, "multiple anchors produce one source connection");
-  assert.match(bookEdge.explanation.text, /recorded source references/);
+  assert.match(bookEdge.explanation.text, /lists the second as a source/);
   assert.equal(bookEdge.relationType, "derives-from");
   const { planThoughtTopology } = await import("../../quartz/quartz/components/scripts/thoughtTopologyLayout.ts");
   const plan = planThoughtTopology(artifact, { maxConnectionsPerNode: 5 });

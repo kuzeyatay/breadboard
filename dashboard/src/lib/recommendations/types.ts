@@ -37,6 +37,7 @@ export interface Recommendation {
   id: string;
   prompt: string;
   sourceLabel: string;
+  reason?: string;
   sourceIds: string[];
   voice?: VoiceOpenerAssessment;
   /** 0-100ish; higher is more useful now. */
@@ -49,6 +50,7 @@ export interface Recommendation {
 }
 
 export interface RecommendationContext {
+  surface?: 'web-search';
   documentConversationId?:string;
   gardenSlug?: string;
   pageTitle?: string;
@@ -134,7 +136,10 @@ function scoreRecommendation(item: Recommendation, known: ReadonlyMap<string, Re
   const source = sources[0];
   const family = source.source === 'outlook' ? 'gmail' : source.source === 'calendar' ? (source.calendar?.kind ?? 'event') : source.source;
   const priority = recommendationPriority(source, context);
-  return { item: { ...item, ...(source.lesson ? {lesson:source.lesson}:{}), usefulness: recommendationUsefulness(priority) }, family,
+  const webReason = context.surface === 'web-search' && source.source === 'recall'
+    ? `Recall suggested this because you recently viewed “${source.title}”.`
+    : undefined;
+  return { item: { ...item, ...(webReason ? { reason: webReason } : {}), ...(source.lesson ? {lesson:source.lesson}:{}), usefulness: recommendationUsefulness(priority) }, family,
     score: priority + (sources.length > 1 ? 12 : 0), subjects: recommendationSubjects(item, known) };
 }
 

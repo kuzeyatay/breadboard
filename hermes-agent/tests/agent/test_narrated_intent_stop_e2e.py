@@ -154,3 +154,48 @@ def test_persistent_announcer_falls_back_after_the_budget(agent_env):
     assert len(_chat_requests(handler)) == 3
     assert result.get("final_response") == "Sure, I'll put the outline together now."
     assert len(interims) == 2
+
+
+# ── Hand-back stops (Breadboard chat 1211, 2026-11-20) ─────────────────
+HANDBACK = (
+    "I can’t access Downloads or run the installer from this chat. Open the "
+    "PowerWorld Simulator 24 installer from your Windows Downloads folder and "
+    "follow the setup wizard."
+)
+INSTALLED = "Installed PowerWorld Simulator 24 from Downloads; the Start menu entry launches it."
+
+
+def test_handback_with_host_tools_is_nudged_once(agent_env):
+    agent, handler, interims = agent_env
+    agent.valid_tool_names = {"terminal_execute_command"}
+    handler.response_queue.extend([HANDBACK, INSTALLED])
+
+    result = agent.run_conversation("downloaded", conversation_history=[], task_id="t")
+
+    assert result.get("final_response") == INSTALLED
+    assert len(_chat_requests(handler)) == 2
+    nudge = _chat_requests(handler)[1]["messages"][-1]
+    assert nudge["role"] == "user" and "Do the step yourself" in nudge["content"]
+    assert [text for text, _ in interims] == [HANDBACK]
+
+
+def test_handback_without_host_tools_is_left_alone(agent_env):
+    agent, handler, interims = agent_env
+    agent.valid_tool_names = set()
+    handler.response_queue.append(HANDBACK)
+
+    result = agent.run_conversation("downloaded", conversation_history=[], task_id="t")
+
+    assert result.get("final_response") == HANDBACK
+    assert len(_chat_requests(handler)) == 1
+
+
+def test_repeated_handback_stops_after_one_nudge(agent_env):
+    agent, handler, interims = agent_env
+    agent.valid_tool_names = {"computer_use"}
+    handler.response_queue.extend([HANDBACK, HANDBACK, INSTALLED])
+
+    result = agent.run_conversation("downloaded", conversation_history=[], task_id="t")
+
+    assert len(_chat_requests(handler)) == 2
+    assert result.get("final_response") == HANDBACK

@@ -33,6 +33,7 @@ const EMBED_BATCH = 16;
 export interface ChatTurn {
   /** conversation_messages.id of the question; the vector's key. */
   messageId: number;
+  askedAt?: number;
   /** client_message_id of the turn's last answer, for opening the chat there. */
   answerId: string | null;
   question: string;
@@ -44,6 +45,7 @@ export interface GardenChat {
   id: number;
   title: string;
   turns: ChatTurn[];
+  activityTimes?: number[];
 }
 
 export interface ChatPageVector {
@@ -54,16 +56,23 @@ export interface ChatPageVector {
 
 const flat = (value: string) => value.replace(/\s+/g, " ").trim();
 
-function chatTurns(conversationId: number, title: string, gardenSlug: string): ChatTurn[] {
+function chatTurns(conversationId: number, title: string, gardenSlug: string) {
   const rows = db.prepare(
-    `SELECT id, role, content, client_message_id AS clientId FROM conversation_messages
+    `SELECT id, role, content, created_at AS createdAt, client_message_id AS clientId FROM conversation_messages
       WHERE conversation_id = ? ORDER BY order_index`,
-  ).all(conversationId) as Array<{ id: number; role: string; content: string | null; clientId: string | null }>;
+  ).all(conversationId) as Array<{ id: number; role: string; content: string | null; createdAt: string; clientId: string | null }>;
+  const activityTimes: number[] = [];
   const turns: Array<ChatTurn & { answer: string }> = [];
   for (const row of rows) {
     if (row.role === "user") {
+      const at = Date.parse(row.createdAt.includes("T") ? row.createdAt : row.createdAt.replace(" ", "T") + "Z");
+      if (Number.isFinite(at)) {
+        const last = activityTimes.at(-1);
+        if (last == null || at - last >= 30 * 60_000) activityTimes.push(at);
+        else activityTimes[activityTimes.length - 1] = Math.max(last, at);
+      }
       const question = flat(row.content ?? "");
-      if (question) turns.push({ messageId: row.id, answerId: null, question, text: "", cited: [], answer: "" });
+      if (question) turns.push({ messageId: row.id, askedAt: Number.isFinite(at) ? at : undefined, answerId: null, question, text: "", cited: [], answer: "" });
     } else if (row.role === "assistant" && turns.length) {
       const turn = turns[turns.length - 1];
       const content = row.content ?? "";
@@ -72,7 +81,7 @@ function chatTurns(conversationId: number, title: string, gardenSlug: string): C
       if (row.clientId) turn.answerId = row.clientId;
     }
   }
-  return turns
+  const completed = turns
     .filter((turn) => turn.answer.trim())
     .slice(-TURNS_PER_CHAT)
     .map(({ answer, ...turn }) => ({
@@ -80,6 +89,7 @@ function chatTurns(conversationId: number, title: string, gardenSlug: string): C
       cited: [...new Set(turn.cited)],
       text: `${title}. ${turn.question.slice(0, QUESTION_CHARS)}. ${answer.trim()}`.slice(0, TURN_TEXT_CHARS),
     }));
+  return { turns: completed, activityTimes: activityTimes.filter(t => t >= Date.now() - 7 * 86400000) };
 }
 
 /** The viewer's kept (non-temporary) chats in one Garden, turn by turn. */
@@ -95,8 +105,8 @@ export function readGardenChats(userId: number, clusterId: number, gardenSlug: s
       "SELECT content FROM conversation_messages WHERE conversation_id = ? AND role = 'user' ORDER BY order_index LIMIT 1",
     ).get(chat.conversationId) as { content: string | null } | undefined)?.content;
     const title = flat(chat.title ?? "") || flat(firstQuestion ?? "").slice(0, 80);
-    const turns = chatTurns(chat.conversationId, title, gardenSlug);
-    return turns.length ? [{ id: chat.id, title, turns }] : [];
+    const { turns, activityTimes } = chatTurns(chat.conversationId, title, gardenSlug);
+    return turns.length ? [{ id: chat.id, title, turns, activityTimes }] : [];
   });
 }
 
@@ -202,6 +212,7 @@ export function addChatNodes(
         source: id,
         target: link.page.id,
         origin: link.origin,
+        changedAt: link.turn.askedAt,
         score: link.score,
         threshold: floor,
         components: { embedding: link.origin === "inferred" ? link.score : 0, concept: 0, lexical: 0 },
@@ -233,6 +244,7 @@ export function addChatNodes(
       folderId: CHATS_FOLDER_ID,
       title: chat.title,
       kind: "chat",
+      activityTimes: chat.activityTimes,
       knowledgeType: "chat",
       contentHash: stableHashText(...chat.turns.map((turn) => turn.text)),
       summary: { state: "ready", text: chatSummary(chat) },
@@ -317,7 +329,7 @@ export function embedGardenChatAfterAnswer(conversationId: number): void {
         WHERE cs.conversation_id = ? AND COALESCE(c.temporary, 0) = 0 LIMIT 1`,
     ).get(conversationId) as { title: string | null; slug: string } | undefined;
     if (!chat) return;
-    const turns = chatTurns(conversationId, flat(chat.title ?? ""), chat.slug);
+    const { turns } = chatTurns(conversationId, flat(chat.title ?? ""), chat.slug);
     inBackground(`conversation:${conversationId}`, () => embedChatTurns(turns));
   } catch (error) {
     console.warn(`[topology-chats] could not queue embedding: ${error instanceof Error ? error.message : String(error)}`);
@@ -330,6 +342,20 @@ export async function settleChatEmbedding(): Promise<void> {
 }
 
 // --- The route's entry point -------------------------------------------------------
+
+/** One aggregate that moves whenever a Garden's chats, their messages or their
+ * stored turn vectors do; cheap enough to ask on every map load. */
+function chatMarker(userId: number, clusterId: number): unknown {
+  return db.prepare(
+    `SELECT COUNT(m.id) AS messages, MAX(m.id) AS lastId, SUM(LENGTH(m.content)) AS chars, COUNT(v.message_id) AS vectors,
+            COUNT(DISTINCT cs.id) AS chats, MAX(cs.updated_at) AS renamed, GROUP_CONCAT(DISTINCT cs.title) AS titles
+       FROM chat_sessions cs
+       JOIN conversations c ON c.id = cs.conversation_id
+       LEFT JOIN conversation_messages m ON m.conversation_id = cs.conversation_id
+       LEFT JOIN thought_topology_chat_turn_vectors v ON v.message_id = m.id
+      WHERE cs.cluster_id = ? AND cs.user_id = ? AND COALESCE(c.temporary, 0) = 0`,
+  ).get(clusterId, userId);
+}
 
 const pageCache = new Map<string, { mtimeMs: number; model: string; prepared: ReturnType<typeof preparePages> }>();
 const viewerCache = new Map<string, { signature: string; apply: (topology: ThoughtTopology) => ThoughtTopology }>();
@@ -371,15 +397,7 @@ export function withViewerChats(
     // chats; nothing changes between loads unless a message, a stored vector
     // or the map does, which this one aggregate query notices.
     const pages = topology.build.retrievalMode === "semantic-vector" ? preparedPages(input.gardenDir) : null;
-    const marker = db.prepare(
-      `SELECT COUNT(m.id) AS messages, MAX(m.id) AS lastId, SUM(LENGTH(m.content)) AS chars, COUNT(v.message_id) AS vectors,
-              COUNT(DISTINCT cs.id) AS chats, MAX(cs.updated_at) AS renamed, GROUP_CONCAT(DISTINCT cs.title) AS titles
-         FROM chat_sessions cs
-         JOIN conversations c ON c.id = cs.conversation_id
-         LEFT JOIN conversation_messages m ON m.conversation_id = cs.conversation_id
-         LEFT JOIN thought_topology_chat_turn_vectors v ON v.message_id = m.id
-        WHERE cs.cluster_id = ? AND cs.user_id = ? AND COALESCE(c.temporary, 0) = 0`,
-    ).get(input.clusterId, input.userId);
+    const marker = chatMarker(input.userId!, input.clusterId);
     const key = `${input.userId}:${input.clusterId}`;
     const signature = JSON.stringify([marker, topology.sourceRevision, topology.build.generatedAt, pages?.mtimeMs ?? 0]);
     const cached = viewerCache.get(key);
@@ -407,5 +425,97 @@ export function withViewerChats(
   } catch (error) {
     console.warn(`[topology-chats] skipped for ${input.gardenSlug}: ${error instanceof Error ? error.message : String(error)}`);
     return topology;
+  }
+}
+
+// --- Chats across Gardens -----------------------------------------------------
+
+/** Closest pages of other Gardens one chat may link to. */
+const CROSS_GARDEN_LINKS_PER_CHAT = 2;
+
+export interface CrossGardenChatLink {
+  chatId: number;
+  fromSlug: string;
+  toSlug: string;
+  /** Topology node id of the page in the other Garden. */
+  pageId: string;
+  score: number;
+  question: string;
+}
+
+const crossGardenCache = new Map<string, { signature: string; links: CrossGardenChatLink[] }>();
+
+/**
+ * Lines from the viewer's chats to the closest pages of their other Gardens, so
+ * a question asked in one Garden reaches the page that answers it in another.
+ * Scored as inside a Garden — each turn's stored vector, centred with the
+ * target Garden's own centering, against the same 0.45 floor — but against
+ * whole pages only (no chapters), which keeps the scan to turns × pages.
+ * Recomputed only when a Garden's chats or a target's page vectors change.
+ * Never embeds and never throws.
+ */
+export function crossGardenChatLinks(
+  userId: number,
+  gardens: ReadonlyArray<{ clusterId: number; slug: string; gardenDir: string }>,
+): CrossGardenChatLink[] {
+  if (gardens.length < 2) return [];
+  try {
+    const targets = gardens.flatMap((garden) => {
+      const pages = preparedPages(garden.gardenDir);
+      if (!pages) return [];
+      return [{ slug: garden.slug, pages, units: pages.prepared.units.filter((unit) => unit.label === null) }];
+    });
+    const targetSignature = JSON.stringify(targets.map((target) => [target.slug, target.pages.mtimeMs]));
+    const links: CrossGardenChatLink[] = [];
+    for (const source of gardens) {
+      const key = `${userId}:${source.clusterId}`;
+      const signature = JSON.stringify([chatMarker(userId, source.clusterId), targetSignature]);
+      const cached = crossGardenCache.get(key);
+      if (cached?.signature === signature) {
+        links.push(...cached.links);
+        continue;
+      }
+      const found: CrossGardenChatLink[] = [];
+      for (const chat of readGardenChats(userId, source.clusterId, source.slug)) {
+        const vectorsByModel = new Map<string, Map<number, number[]>>();
+        const best = new Map<string, CrossGardenChatLink>();
+        for (const target of targets) {
+          if (target.slug === source.slug) continue;
+          let vectors = vectorsByModel.get(target.pages.model);
+          if (!vectors) {
+            vectors = readTurnVectors(chat.turns, target.pages.model);
+            vectorsByModel.set(target.pages.model, vectors);
+          }
+          for (const turn of chat.turns) {
+            const vector = vectors.get(turn.messageId);
+            if (!vector?.length) continue;
+            const centred = target.pages.prepared.center(vector);
+            for (const unit of target.units) {
+              const score = dot(centred, unit.vector);
+              const pageKey = `${target.slug}\0${unit.nodeId}`;
+              if (score >= CHAT_LINK_FLOOR && score > (best.get(pageKey)?.score ?? -1)) {
+                best.set(pageKey, {
+                  chatId: chat.id,
+                  fromSlug: source.slug,
+                  toSlug: target.slug,
+                  pageId: unit.nodeId,
+                  score,
+                  question: turn.question,
+                });
+              }
+            }
+          }
+        }
+        found.push(
+          ...[...best.values()].sort((left, right) => right.score - left.score).slice(0, CROSS_GARDEN_LINKS_PER_CHAT),
+        );
+      }
+      crossGardenCache.set(key, { signature, links: found });
+      links.push(...found);
+    }
+    return links;
+  } catch (error) {
+    console.warn(`[topology-chats] cross-Garden links skipped: ${error instanceof Error ? error.message : String(error)}`);
+    return [];
   }
 }

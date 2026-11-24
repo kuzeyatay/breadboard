@@ -1,7 +1,7 @@
 "use client";
 
 import { Check, List, Trash2, GripHorizontal, Maximize2, Minimize2, Minus, Plus, StickyNote } from "lucide-react";
-import { useEffect, useId, useLayoutEffect, useRef, useState, type RefObject } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ClipboardEvent, type RefObject } from "react";
 import * as Menu from "@radix-ui/react-dropdown-menu";
 import { useTerminalNotes } from "./use-terminal-notes";
 import { BrowserSketchOutline } from "@/app/browser/browser-home-widgets";
@@ -10,6 +10,8 @@ import { useNotepadPosition } from "./use-notepad-position";
 import { useTerminalNote } from "./use-terminal-note";
 import styles from "./new-tab-notepad.module.css";
 
+const NOTE_IMAGE_RE = /!\[[^\]]*\]\((\/api\/profile\/terminal-note\/image\?id=[a-f0-9]{32})\)/g;
+
 export default function NewTabNotepad({ ownerKey, topAnchorRef }: { ownerKey: string; topAnchorRef?: RefObject<HTMLElement | null> }) {
   const viewport = useRef<HTMLDivElement>(null);
   const { panelRef, ready, dragging, collapsed, enlarged, handleProps, open, toggleCollapsed, toggleEnlarged } = useNotepadPosition(ownerKey);
@@ -17,6 +19,26 @@ export default function NewTabNotepad({ ownerKey, topAnchorRef }: { ownerKey: st
   const note = useTerminalNote(ownerKey, notes.selectedId);
   const [menuOpen, setMenuOpen] = useState(false), [confirmDelete, setConfirmDelete] = useState(false);
   const titleRef = useRef<HTMLInputElement>(null), focusEditor = useRef(false);
+  const editorRef = useRef<HTMLTextAreaElement>(null), zoomRef = useRef<HTMLDialogElement>(null);
+  const [zoom, setZoom] = useState<string | null>(null), [pasteError, setPasteError] = useState("");
+  useEffect(() => { if (zoom) zoomRef.current?.showModal(); }, [zoom]);
+  const images = [...note.note.body.matchAll(NOTE_IMAGE_RE)].map(match => match[1]);
+  // Ctrl+V of an image uploads it and drops a ![image](url) marker at the cursor.
+  const pasteImage = async (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const file = [...event.clipboardData.files].find(item => item.type.startsWith("image/"));
+    if (!file) return;
+    event.preventDefault(); setPasteError("");
+    const { selectionStart: start, selectionEnd: end } = event.currentTarget;
+    try {
+      const response = await fetch("/api/profile/terminal-note/image", { method: "POST", headers: { "Content-Type": file.type }, body: file });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || typeof data.url !== "string") throw new Error(data.error || "Couldn’t paste that image.");
+      const body = editorRef.current?.value ?? note.note.body, marker = `![image](${data.url})`;
+      const next = body.slice(0, start) + marker + body.slice(end);
+      if (next.length > NOTE_BODY_LIMIT) throw new Error("This note is full.");
+      note.edit("body", next);
+    } catch (error) { setPasteError(error instanceof Error ? error.message : "Couldn’t paste that image."); }
+  };
   useEffect(() => {
     if (focusEditor.current && !menuOpen && !collapsed && note.status !== "loading") {
       focusEditor.current = false;
@@ -118,9 +140,18 @@ export default function NewTabNotepad({ ownerKey, topAnchorRef }: { ownerKey: st
         {notes.selectedId ? <>
         <input ref={titleRef} disabled={note.status === "loading" || note.status === "deleted"} className={styles.title} aria-label="Note title" placeholder="Title" value={note.note.title} maxLength={NOTE_TITLE_LIMIT}
           onChange={event => note.edit("title", event.target.value)} onBlur={note.flush} />
-        <textarea disabled={note.status === "loading" || note.status === "deleted"} className={styles.editor} aria-label="Note text" placeholder="Start writing…" value={note.note.body} maxLength={NOTE_BODY_LIMIT}
+        <textarea ref={editorRef} onPaste={event => { void pasteImage(event); }} disabled={note.status === "loading" || note.status === "deleted"} className={styles.editor} aria-label="Note text" placeholder="Start writing…" value={note.note.body} maxLength={NOTE_BODY_LIMIT}
           spellCheck onChange={event => note.edit("body", event.target.value)} onBlur={note.flush}
           onKeyDown={event => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") { event.preventDefault(); note.flush(); } }} />
+        {images.length > 0 && <div className={styles.images}>
+          {images.map((src, index) => <button key={`${src}-${index}`} type="button" className={styles.thumb} aria-label="Enlarge image" onClick={() => setZoom(src)}>
+            <img src={src} alt="" loading="lazy" />
+          </button>)}
+        </div>}
+        {pasteError && <p className={styles.menuHint} role="alert">{pasteError}</p>}
+        <dialog ref={zoomRef} className={styles.zoom} onClose={() => setZoom(null)} onClick={() => zoomRef.current?.close()}>
+          {zoom && <img src={zoom} alt="Pasted image" />}
+        </dialog>
         {note.status === "deleted" ? <div className={styles.error} role="alert">
           <span>This note was deleted in another tab. You can keep this copy as a new note.</span>
           <button type="button" disabled={notes.busy} onClick={() => { void createNote(true); }}>Save as new note</button>

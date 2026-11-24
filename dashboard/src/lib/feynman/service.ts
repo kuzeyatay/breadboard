@@ -55,12 +55,25 @@ function publicFetch(fetchImpl: typeof fetch, signal: AbortSignal): typeof fetch
       !["api.crossref.org", "export.arxiv.org", "www.ebi.ac.uk"].includes(url.hostname)) {
       throw new Error("Feynman refused a source outside its public catalog allowlist.");
     }
-    const requestSignal = AbortSignal.any([signal, AbortSignal.timeout(20_000), ...(init?.signal ? [init.signal] : [])]);
-    const response = await fetchImpl(url.toString(), {
+    const requestSignal = AbortSignal.any([signal, AbortSignal.timeout(40_000), ...(init?.signal ? [init.signal] : [])]);
+    const get = () => fetchImpl(url.toString(), {
       method: "GET", redirect: "error", credentials: "omit", cache: "no-store",
       headers: { accept: "application/json,application/atom+xml,application/xml,text/xml", "user-agent": "Breadboard-Feynman/1.0" },
       signal: requestSignal,
     });
+    let response = await get();
+    // arXiv's API rate-limits bursts (asks for ~3 s between calls) with 429/503
+    // and Retry-After. Wait it out a few times instead of failing the source.
+    for (let attempt = 0; attempt < 3 && (response.status === 429 || response.status === 503); attempt += 1) {
+      const retryAfter = Number(response.headers.get("retry-after"));
+      const waitMs = Math.min(15_000, Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 3_000 * 2 ** attempt);
+      await response.body?.cancel();
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(resolve, waitMs);
+        requestSignal.addEventListener("abort", () => { clearTimeout(timer); reject(requestSignal.reason); }, { once: true });
+      });
+      response = await get();
+    }
     if (!response.ok) {
       await response.body?.cancel();
       throw new Error(`${url.hostname} returned HTTP ${response.status}.`);

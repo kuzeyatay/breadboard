@@ -205,9 +205,26 @@ impl RuntimePaths {
                 ));
             }
             self.configured_bulk_root = Some(selected.to_path_buf());
-            self.bulk_root = root;
+            self.bulk_root = Arc::new(root.map(std::sync::OnceLock::from).unwrap_or_default());
         }
         Ok(self)
+    }
+
+    /// The bulk drive is resolved once at runtime start. A drive that was not
+    /// mounted yet (external disk, late USB/BitLocker unlock) used to stay
+    /// "unavailable" until the whole runtime restarted, failing every
+    /// bulk-hosted service. Re-run the full startup validation on demand so a
+    /// reconnected drive is picked up on the next service launch.
+    fn live_bulk_root(&self) -> Option<&TrustedRoot> {
+        if let Some(root) = self.bulk_root.get() {
+            return Some(root);
+        }
+        let configured = self.configured_bulk_root.clone()?;
+        let mut probe = self.clone();
+        probe.bulk_root = Arc::default();
+        probe.configured_bulk_root = None;
+        let root = probe.with_bulk_root(Some(configured)).ok()?.bulk_root.get()?.clone();
+        Some(self.bulk_root.get_or_init(|| root))
     }
 
     pub fn bulk_root(&self) -> Option<&Path> {
@@ -215,11 +232,11 @@ impl RuntimePaths {
     }
 
     pub fn validate_bulk_root(&self) -> Result<(), PathError> {
-        if let Some(root) = &self.bulk_root {
+        if let Some(root) = self.live_bulk_root() {
             root.revalidate()?;
         } else if self.configured_bulk_root.is_some() {
             return Err(PathError::RootUnavailable(
-                "bulk storage; reconnect the configured drive",
+                "bulk storage drive",
                 io::Error::from(io::ErrorKind::NotFound),
             ));
         }
@@ -232,7 +249,7 @@ impl RuntimePaths {
             return Ok(&self.data_root);
         };
         self.validate_bulk_root()?;
-        let Some(root) = &self.bulk_root else {
+        let Some(root) = self.live_bulk_root() else {
             return Ok(&self.data_root);
         };
         root.revalidate()?;
@@ -391,7 +408,7 @@ impl RuntimePaths {
     pub(crate) fn scriberr_uploads_path(&self) -> Result<PathBuf, PathError> {
         let relative = "runtime/scriberr/uploads";
         self.validate_bulk_root()?;
-        let Some(root) = &self.bulk_root else {
+        let Some(root) = self.live_bulk_root() else {
             return Ok(self.data_root().join(relative));
         };
         let marker = resolve_inside(root, ".breadboard-scriberr-uploads.json")?;
@@ -591,6 +608,10 @@ mod tests {
             .managed_payload_path("runtime-v2/services/deep-tutor/.venv")
             .starts_with(temp.path().join("missing")));
         assert!(disconnected.scriberr_uploads_path().is_err());
+        // Reconnecting the drive is picked up without a runtime restart.
+        fs::create_dir_all(temp.path().join("missing")).unwrap();
+        assert!(disconnected.validate_bulk_root().is_ok());
+        assert!(disconnected.clone().validate_bulk_root().is_ok());
     }
 
     #[test]

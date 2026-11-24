@@ -45,6 +45,7 @@
   padding-left: 4px;
   border: 0;
   border-radius: 50%;
+  corner-shape: round;
   background: rgba(28, 28, 30, 0.55);
   color: #fff;
   pointer-events: none;
@@ -63,6 +64,7 @@
   gap: 8px;
   padding: 6px 10px;
   border-radius: 999px;
+  corner-shape: round;
   background: rgba(28, 28, 30, 0.6);
   backdrop-filter: blur(20px) saturate(160%);
   -webkit-backdrop-filter: blur(20px) saturate(160%);
@@ -82,6 +84,7 @@
   place-items: center;
   border: 0;
   border-radius: 50%;
+  corner-shape: round;
   background: transparent;
   color: #fff;
   cursor: pointer;
@@ -107,6 +110,7 @@
   height: 4px;
   margin: 0;
   border-radius: 999px;
+  corner-shape: round;
   appearance: none;
   background: linear-gradient(to right, #fff var(--bb-video-progress), rgba(255, 255, 255, 0.28) var(--bb-video-progress));
   cursor: pointer;
@@ -115,8 +119,8 @@
 
 .seek:hover { height: 6px; }
 .seek:disabled { cursor: default; opacity: 0.5; }
-.seek::-webkit-slider-thumb { width: 12px; height: 12px; border: 0; border-radius: 50%; appearance: none; background: #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4); }
-.seek::-moz-range-thumb { width: 12px; height: 12px; border: 0; border-radius: 50%; background: #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4); }
+.seek::-webkit-slider-thumb { width: 12px; height: 12px; border: 0; border-radius: 50%; corner-shape: round; appearance: none; background: #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4); }
+.seek::-moz-range-thumb { width: 12px; height: 12px; border: 0; border-radius: 50%; corner-shape: round; background: #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4); }
 
 .error {
   max-width: 420px;

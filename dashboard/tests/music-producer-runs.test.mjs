@@ -208,3 +208,23 @@ test("uploaded references must occur in this user's owning conversation",async t
   assert.throws(()=>resolveMusicSource(2,f.conversation.public_id,source));
   const other=store.createConversation({userId:1,title:'Other reference chat'});assert.throws(()=>resolveMusicSource(1,other.public_id,source));
 });
+
+test("a resumed managed run follows the current Runtime's ACE-Step port; an external endpoint stays as saved", async () => {
+  const { resumedProviderConfig } = await import("../src/lib/music-producer/run-manager.ts");
+  const saved = { managed: true, directory: root, baseUrl: "http://127.0.0.1:56797", apiKey: "old", model: "acestep-v15-turbo", resonantSlug: "" };
+  const env = { BREADBOARD_ACESTEP_DIR: root, BREADBOARD_ACESTEP_URL: "http://127.0.0.1:55965", BREADBOARD_RUNTIME_V2_ACTIVE: "true" };
+  const before = Object.fromEntries(Object.keys(env).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, env);
+  fs.writeFileSync(path.join(root, "api-key"), "fresh");
+  try {
+    const resumed = resumedProviderConfig(JSON.stringify(saved), 2);
+    assert.equal(new URL(resumed.baseUrl).port, "55965");
+    assert.equal(resumed.apiKey, "fresh");
+    assert.equal(resumed.model, saved.model);
+    const external = { ...saved, managed: false, baseUrl: "https://music.example.test" };
+    assert.deepEqual(resumedProviderConfig(JSON.stringify(external), 2), external);
+  } finally {
+    for (const [key, value] of Object.entries(before)) value === undefined ? delete process.env[key] : process.env[key] = value;
+    fs.rmSync(path.join(root, "api-key"), { force: true });
+  }
+});

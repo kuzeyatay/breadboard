@@ -2,6 +2,7 @@
 // handlers. Kept free of `next/server` so this policy (size limits, structured
 // errors, secret-free error translation) is unit-testable in isolation.
 
+import { classifyFailureText, FAILURE_EXPLANATIONS } from "../failure-explanations.ts";
 import { HermesRpcErrorResponse } from "../agent-runtime/hermes-wire.ts";
 import { readAgentRuntimeConfig } from "../agent-runtime/config.ts";
 
@@ -78,7 +79,7 @@ export function describeError(error: unknown): { status: number; body: Record<st
     return {
       status: 503,
       body: {
-        error: "The agent runtime is unavailable.",
+        error: FAILURE_EXPLANATIONS.runtime_unreachable,
         code: error.code ?? "hermes_rpc_error",
         recoverable: true,
       },
@@ -108,5 +109,12 @@ export function describeError(error: unknown): { status: number; body: Record<st
   // Unexpected messages and stacks may contain private paths, loopback URLs,
   // or bearer tokens. They belong in a sanitized server diagnostic, never in
   // a browser response.
-  return { status: 500, body: { error: "Internal server error" } };
+  // Only a category is read from the raw text, so a restart, a full disk or an
+  // exhausted heap still tells the person what happened without leaking it.
+  const kind = classifyFailureText(error instanceof Error ? error.message : String(error ?? ""));
+  if (kind) {
+    const status = kind === "timeout" ? 504 : kind === "server_error" ? 500 : 503;
+    return { status, body: { error: FAILURE_EXPLANATIONS[kind], code: kind, recoverable: kind !== "disk_full" } };
+  }
+  return { status: 500, body: { error: FAILURE_EXPLANATIONS.server_error } };
 }

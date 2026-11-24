@@ -13,6 +13,8 @@ interface DocumentContextMenuProps {
   children: ReactElement;
   documentTitle: string;
   pdfHref: string | null;
+  /** The PDF alone on its own page (the full PDF viewer with its own assistant), outside the Garden reader. */
+  isolatedPdfHref?: string | null;
 }
 
 /**
@@ -26,6 +28,7 @@ export default function DocumentContextMenu({
   children,
   documentTitle,
   pdfHref,
+  isolatedPdfHref = null,
 }: DocumentContextMenuProps) {
   return (
     <ContextMenuSurface
@@ -35,6 +38,11 @@ export default function DocumentContextMenu({
           <>
             <OpenInNewTabItem href={pdfHref}>Open PDF in new tab</OpenInNewTabItem>
             <OpenInNewWindowItem href={pdfHref}>Open PDF in new window</OpenInNewWindowItem>
+            {isolatedPdfHref && (
+              <ContextMenuPrimitive.Item className={CONTEXT_MENU_ITEM_CLASS} onSelect={() => window.location.assign(isolatedPdfHref)}>
+                Open PDF in isolated
+              </ContextMenuPrimitive.Item>
+            )}
           </>
         ) : (
           <ContextMenuPrimitive.Item disabled className={CONTEXT_MENU_ITEM_CLASS}>

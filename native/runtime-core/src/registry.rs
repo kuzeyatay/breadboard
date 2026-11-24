@@ -881,6 +881,9 @@ fn worker_process_owner_limits(
     limits.validate().map_err(|_| invalid())
 }
 
+/// Everything else depends on these; see `ProcessOwnerSystemCommitGuard::core_service`.
+const CORE_SERVICE_IDS: [&str; 2] = ["dashboard", "hermes"];
+
 fn service_process_owner_limits(
     service: &ServiceDefinition,
     profile: &ServiceLaunchProfile,
@@ -896,13 +899,16 @@ fn service_process_owner_limits(
         let trusted_reserve_bytes = DEVELOPMENT_SYSTEM_COMMIT_RESERVE_MB
             .checked_mul(MEBIBYTE_BYTES)
             .ok_or_else(&invalid)?;
-        Some(
-            ProcessOwnerSystemCommitGuard::development(
-                expected_commit_bytes,
-                trusted_reserve_bytes,
-            )
-            .map_err(|_| invalid())?,
+        let guard = ProcessOwnerSystemCommitGuard::development(
+            expected_commit_bytes,
+            trusted_reserve_bytes,
         )
+        .map_err(|_| invalid())?;
+        Some(if CORE_SERVICE_IDS.contains(&service.id.as_str()) {
+            guard.core_service()
+        } else {
+            guard
+        })
     } else {
         None
     };
@@ -1464,6 +1470,7 @@ mod tests {
                     DEVELOPMENT_SYSTEM_COMMIT_RESERVE_MB * MEBIBYTE_BYTES,
                 )
                 .unwrap()
+                .core_service()
             )
         );
 
@@ -1480,7 +1487,14 @@ mod tests {
             service_process_owner_limits(&other, &hot_profile, RuntimeMode::Hot).unwrap();
         assert_eq!(
             other_hot_limits.system_commit_guard,
-            hot_limits.system_commit_guard
+            Some(
+                ProcessOwnerSystemCommitGuard::development(
+                    3_072 * MEBIBYTE_BYTES,
+                    DEVELOPMENT_SYSTEM_COMMIT_RESERVE_MB * MEBIBYTE_BYTES,
+                )
+                .unwrap()
+            ),
+            "only dashboard and hermes keep a core floor"
         );
 
         let packaged_limits =
@@ -1765,7 +1779,8 @@ mod tests {
                         64 * MEBIBYTE_BYTES,
                         DEVELOPMENT_SYSTEM_COMMIT_RESERVE_MB * MEBIBYTE_BYTES,
                     )
-                    .unwrap(),
+                    .unwrap()
+                    .core_service(),
                 ),
             }
         );

@@ -1,10 +1,10 @@
 "use client";
 
 import type { ReactNode } from "react";
+import { Settings } from "lucide-react";
 import NavigationLink from "./navigation-link";
 import VSCodeIcon from "./vscode-icon";
 import NavbarFlowerWind from "./navbar-flower-wind";
-import WorkTimerShortcut from "./work-timer-shortcut";
 import VoiceShortcut from "./voice-shortcut";
 import {
   DEFAULT_NAVBAR_SHORTCUTS,
@@ -26,8 +26,6 @@ interface Props {
 }
 
 export default function NavBar({
-  email,
-  username,
   showFlowers = true,
   showActions = true,
   trailingActions,
@@ -55,9 +53,6 @@ export default function NavBar({
       {/* Agents live in the capability palette's Agents tab (the slash button),
           not in this navbar. */}
       {showActions && <div className="relative z-10 flex items-center gap-4">
-        {/* Work timer and Plan ship on by default; the rest stay opt-in.
-            Every seat can be changed from the profile page. */}
-        {shortcuts.workTimer && <WorkTimerShortcut />}
         {/* Browsing now starts through the combined home search and shortcuts.
             BrowserShortcut and the browser route remain available in code. */}
         {shortcuts.voice && <VoiceShortcut />}
@@ -113,28 +108,13 @@ export default function NavBar({
             Organization
           </NavigationLink>
         )}
-        {/* The profile chip is the way to the profile page, which is where
-            inviting and signing out now live — both are account business, and
-            neither was worth a permanent seat in the navbar. */}
         <NavigationLink newTab label="Settings"
           href="/settings"
+          aria-label="Settings"
           title="Settings"
-          className="flex min-w-0 max-w-[240px] items-center gap-1.5 rounded-md px-1.5 py-1 text-xs text-gray-400 transition-colors hover:text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--botanical)]"
+          className="browser-toolbar-button"
         >
-          <svg
-            className="h-3.5 w-3.5 shrink-0"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={1.8}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-          >
-            <circle cx="12" cy="8" r="3.5" />
-            <path d="M5 20a7 7 0 0 1 14 0" />
-          </svg>
-          <span className="truncate font-medium">{username || email}</span>
+          <Settings aria-hidden="true" />
         </NavigationLink>
       </div>}
       {trailingActions}

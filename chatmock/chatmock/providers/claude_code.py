@@ -26,7 +26,7 @@ from typing import Any, Dict, Iterator, List
 import requests
 
 from ..temp_cleanup import SessionLease
-from . import pxpipe
+from . import claude_profiles, pxpipe
 from .store import ResolvedCredentials
 from .types import ModelCall, ProviderError
 
@@ -328,17 +328,25 @@ def _system_prompt(
 
 def _parse_cli_result(stdout: str, stderr: str, returncode: int) -> Dict[str, Any]:
     body: Any = None
+    limit_info = {}
     try:
         body = json.loads(stdout)
     except (TypeError, json.JSONDecodeError):
         # Be tolerant of a launcher warning before the JSON result while never
         # scraping or exposing Claude's credential store.
-        for line in reversed((stdout or "").splitlines()):
+        for line in (stdout or "").splitlines():
             try:
-                body = json.loads(line)
-                break
+                frame = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            if not isinstance(frame, dict):
+                continue
+            if frame.get("type") == "rate_limit_event":
+                info = frame.get("rate_limit_info")
+                if isinstance(info, dict) and info.get("status") == "rejected":
+                    limit_info = info
+            if frame.get("type") == "result" or "structured_output" in frame or "is_error" in frame:
+                body = frame
 
     if isinstance(body, dict) and returncode == 0 and body.get("is_error") is not True:
         structured = body.get("structured_output")
@@ -368,6 +376,14 @@ def _parse_cli_result(stdout: str, stderr: str, returncode: int) -> Dict[str, An
         message = "Claude Code returned no structured response."
     if "not logged" in message.lower() or "auth login" in message.lower():
         message = "Claude Code is not signed in. Run `claude auth login`, then refresh Breadboard."
+    failed = returncode != 0 or (isinstance(body, dict) and body.get("is_error") is True)
+    if failed and (limit_info or claude_profiles.LIMIT_MESSAGE.search(message)
+                   or (isinstance(body, dict) and body.get("error") == "rate_limit")):
+        error = ProviderError(message[:2000], status_code=429)
+        info = limit_info or (body.get("rate_limit_info") if isinstance(body, dict) else {})
+        reset = info.get("resetsAt") if isinstance(info, dict) else None
+        error.reset_at = reset * 1000 if isinstance(reset, (float, int)) else None
+        raise error
     raise ProviderError(message[:2000])
 
 
@@ -424,6 +440,8 @@ def _run_cli(payload: Dict[str, Any], model: str) -> Dict[str, Any]:
         if effort in {"low", "medium", "high", "xhigh", "max"}:
             command[4:4] = ["--effort", effort]
         env = os.environ.copy()
+        for key in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"):
+            env.pop(key, None)
         env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
         env["NO_COLOR"] = "1"
         if pxpipe.is_efficient_model(model):
@@ -434,32 +452,49 @@ def _run_cli(payload: Dict[str, Any], model: str) -> Dict[str, Any]:
             # through rather than holding a key of its own.
             env["ANTHROPIC_BASE_URL"] = pxpipe.base_url()
         budget = _request_timeout_seconds()
-        try:
-            completed = subprocess.run(
-                command,
-                input=json.dumps(messages, ensure_ascii=False, separators=(",", ":")),
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                capture_output=True,
-                cwd=temp_dir,
-                env=env,
-                timeout=budget,
-                check=False,
-            )
-        except subprocess.TimeoutExpired as exc:
-            # This sentence becomes the assistant's answer, so it names the limit
-            # that was actually hit: a reader who sees only "timed out" cannot
-            # tell a request that needs more room from one that will never finish.
-            raise ProviderError(
-                f"Claude Code was still working after {budget} seconds and had to be "
-                "stopped. Ask for a smaller piece of work, or allow more time with "
-                "CHATMOCK_CLAUDE_CODE_TIMEOUT_SECONDS."
-            ) from exc
-        except OSError as exc:
-            raise ProviderError(f"Claude Code could not be started: {exc}") from exc
-
-    return _parse_cli_result(completed.stdout, completed.stderr, completed.returncode)
+        directory = claude_profiles.root()
+        deadline = time.monotonic() + budget
+        last_limit = None
+        accounts = claude_profiles.candidates(directory)
+        if len(accounts) > 1:
+            command[command.index("--output-format") + 1] = "stream-json"
+            command.insert(2, "--verbose")
+        for account in accounts:
+            attempt_env = env.copy()
+            if account != "default":
+                attempt_env["CLAUDE_CONFIG_DIR"] = str(claude_profiles.config_dir(directory, account))
+            try:
+                completed = subprocess.run(
+                    command,
+                    input=json.dumps(messages, ensure_ascii=False, separators=(",", ":")),
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    capture_output=True,
+                    cwd=temp_dir,
+                    env=attempt_env,
+                    timeout=max(0, deadline - time.monotonic()),
+                    check=False,
+                )
+                return _parse_cli_result(completed.stdout, completed.stderr, completed.returncode)
+            except ProviderError as exc:
+                if exc.status_code != 429:
+                    raise
+                claude_profiles.mark_limited(directory, account, getattr(exc, "reset_at", None))
+                last_limit = exc
+            except subprocess.TimeoutExpired as exc:
+                raise ProviderError(
+                    f"Claude Code was still working after {budget} seconds and had to be "
+                    "stopped. Ask for a smaller piece of work, or allow more time with "
+                    "CHATMOCK_CLAUDE_CODE_TIMEOUT_SECONDS."
+                ) from exc
+            except OSError as exc:
+                raise ProviderError(f"Claude Code could not be started: {exc}") from exc
+        if last_limit:
+            raise last_limit
+        if not claude_profiles.candidates(directory, include_resting=True):
+            raise ProviderError("Claude Code is signed out. Connect an Anthropic account in Settings.", status_code=401)
+        raise ProviderError("All Claude accounts have reached their usage limit. Check retry times in Settings.", status_code=429)
 
 
 def _usage(body: Dict[str, Any]) -> Dict[str, Any]:

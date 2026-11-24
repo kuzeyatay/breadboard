@@ -239,9 +239,13 @@ test("a quarantined database is repaired by the engine itself, and a failed repa
     });
     return child;
   };
-  const run = (succeed) => executeRecallInstall({ dataRoot, signal: new AbortController().signal, spawnImpl: engine(succeed) });
+  const run = (succeed, free = 10 * 1024 ** 3) => executeRecallInstall({ dataRoot,
+    signal: new AbortController().signal, spawnImpl: engine(succeed), availableBytes: () => free });
   const message = () => JSON.parse(fs.readFileSync(plan.statusPath, "utf8")).message;
 
+  await run(false, 1024 ** 3);
+  assert.match(message(), /disk is too full/u);
+  assert.equal(launches.length, 0);
   await run(false);
   assert.match(message(), /could not be repaired/u);
   assert.deepEqual(fs.readdirSync(dataDir).sort(), ["db.sqlite", "db.sqlite.quarantine.json"]);
@@ -262,7 +266,7 @@ test("a full-disk quarantine over an intact database is released without the eng
   db.exec("CREATE TABLE frames (id INTEGER PRIMARY KEY); INSERT INTO frames VALUES (1);");
   db.close();
   fs.writeFileSync(path.join(dataDir, "db.sqlite.quarantine.json"), JSON.stringify({ sqlite_code: 13 }));
-  await executeRecallInstall({ dataRoot, signal: new AbortController().signal,
+  await executeRecallInstall({ dataRoot, signal: new AbortController().signal, availableBytes: () => 10 * 1024 ** 3,
     spawnImpl: () => { throw new Error("db recover must not run for an intact database"); } });
   assert.match(JSON.parse(fs.readFileSync(plan.statusPath, "utf8")).message, /intact/u);
   assert.ok(!fs.existsSync(path.join(dataDir, "db.sqlite.quarantine.json")));

@@ -34,10 +34,9 @@ test("workspace neumorphism is built from shared visual-only materials", () => {
   }
 
   const materialStart = css.indexOf("Breadboard workspace materials");
-  const visualMaterials = css.slice(
-    materialStart,
-    css.indexOf("\n.bb-chat-marquee", materialStart),
-  );
+  // Only the .bb-neu-* rules: the Terminal dock's own layout rules now sit in the same stretch of the file.
+  const visualMaterials = [...css.slice(materialStart, css.indexOf("\n.bb-chat-marquee", materialStart))
+    .matchAll(/^(\.bb-neu-[^{]*)\{([^}]*)\}/gm)].map(match => match[2]).join("\n");
   assert.ok(visualMaterials.length > 0);
   assert.doesNotMatch(
     visualMaterials,
@@ -142,7 +141,8 @@ test("liquid glass stays paused and out of scrollers and app chrome", () => {
   // No scroller anywhere grows a glass treatment.
   assert.doesNotMatch(css, /scrollbar-(?:rim|specular|thumb-strong)/i);
   assert.doesNotMatch(quartzCss, /scrollbar-(?:rim|specular|thumb-strong)|liquid.?glass/i);
-  assert.doesNotMatch(css, /\.bb-liquid-glass|data-ybouane-liquid-glass|backdrop-filter:\s*blur\(14px\)/);
+  // A plain blur on a tooltip or widget is not the glass treatment; the glass classes are.
+  assert.doesNotMatch(css, /\.bb-liquid-glass|data-ybouane-liquid-glass/);
 
   // Every other chat surface stays plain neumorphic material.
   for (const chrome of [composer, garden, gardenAgent]) {
@@ -160,7 +160,7 @@ test("artifact cards use raised containers and recessed preview material", () =>
   const viewer = source("../src/app/components/hermes/artifact-viewer.tsx");
 
   assert.match(archive, /bb-neu-artifact-card/);
-  assert.match(archive, /bb-neu-artifact-preview/);
+  // The archive is a plain searchable list now (no previews), so only its rows are raised cards.
   assert.match(inlineCards, /bb-neu-artifact-card/);
   assert.match(inlineCards, /bb-neu-artifact-preview/);
   assert.match(viewer, /bb-neu-recessed/);

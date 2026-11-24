@@ -39,7 +39,7 @@
 .handle > svg:first-child { color: var(--ink-muted); opacity: .55; }
 .handle .noteIcon { color: #b58b22; }
 .notepad[data-dragging="true"] .handle { cursor: grabbing; }
-.iconButton { display: grid; place-items: center; width: 32px; height: 32px; flex: none; padding: 0; border: 0; border-radius: 50%; color: var(--ink-muted); background: transparent; cursor: pointer; }
+.iconButton { display: grid; place-items: center; width: 32px; height: 32px; flex: none; padding: 0; border: 0; border-radius: 50%; corner-shape: round; color: var(--ink-muted); background: transparent; cursor: pointer; }
 .body { display: flex; flex: 1; flex-direction: column; min-height: 0; padding: 9px 20px 14px; border-top: 1px solid color-mix(in srgb, var(--line) 55%, transparent); }
 .body[hidden] { display: none; }
 .title { display: block; flex: none; box-sizing: border-box; width: 100%; min-width: 0; padding: 0; height: 36px; border: 0; border-radius: 4px; background: transparent; box-shadow: none; color: var(--ink-heading); font: 650 21px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; letter-spacing: -.4px; }
@@ -92,3 +92,9 @@
 .empty { margin: auto; text-align: center; color: var(--ink-muted); }
 .empty button { margin: auto; }
 .menu button:focus-visible { outline: 2px solid var(--botanical); outline-offset: 2px; }
+.images { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 6px; flex-shrink: 0; }
+.thumb { flex: none; width: 56px; height: 56px; padding: 0; border: 1px solid var(--ink-muted); border-radius: 8px; overflow: hidden; background: transparent; cursor: zoom-in; }
+.thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.zoom { max-width: 92vw; max-height: 92vh; padding: 0; border: 0; border-radius: 12px; background: transparent; cursor: zoom-out; }
+.zoom::backdrop { background: rgba(0, 0, 0, .75); }
+.zoom img { display: block; max-width: 92vw; max-height: 92vh; object-fit: contain; }

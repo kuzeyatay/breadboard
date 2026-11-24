@@ -1,6 +1,9 @@
 'use client';
 
 import { useStarredMessageJump, type StarredMessageTarget } from '@/app/components/use-starred-message-jump';
+import AssistantPanelHeader, { AssistantEmptyState } from '@/app/components/chat/assistant-panel-header';
+import StarredMessagesPanel from '@/app/components/hermes/starred-messages-panel';
+import { starredMessageHref, type StarredMessage } from '@/lib/starred-messages-types';
 import { normalizeQuartzChatLink } from '@/lib/quartz-chat-link';
 import { handleGardenSourceImportResult } from '@/lib/hermes/garden-source-import-client';
 import { useUnreadChats } from '@/lib/conversations/unread-client';
@@ -274,17 +277,6 @@ function gardenAssistantVisibleContent(message: ChatMessage): string {
   return '';
 }
 
-interface GraphStats {
-  documents: number;
-  topics: number;
-  textbookPages: number;
-  conceptPages: number;
-  conceptNodes: number;
-  generatedNotes: number;
-  links: number;
-  words: number;
-}
-
 interface SavedPrompt {
   id: string;
   title: string;
@@ -315,18 +307,13 @@ interface Props {
   /** The Quartz reader whose page "Ask here" answers this assistant hosts. */
   quartzIframeRef?: RefObject<HTMLIFrameElement | null>;
   quartzOrigin?: string;
+  /**
+   * The Quartz page (note slug) or Garden file (`file:<id>`) on screen. Each has its own chats and
+   * history ('' is the garden home). Left out, the Assistant lists every chat in the garden.
+   */
+  pageKey?: string;
 }
 
-const EMPTY_STATS: GraphStats = {
-  documents: 0,
-  topics: 0,
-  textbookPages: 0,
-  conceptPages: 0,
-  conceptNodes: 0,
-  generatedNotes: 0,
-  links: 0,
-  words: 0,
-};
 
 const PROMPTS_KEY = 'sb_prompts_v1';
 const DEFAULT_PROMPTS: SavedPrompt[] = [
@@ -425,9 +412,6 @@ function clampPanelWidth(width: number): number {
   return Math.min(MAX_PANEL_WIDTH, Math.max(MIN_PANEL_WIDTH, Math.round(width)));
 }
 
-function formatNumber(value: number): string {
-  return new Intl.NumberFormat('en').format(value);
-}
 
 function markdownFileLabel(markdown: ActiveMarkdown): string {
   const label = markdown.title || markdown.slug;
@@ -769,9 +753,12 @@ export default function GardenAssistant({
   onPanelWidthChange,
   quartzIframeRef,
   quartzOrigin = '',
+  pageKey,
 }: Props) {
+  // Chats, their cache and the selected chat belong to this page of the garden.
+  const historyScope = !activeClusterSlug ? null : pageKey === undefined ? activeClusterSlug : `${activeClusterSlug}#${pageKey}`;
   const resizeStartRef = useRef<{ startX: number; startWidth: number } | null>(null);
-  const previousClusterRef = useRef<string | null>(activeClusterSlug);
+  const previousClusterRef = useRef<string | null>(historyScope);
   const handledSelectionRequestRef = useRef<string | null>(null);
   const handledTopologyInvestigationRef = useRef<string | null>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -846,7 +833,7 @@ export default function GardenAssistant({
   } | null>(null);
   const persistenceChainsRef = useRef<Map<number, Promise<boolean>>>(new Map());
   const persistenceVersionsRef = useRef<Map<number, number>>(new Map());
-  const [showHistory, setShowHistory] = useState(false);
+  const [showStarred, setShowStarred] = useState(false);
   // The newest answer's text is revealed at a readable pace rather than drawn
   // straight from the buffer, so a reply that arrives in bursts (or whole)
   // still reads as a stream. Older messages render their content directly.
@@ -880,7 +867,7 @@ export default function GardenAssistant({
   // question is typed in the composer, so bring it up.
   const beginResponseQuestion = useCallback(() => {
     setSelectedTextContext(null);
-    setShowHistory(false);
+   
     setChatOpen(true);
   }, []);
   const renderAnswerArtifacts = useCallback((answerMessageId: string) => {
@@ -905,7 +892,7 @@ export default function GardenAssistant({
     onBeginQuestion: beginResponseQuestion,
     onOpenChatQuestion: selectionId => {
       setChatOpen(true);
-      setShowHistory(false);
+     
       setChatQuestionTarget({ chatId: String(activeChatId), messageId: '', selectionId, requestId: Date.now() });
     },
     onAsk: (question, selection, attachments) => { void sendMessage(question, undefined, attachments, undefined, undefined, selection); },
@@ -983,7 +970,6 @@ export default function GardenAssistant({
     },
   });
   const [isResizing, setIsResizing] = useState(false);
-  const [stats, setStats] = useState<GraphStats>(EMPTY_STATS);
   const [panelWidth, setPanelWidth] = useState(DEFAULT_PANEL_WIDTH);
   const { models, modelsLoading, loadModels } = useAssistantModels();
   const { changeModel, labelsFor: modelChangesFor } = useChatModelChanges({
@@ -995,11 +981,22 @@ export default function GardenAssistant({
     useAttachmentPreparation(`${activeClusterSlug}:${activeChatId ?? ""}`);
   const [attachmentStatus, setAttachmentStatus] = useState('');
   const attachmentInputRef = useRef<HTMLInputElement>(null);
+  // Spaces editors (Video's "Make a shot", Design) hand Bread a ready prompt without a file.
+  useEffect(() => {
+    const prefill = (event: Event) => {
+      const text = (event as CustomEvent<{ text?: string }>).detail?.text;
+      if (typeof text !== 'string' || text.length > 10000) return;
+      setChatOpen(true); setInput(text);
+      requestAnimationFrame(() => composerTextareaRef.current?.focus());
+    };
+    window.addEventListener('sb:assistant-prefill', prefill);
+    return () => window.removeEventListener('sb:assistant-prefill', prefill);
+  }, []);
   useEffect(() => {
     const useFile = (event: Event) => {
       const detail = (event as CustomEvent<{ action: string; instruction?: string; file: { id: string; gardenId: string; name: string; mimeType: string; size: number; version: number } }>).detail;
       if (detail?.action !== 'chat' || detail.file.gardenId !== activeClusterSlug) return;
-      setChatOpen(true); setShowHistory(false);
+      setChatOpen(true);
       if (typeof detail.instruction === 'string' && detail.instruction.length <= 10000) setInput(current => current || detail.instruction!);
       void (async () => {
         try {
@@ -1043,16 +1040,16 @@ export default function GardenAssistant({
   }, [chatOpen, panelWidth, onPanelWidthChange]);
 
   useEffect(() => {
-    if (previousClusterRef.current === activeClusterSlug) return;
-    previousClusterRef.current = activeClusterSlug;
+    if (previousClusterRef.current === historyScope) return;
+    previousClusterRef.current = historyScope;
     chatSelectionVersionRef.current += 1;
     blankChatRequestedRef.current = false;
     setTemporaryChat(false);
     chatBeforeTemporary.current = null;
     setInput('');
     setSelectedTextContext(null);
-    setShowHistory(false);
-  }, [activeClusterSlug]);
+   
+  }, [historyScope]);
 
   useEffect(() => {
     if (
@@ -1071,7 +1068,7 @@ export default function GardenAssistant({
     }
     setSelectedTextContext(selectedTextRequest);
     if (selectedTextRequest.question) setInput(selectedTextRequest.question);
-    setShowHistory(false);
+   
     setChatOpen(true);
     window.setTimeout(() => composerTextareaRef.current?.focus(), 0);
   }, [activeClusterSlug, selectedTextRequest]);
@@ -1087,7 +1084,7 @@ export default function GardenAssistant({
     }
     handledTopologyInvestigationRef.current = topologyInvestigationRequest.requestId;
     setSelectedTextContext(null);
-    setShowHistory(false);
+   
     setChatOpen(true);
     // Draft restoration for a newly selected Garden registers just after this
     // effect. Put the explicit map action last so an older draft cannot cover
@@ -1144,9 +1141,9 @@ export default function GardenAssistant({
     // authoritative: a cached entry whose id no longer exists (notably the
     // legacy `Date.now()` ids this component used to mint) can never be
     // addressed by the Hermes runtime, so it is dropped on reconcile.
-    const cached = loadQuartzChatSessions(activeClusterSlug);
+    const cached = loadQuartzChatSessions(historyScope);
     setChatSessions(cached);
-    const savedSelection = loadQuartzChatSelection(activeClusterSlug);
+    const savedSelection = loadQuartzChatSelection(historyScope);
     if (savedSelection === null) blankChatRequestedRef.current = true;
     // A reload must reopen the selected conversation, not a newer empty chat
     // left behind by a delayed creation request in another tab.
@@ -1163,7 +1160,7 @@ export default function GardenAssistant({
     (async () => {
       try {
         const response = await fetch(
-          `/api/chat-sessions?clusterSlug=${encodeURIComponent(activeClusterSlug)}&historySurface=assistant`,
+          `/api/chat-sessions?clusterSlug=${encodeURIComponent(activeClusterSlug)}&historySurface=assistant${pageKey === undefined ? '' : `&pageKey=${encodeURIComponent(pageKey)}`}`,
           { cache: 'no-store' },
         );
         if (!response.ok) return;
@@ -1200,14 +1197,14 @@ export default function GardenAssistant({
           const next = mountedTemporary && temporaryChat
             ? [mountedTemporary, ...reconciled]
             : reconciled;
-          persistQuartzChatSessions(activeClusterSlug, next);
+          persistQuartzChatSessions(historyScope, next);
           return next;
         });
         setActiveChatId((current) => {
           if (blankChatRequestedRef.current || temporaryChat) return current;
           const selected = savedSelection != null && serverIds.has(savedSelection)
             ? savedSelection : current !== null && serverIds.has(current) ? current : serverSessions[0]?.id ?? null;
-          persistQuartzChatSelection(activeClusterSlug, selected);
+          persistQuartzChatSelection(historyScope, selected);
           return selected;
         });
       } catch {
@@ -1217,7 +1214,7 @@ export default function GardenAssistant({
     return () => {
       cancelled = true;
     };
-  }, [activeClusterSlug, temporaryChat]);
+  }, [activeClusterSlug, historyScope, pageKey, temporaryChat]);
 
   useEffect(() => {
     const restoredMessages = activeChat?.messages ?? [];
@@ -1275,7 +1272,7 @@ export default function GardenAssistant({
                 ), current.messages), refreshed.messages),
               };
               const next = previous.map((session) => (session.id === refreshed.id ? merged : session));
-              persistQuartzChatSessions(activeClusterSlug, next);
+              persistQuartzChatSessions(historyScope, next);
               return next;
             });
           })
@@ -1291,7 +1288,7 @@ export default function GardenAssistant({
       window.removeEventListener('focus', reconcile);
       document.removeEventListener('visibilitychange', reconcile);
     };
-  }, [activeChatId, activeChatIdsKey, activeClusterSlug]);
+  }, [activeChatId, activeChatIdsKey, activeClusterSlug, historyScope]);
 
   const activeMarkdownContext = activeMarkdown?.content
     ? {
@@ -1310,41 +1307,6 @@ export default function GardenAssistant({
       return matchCategory && matchSearch;
     });
   }, [promptCategory, promptSearch, prompts]);
-
-  useEffect(() => {
-    if (!activeClusterSlug) {
-      setStats(EMPTY_STATS);
-      return;
-    }
-
-    let cancelled = false;
-
-    fetch(`/api/knowledge-graph?clusterSlug=${encodeURIComponent(activeClusterSlug)}&statsOnly=1`)
-      .then(async (response) => {
-        if (!response.ok) return;
-        const body = await response.json().catch(() => ({}));
-        const nextStats = body?.stats;
-        if (!cancelled && nextStats) {
-          setStats({
-            documents: Number(nextStats.documents) || 0,
-            topics: Number(nextStats.topics) || 0,
-            textbookPages: Number(nextStats.textbookPages ?? nextStats.topics) || 0,
-            conceptPages: Number(nextStats.conceptPages) || 0,
-            conceptNodes: Number(nextStats.conceptNodes) || 0,
-            generatedNotes: Number(nextStats.generatedNotes) || 0,
-            links: Number(nextStats.links) || 0,
-            words: Number(nextStats.words) || 0,
-          });
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setStats(EMPTY_STATS);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [activeClusterSlug]);
 
   const transcriptVirtual = useChatVirtualBridge();
   const composerInset = useComposerInset();
@@ -1389,7 +1351,7 @@ export default function GardenAssistant({
       const link = normalizeQuartzChatLink(event.data.chatLink);
       if (!link || link.surface !== 'garden') return;
       setChatOpen(true);
-      setShowHistory(false);
+     
       if (String(activeChatId) === link.chatId) {
         setChatQuestionTarget({ ...link, messageId: link.messageId ?? '', requestId: Date.now() });
         return;
@@ -1453,7 +1415,7 @@ export default function GardenAssistant({
             : session,
         )
         .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
-      persistQuartzChatSessions(activeClusterSlug, sessions);
+      persistQuartzChatSessions(historyScope, sessions);
       return sessions;
     });
   }
@@ -1494,6 +1456,7 @@ export default function GardenAssistant({
           clusterSlug: activeClusterSlug,
           title,
           historySurface: 'assistant',
+          pageKey,
           temporary: options.temporary ?? temporaryChat,
         }),
       });
@@ -1509,14 +1472,14 @@ export default function GardenAssistant({
           0,
           MAX_QUARTZ_CHAT_SESSIONS,
         );
-        persistQuartzChatSessions(activeClusterSlug, sessions);
+        persistQuartzChatSessions(historyScope, sessions);
         return sessions;
       });
       if (selectionVersion === chatSelectionVersionRef.current &&
           (!options.keepMessages || activeChatIdRef.current === activeChatId)) {
         chatSelectionVersionRef.current += 1;
         blankChatRequestedRef.current = false;
-        if (session.temporary !== true) persistQuartzChatSelection(activeClusterSlug, session.id);
+        if (session.temporary !== true) persistQuartzChatSelection(historyScope, session.id);
         setActiveChatId(session.id);
         activeChatIdRef.current = session.id;
         setCreatedChatId(session.id);
@@ -1695,7 +1658,7 @@ export default function GardenAssistant({
     // first turn creates its durable session through ensureTurnSession.
     chatSelectionVersionRef.current += 1;
     blankChatRequestedRef.current = true;
-    persistQuartzChatSelection(activeClusterSlug, null);
+    persistQuartzChatSelection(historyScope, null);
     turnSessionCreationRef.current = null;
     chatBeforeTemporary.current = null;
     setTemporaryChat(false);
@@ -1709,7 +1672,7 @@ export default function GardenAssistant({
     textSelection.clearComposerSelection();
     setChatAttachments([]);
     setAttachmentStatus('');
-    setShowHistory(false);
+   
     window.setTimeout(() => composerTextareaRef.current?.focus(), 0);
   }
 
@@ -1717,7 +1680,7 @@ export default function GardenAssistant({
     if (chatIsStreaming) return;
     chatSelectionVersionRef.current += 1;
     blankChatRequestedRef.current = false;
-    persistQuartzChatSelection(activeClusterSlug, session.id);
+    persistQuartzChatSelection(historyScope, session.id);
     chatBeforeTemporary.current = null;
     setTemporaryChat(false);
     localTurnRef.current = false;
@@ -1727,7 +1690,7 @@ export default function GardenAssistant({
     setCreatedChatId(null);
     setMessages(session.messages ?? []);
     setPermissionRequest(permissionRequestFromMessages(session.messages ?? []));
-    setShowHistory(false);
+   
   }
 
   async function toggleTemporaryChat() {
@@ -1751,7 +1714,7 @@ export default function GardenAssistant({
     if (session) {
       setMessages([]);
       setPermissionRequest(null);
-      setShowHistory(false);
+     
       return;
     }
     setTemporaryChat(false);
@@ -1763,9 +1726,9 @@ export default function GardenAssistant({
     forgetChatDrafts(window.localStorage, draftSurface, [String(sessionId)]);
     setChatSessions((previous) => {
       const sessions = previous.filter((session) => session.id !== sessionId);
-      persistQuartzChatSessions(activeClusterSlug, sessions);
+      persistQuartzChatSessions(historyScope, sessions);
       if (activeChatId === sessionId) {
-        persistQuartzChatSelection(activeClusterSlug, sessions[0]?.id ?? null);
+        persistQuartzChatSelection(historyScope, sessions[0]?.id ?? null);
         setActiveChatId(sessions[0]?.id ?? null);
         setCreatedChatId(null);
         setMessages(sessions[0]?.messages ?? []);
@@ -2732,6 +2695,41 @@ export default function GardenAssistant({
   const resizeHandleStyle = {
     right: panelWidth,
   } as CSSProperties;
+  const historyItems = useMemo(
+    () => historySessions.map((session) => ({ id: String(session.id), title: session.title, updatedAt: session.updated_at, active: session.active })),
+    [chatSessions], // eslint-disable-line react-hooks/exhaustive-deps -- historySessions is derived from it
+  );
+  // Other chats in this garden: the Assistant's on other pages (with where they live) and the workspace's.
+  const otherChatPages = useRef(new Map<string, string>());
+  const searchOtherChats = useCallback(async (query: string, signal: AbortSignal) => {
+    if (!activeClusterSlug) return [];
+    const summary = await fetch(`/api/chat-sessions?${new URLSearchParams({ clusterSlug: activeClusterSlug, historySurface: 'assistant', summary: '1' })}`, { signal, cache: 'no-store' })
+      .then((response) => response.ok ? response.json() : { sessions: [] }) as { sessions?: Array<{ id: number; title: string; updated_at: string; active?: boolean; pageKey?: string }> };
+    const assistantChats = (summary.sessions ?? []).filter((session) => (session.pageKey ?? '') !== (pageKey ?? ''));
+    otherChatPages.current = new Map(assistantChats.map((session) => [String(session.id), session.pageKey ?? '']));
+    if (!query) return assistantChats.slice(0, 12).map((session) => ({ id: String(session.id), title: session.title, updatedAt: session.updated_at, active: session.active }));
+    const found = await fetch(`/api/hermes/sessions/search?${new URLSearchParams({ q: query, gardenSlug: activeClusterSlug })}`, { signal, cache: 'no-store' })
+      .then((response) => response.ok ? response.json() : { results: [] }) as { results?: Array<{ id: string; title: string; updatedAt: string }> };
+    return (found.results ?? []).map((hit) => ({ id: hit.id, title: hit.title, updatedAt: hit.updatedAt }));
+  }, [activeClusterSlug, pageKey]);
+  const openOtherChat = useCallback((item: { id: string }) => {
+    if (!activeClusterSlug) return;
+    const page = otherChatPages.current.get(item.id);
+    // A workspace chat opens in the workspace; an Assistant chat opens on its own page, selected.
+    if (page === undefined) { window.location.assign(`/gardens/${encodeURIComponent(activeClusterSlug)}?chat=${encodeURIComponent(item.id)}`); return; }
+    persistQuartzChatSelection(`${activeClusterSlug}#${page}`, Number(item.id));
+    if (page.startsWith('file:')) { window.location.assign(`/garden/${encodeURIComponent(activeClusterSlug)}?file=${encodeURIComponent(page.slice(5))}`); return; }
+    const frame = quartzIframeRef?.current?.contentWindow;
+    if (frame && quartzOrigin) frame.postMessage({ type: 'second-brain:open-library-url', url: `/${activeClusterSlug}${page ? `/${page}` : ''}` }, quartzOrigin);
+    else window.location.assign(`/garden/${encodeURIComponent(activeClusterSlug)}${page ? `?note=${encodeURIComponent(page)}` : ''}`);
+  }, [activeClusterSlug, quartzIframeRef, quartzOrigin]);
+  const openStarredMessage = (message: StarredMessage) => {
+    const session = historySessions.find((item) => String(item.id) === message.legacyChatId || String(item.id) === message.chatId);
+    if (!session) { window.location.assign(starredMessageHref(message)); return; }
+    setShowStarred(false);
+    if (session.id !== activeChatId) openChatSession(session);
+    setChatQuestionTarget({ chatId: String(session.id), messageId: message.messageId, clientMessageId: message.clientMessageId ?? undefined, requestId: Date.now() });
+  };
 
   const chatPanel = (
     <aside
@@ -2740,55 +2738,20 @@ export default function GardenAssistant({
       style={chatPanelStyle}
       data-temporary-chat={temporaryChat ? 'true' : undefined}
     >
-      <div className="border-b border-gray-800 px-4 py-3">
-        <div className="flex items-center justify-between gap-3">
-          <div className="min-w-0">
-            <p className="truncate text-sm font-medium text-white">Assistant</p>
-            <p className="truncate text-xs text-gray-400">
-              {hasActiveCluster ? `${clusterLabel} Learning Map` : 'Open a garden or page to ask its map'}
-            </p>
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setChatOpen(false)}
-              className="neu-button rounded-md border border-gray-700 px-2.5 py-1 text-xs text-gray-300 transition hover:border-gray-500 hover:text-white"
-            >
-              Hide
-            </button>
-          </div>
-        </div>
-
-        <div className="mt-3 grid grid-cols-4 gap-2 text-center text-[11px] text-gray-400">
-          {[
-            { label: 'Sources', value: stats.documents },
-            { label: 'Lessons', value: stats.textbookPages },
-            { label: 'Concepts', value: stats.conceptPages },
-            { label: 'Connections', value: stats.links },
-          ].map((item) => (
-            <div key={item.label} className="neu-inset rounded-md border border-gray-800 bg-gray-950/60 px-2 py-1.5">
-              <div className="font-medium text-gray-100">{formatNumber(item.value)}</div>
-              <div>{item.label}</div>
-            </div>
-          ))}
-        </div>
-
-        <div className="mt-2 flex min-w-0 items-center gap-2 border-t border-gray-900 pt-2">
-          <button
-            type="button"
-            onClick={() => setShowHistory(true)}
-            disabled={!activeClusterSlug}
-            className="neu-button-icon flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-gray-800 text-gray-500 transition hover:border-gray-700 hover:text-gray-300"
-            title="Chat history"
-            aria-label="Chat history"
-          >
-            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 9.75A8.25 8.25 0 1 1 6.4 15.8" />
-              <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 5.25v4.5h4.5" />
-            </svg>
-          </button>
-        </div>
-      </div>
+      <AssistantPanelHeader
+        title={activeChat?.title && activeChat.title !== 'New chat' ? activeChat.title : (viewedPage?.title ?? (hasActiveCluster ? clusterLabel : 'New chat'))}
+        starredOpen={showStarred}
+        onToggleStarred={() => setShowStarred((value) => !value)}
+        items={historyItems}
+        activeId={activeChatId === null ? null : String(activeChatId)}
+        currentLabel={pageKey ? 'This page' : 'This garden'}
+        onOpen={(id) => { const session = historySessions.find((item) => String(item.id) === id); if (session && !chatIsStreaming) openChatSession(session); }}
+        searchOthers={activeClusterSlug ? searchOtherChats : undefined}
+        onOpenOther={openOtherChat}
+        onNewChat={() => void startNewChat()}
+        newChatDisabled={chatIsStreaming || !activeClusterSlug}
+        onClose={() => setChatOpen(false)}
+      />
 
       {temporaryChat ? (
         <div
@@ -2814,6 +2777,14 @@ export default function GardenAssistant({
         </div>
       ) : null}
 
+      {showStarred ? (
+        <div className="absolute bottom-0 right-0 top-11 z-30 w-[min(320px,60%)] border-l border-[var(--line)] bg-[var(--paper-surface)]">
+          <button type="button" onClick={() => setShowStarred(false)} aria-label="Close starred" className="absolute right-3 top-3 z-10 rounded-md p-1 text-[var(--ink-muted)] hover:bg-[var(--paper-strong)]">
+            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" d="m6 6 12 12M18 6 6 18" /></svg>
+          </button>
+          <StarredMessagesPanel gardenSlug={activeClusterSlug ?? undefined} onOpenMessage={openStarredMessage} />
+        </div>
+      ) : null}
       {/* Positioning context for the jump control, so it floats at the foot of
           the transcript rather than below the composer. */}
       <div className="relative flex min-h-0 flex-1 flex-col">
@@ -2859,6 +2830,7 @@ export default function GardenAssistant({
           ref={transcriptScrollRef}
           data-notification-chat={`garden_chat:${activeClusterSlug}:${activeChatId}`}
           className="bb-chat-scroller bb-chat-scroll-tail flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-4"
+          style={showStarred ? { marginRight: 'min(320px, 60%)' } : undefined}
         >
           <InlineArtifactCardsProvider legacyChatSessionId={activeChatId} gardenSlug={activeClusterSlug}>
           <InlineProposalCardsProvider
@@ -2869,33 +2841,21 @@ export default function GardenAssistant({
             onRequestRevision={prompt => queueFollowUp(prompt, [])}
           >
           {visibleMessages.length === 0 ? (
-            <div className="space-y-4">
-              <div>
-                <p className="text-sm font-medium text-gray-100">
-                  {hasActiveCluster
-                    ? 'Ask about the map, notes, pages, or relationships.'
-                    : 'Open a garden to start asking.'}
-                </p>
-                <p className="mt-2 text-sm leading-6 text-gray-400">
-                  {hasActiveCluster
-                    ? 'I can use the garden inventory, topic notes, source locations, and graph links as context.'
-                    : 'The assistant follows the garden or note you open from this library view.'}
-                </p>
-                <p className="mt-2 text-xs text-gray-500">
-                  {formatNumber(stats.words)} words are indexed for this garden.
-                </p>
-              </div>
-              {/* Only cards grounded in this garden; nothing generic when there are none. */}
-              <ChatSuggestionCards
-                suggestions={viewedPage ? pageSuggestions ?? [] : recommendations.map(item => item.prompt)}
+            // Only suggestions grounded in what is open; nothing generic when there are none.
+            <AssistantEmptyState
+              line={!hasActiveCluster
+                ? 'Open a garden to start asking.'
+                : viewedPage ? `Ask about ${viewedPage.title}, or anything in ${clusterLabel}.` : `Ask about ${clusterLabel}: its notes, sources and how they connect.`}
+              cards={<ChatSuggestionCards
+                suggestions={(viewedPage ? pageSuggestions ?? [] : recommendations.map(item => item.prompt)).slice(0, 2)}
                 suggestionDetails={viewedPage
-                  ? Object.fromEntries((pageSuggestions ?? []).map(prompt => [prompt, { label: 'This page' }]))
-                  : Object.fromEntries(recommendations.map(item => [item.prompt, { label: item.sourceLabel, usefulness: item.usefulness,lesson:item.lesson }]))}
-                suggestionScopeKey={JSON.stringify([activeClusterSlug,activeMarkdown?.title,temporaryChat])}
+                  ? Object.fromEntries((pageSuggestions ?? []).map(prompt => [prompt, { label: 'This file' }]))
+                  : Object.fromEntries(recommendations.map(item => [item.prompt, { label: item.sourceLabel, usefulness: item.usefulness, lesson: item.lesson }]))}
+                suggestionScopeKey={JSON.stringify([activeClusterSlug, viewedPage?.title, temporaryChat])}
                 disabled={chatIsStreaming || !hasActiveCluster}
                 onSelectSuggestion={prompt => { setInput(prompt); composerTextareaRef.current?.focus(); }}
-              />
-            </div>
+              />}
+            />
           ) : (
             <VirtualizedMessageList
               surface="garden-assistant"
@@ -3064,94 +3024,6 @@ export default function GardenAssistant({
       </div>
     </aside>
   );
-
-  const historyPanel = showHistory ? (
-    <div
-      className="bb-modal-backdrop fixed inset-0 z-50 flex items-end justify-center p-0 sm:items-center sm:p-4"
-      onClick={(event) => {
-        if (event.target === event.currentTarget) setShowHistory(false);
-      }}
-    >
-      <div className="bb-modal-panel neu-dialog flex max-h-[78vh] w-full max-w-lg flex-col overflow-hidden rounded-t-2xl border sm:rounded-2xl">
-        <div className="flex items-center justify-between gap-3 border-b border-gray-800 px-4 py-3">
-          <div>
-            <h2 className="text-sm font-semibold text-white">Chat history</h2>
-            <p className="text-xs text-gray-500">
-              {historySessions.length} chats for {clusterLabel}
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => void startNewChat()}
-              disabled={chatIsStreaming || !activeClusterSlug}
-              className="neu-button-primary rounded-md bg-white px-3 py-1.5 text-xs font-medium text-gray-950 disabled:opacity-50"
-            >
-              New chat
-            </button>
-            <button
-              type="button"
-              onClick={() => setShowHistory(false)}
-              className="neu-button rounded-md border border-gray-700 px-2.5 py-1.5 text-xs text-gray-300"
-            >
-              Close
-            </button>
-          </div>
-        </div>
-        <div className="min-h-0 flex-1 overflow-y-auto p-2">
-          {historySessions.length === 0 ? (
-            <div className="px-4 py-10 text-center text-sm text-gray-500">No chats yet.</div>
-          ) : (
-            <ul className="space-y-1">
-              {historySessions.map((session) => {
-                const preview =
-                  session.messages.find((message) => message.role === 'user')?.content ||
-                  session.messages.at(-1)?.content ||
-                  'Empty chat';
-                return (
-                  <li key={session.id} className="group flex items-start gap-2 rounded-md hover:bg-gray-800/70">
-                    <button
-                      type="button"
-                      onClick={() => openChatSession(session)}
-                      disabled={chatIsStreaming}
-                      className={`min-w-0 flex-1 rounded-md px-3 py-2 text-left transition ${
-                        session.id === activeChatId ? 'bg-gray-800 text-white' : 'text-gray-300'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between gap-3">
-                        <p className="truncate text-sm font-medium">{session.title}</p>
-                        {session.active ? <ActiveChatIcon label={`${session.title} is running`} /> : unreadChats.has(String(session.id)) ? <UnreadChatDot label={`${session.title} — unread`} /> : null}
-                        <span className="shrink-0 text-[10px] text-gray-600">{formatChatTime(session.updated_at)}</span>
-                      </div>
-                      <p className="mt-1 line-clamp-2 text-xs leading-5 text-gray-500">{preview}</p>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => deleteChatSession(session.id)}
-                      disabled={chatIsStreaming}
-                      className="neu-button-icon mr-1 mt-2 rounded-full p-1 text-red-300 opacity-0 group-hover:opacity-100 disabled:opacity-30"
-                      aria-label="Delete chat"
-                      title="Delete chat"
-                    >
-                      <svg
-                        className="h-3.5 w-3.5"
-                        fill="none"
-                        viewBox="0 0 24 24"
-                        stroke="currentColor"
-                        strokeWidth={1.8}
-                      >
-                        <path strokeLinecap="round" strokeLinejoin="round" d="m6 6 12 12M18 6 6 18" />
-                      </svg>
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </div>
-      </div>
-    </div>
-  ) : null;
 
   const promptsPanel = showPrompts ? (
     <div
@@ -3351,7 +3223,6 @@ export default function GardenAssistant({
         <span className={`h-16 w-px rounded-full transition-colors ${isResizing ? 'bg-gray-400' : 'bg-gray-700'}`} />
       </button>
       {chatPanel}
-      {historyPanel}
       {promptsPanel}
       {promptEditor}
     </>
@@ -3370,7 +3241,6 @@ export default function GardenAssistant({
           {unreadChats.size > 0 ? <UnreadChatDot className="ml-2 h-2 w-2" multiple={unreadChats.size > 1} label="Unread chat responses" /> : null}
         </button>
       ) : null}
-      {historyPanel}
       {promptsPanel}
       {promptEditor}
     </>

@@ -32,6 +32,7 @@ export const GARDEN_TOOLS = [
   "garden_get_recent_events",
   "garden_list_files",
   "garden_save_note",
+  "garden_save_file",
   "garden_decide_proposals",
   "garden_create_folder",
   "garden_move_page",
@@ -151,7 +152,7 @@ export const SKILL_LESSON_TOOLS = ["skill_lesson"] as const;
 
 // A bot's own memory (lib/bots, orgo-teammates' remember/recall). Scoped like
 // memory: authenticated conversational surfaces, the session user's own bots.
-export const BOT_MEMORY_TOOLS = ["bot_memory"] as const;
+export const BOT_MEMORY_TOOLS = ["bot_memory", "bot_manage"] as const;
 
 // Conversation-scoped first-party Premortem workflow. The callback executes
 // only a bounded CLI allowlist inside the session's isolated runtime directory.

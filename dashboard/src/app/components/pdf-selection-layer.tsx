@@ -574,8 +574,10 @@ function markStyle(highlight: PdfHighlight, hovered: boolean) {
     return { backgroundColor: "transparent", borderBottom: "1.5px dotted rgb(0 0 0 / 0.75)" };
   }
   const tone = question ? "--selection-yellow" : `--selection-highlight-${highlight.color}`;
+  // As in the Garden reader, a note on any passage (a question one too) adds the dotted underline.
+  const note = highlight.note ? { borderBottom: "1.5px dotted rgb(0 0 0 / 0.6)" } : {};
   return hovered ? {
     backgroundColor: `color-mix(in srgb, var(${tone}-hover) 55%, transparent)`,
-    boxShadow: `0 0 0 2px color-mix(in srgb, var(${tone}-line) 48%, transparent)`,
-  } : { backgroundColor: `color-mix(in srgb, var(${tone}) 45%, transparent)` };
+    boxShadow: `0 0 0 2px color-mix(in srgb, var(${tone}-line) 48%, transparent)`, ...note,
+  } : { backgroundColor: `color-mix(in srgb, var(${tone}) 45%, transparent)`, ...note };
 }

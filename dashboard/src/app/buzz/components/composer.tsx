@@ -28,11 +28,13 @@ import { cn } from "@/app/buzz/lib/cn";
 import { useTheme } from "@/app/buzz/lib/theme";
 import MetalSendButton from "@/app/components/effects/metal-send-button";
 import ComposerBorderBeam from "@/app/components/effects/composer-border-beam";
+import ChatDraftFormatting from "@/app/components/chat/chat-draft-formatting";
 import { readStored, writeStored } from "../lib/message-state";
 import { Button } from "@/app/buzz/ui/button";
 import { EmojiPicker } from "./emoji-picker";
 import { ComposerIntelligence } from "./composer-intelligence";
 import { useSentenceCompletion } from "@/app/components/use-sentence-completion";
+import SuggestionInfo from "@/app/components/suggestion-info";
 import { usePersonalize } from "@/app/components/use-personalize";
 import {
   Tooltip,
@@ -275,6 +277,7 @@ export function Composer({
           className="neu-composer buzz-composer relative rounded-[30px] p-2"
           onPointerDown={(event) => { if (event.target === event.currentTarget) inputRef.current?.focus(); }}
         >
+          {!disabled && <ChatDraftFormatting key={draftKey} inputRef={inputRef} value={value} />}
           <textarea
             ref={inputRef}
             value={value}
@@ -285,6 +288,7 @@ export function Composer({
             aria-label={placeholder}
             maxLength={12000}
             aria-describedby={completion.text ? completion.descriptionId : undefined}
+            aria-keyshortcuts={completion.text ? "Tab Escape Alt+I" : undefined}
             onFocus={event=>completion.onFocus(event.currentTarget)}
             onSelect={event=>completion.onSelect(event.currentTarget)}
             onBlur={completion.onBlur}
@@ -349,7 +353,13 @@ export function Composer({
             className="max-h-[220px] min-h-[40px] w-full resize-none bg-transparent px-3 py-2 text-message leading-6 outline-hidden placeholder:text-muted-foreground disabled:opacity-50"
           />
 
-          {completion.text && <div id={completion.descriptionId} className="px-3 pb-1 text-xs text-muted-foreground">{completion.text} <kbd>Tab</kbd></div>}
+          {completion.text && <div className="px-3 pb-1 text-xs text-muted-foreground">
+            <span id={completion.descriptionId}>{completion.text}<span className="sr-only"> Press Tab to accept, Escape to dismiss, or Alt+I for the reason.</span></span>{' '}
+            <span className="inline-flex items-center gap-1 align-middle">
+              <kbd aria-hidden>Tab</kbd>
+              <SuggestionInfo reason={completion.reason} editorRef={inputRef} />
+            </span>
+          </div>}
           {showFormatting ? (
             <div className="mb-1 flex flex-wrap items-center gap-0.5 border-b border-border/40 pb-1">
               {(

@@ -27,6 +27,17 @@ function assertDirectDirectory(candidate, label, { allowMissing = false } = {}) 
   return resolved;
 }
 
+// Windows briefly refuses to rename a directory whose fresh files an indexer or virus scan still holds open.
+function renameWithRetry(operations, from, to) {
+  for (let attempt = 1; ; attempt++) {
+    try { return operations.renameSync(from, to); }
+    catch (error) {
+      if (attempt >= 10 || !["EPERM", "EACCES", "EBUSY"].includes(error?.code)) throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200 * attempt);
+    }
+  }
+}
+
 export function commitAtomicDirectorySwap({
   stagedTarget,
   target,
@@ -52,10 +63,10 @@ export function commitAtomicDirectorySwap({
   let failure = null;
   try {
     if (targetMetadata) {
-      operations.renameSync(target, backup);
+      renameWithRetry(operations, target, backup);
       backedUp = true;
     }
-    operations.renameSync(stagedTarget, target);
+    renameWithRetry(operations, stagedTarget, target);
     installed = true;
   } catch (error) {
     failure = error;

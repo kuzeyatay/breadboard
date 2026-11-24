@@ -133,7 +133,7 @@ async function _navigate(url: URL, isBack: boolean = false) {
   }
 
   // notify about to nav
-  const event: CustomEventMap["prenav"] = new CustomEvent("prenav", { detail: {} })
+  const event: CustomEventMap["prenav"] = new CustomEvent("prenav", { detail: { url: url.href } })
   document.dispatchEvent(event)
 
   // cleanup old

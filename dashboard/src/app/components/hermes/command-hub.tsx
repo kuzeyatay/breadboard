@@ -268,7 +268,7 @@ interface Props {
   onRunWorkflow?: (workflow: LocalWorkflowSummary) => void;
   /** Inserts a server-resolvable /reference:* context selector. */
   onSelectReference?: (token: string) => void;
-  /** Opens Settings → MCP for server setup and management. */
+  /** Opens Settings → Connections for MCP server setup and management. */
   onOpenMcpSettings?: () => void;
   /**
    * When provided, selecting Agent TARS activates it for the conversation (the

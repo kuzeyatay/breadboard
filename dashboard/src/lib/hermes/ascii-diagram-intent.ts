@@ -5,6 +5,7 @@
 // terminal and use the stricter PLAN/DRAW/VERIFY procedure.
 
 import type { HermesSurface } from "./config.ts";
+import { requestProse } from "./request-language.ts";
 
 /** The first-party skill directory name, which is also its slash command. */
 export const ASCII_ART_DIAGRAMS_SKILL = "ascii-art-diagrams";
@@ -104,7 +105,8 @@ export interface AsciiDiagramIntentInput {
 export function shouldAutoSelectAsciiDiagram(
   input: AsciiDiagramIntentInput,
 ): boolean {
-  const text = input.text.trim();
+  // Pasted code, quotes and documents are material, not the request.
+  const text = requestProse(input.text).trim();
   const available =
     input.authenticated &&
     (input.surface === "dashboard_terminal" || input.surface === "garden_chat");

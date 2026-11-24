@@ -18,6 +18,11 @@ function visit(node) {
       node.arguments[0]?.getText(tree).includes('const cached = loadQuartzChatSessions')) historyEffect = node.getText(tree);
   if (ts.isJsxElement(node) && node.openingElement.tagName.getText(tree) === 'button' &&
       node.openingElement.getText(tree).includes('startNewChat')) newChatButton = node.getText(tree);
+  // The header's New chat: the real handler and disabled rule, rendered as the button the header draws.
+  if (ts.isJsxSelfClosingElement(node) && node.tagName.getText(tree) === 'AssistantPanelHeader') {
+    const attribute = name => node.attributes.properties.find(item => item.name?.getText(tree) === name)?.initializer?.getText(tree);
+    newChatButton = `<button type="button" onClick=${attribute('onNewChat')} disabled=${attribute('newChatDisabled')}>New chat</button>`;
+  }
   ts.forEachChild(node, visit);
 }
 visit(tree);
@@ -40,7 +45,7 @@ window.requests=[];window.fetch=(url,init={})=>{
   });
 };
 function App(){
- const activeClusterSlug='ec-2',clusterLabel='EC 2',chatIsStreaming=false;
+ const activeClusterSlug='ec-2',clusterLabel='EC 2',chatIsStreaming=false,pageKey=undefined,historyScope=activeClusterSlug;
  const [chatSessions,setChatSessions]=useState([old]),[activeChatId,setActiveChatId]=useState(1),[createdChatId,setCreatedChatId]=useState(null);
  const [messages,setMessages]=useState(old.messages),[showHistory,setShowHistory]=useState(true),[temporaryChat,setTemporaryChat]=useState(false);
  const [input,setInput]=useState(''),[permission,setPermissionRequest]=useState('Old permission');
@@ -69,7 +74,7 @@ test('New chat opens immediately during a stalled request, keeps drafts and igno
     await page.goto('http://localhost:53147/');await page.addScriptTag({content:bundle.outputFiles[0].text});
     await page.locator('textarea').fill('Keep this existing draft');
     await page.getByRole('button',{name:'New chat',exact:true}).click();
-    await page.waitForFunction(()=>window.control.id===null && !document.querySelector('[data-testid="history"]'));
+    await page.waitForFunction(()=>window.control.id===null);
     assert.equal(await page.getByTestId('transcript').innerText(),'');
     assert.equal(await page.evaluate(()=>window.control.permission),null);
     assert.equal(await page.evaluate(()=>window.requests.filter(r=>r.method==='POST').length),0);

@@ -3,11 +3,14 @@ import { NextResponse } from "next/server";
 import { getRecallConfig } from "@/lib/recall/config.ts";
 import {
   installState,
+  recallDatabaseQuarantined,
   readInstallStatus,
   startInstall,
 } from "@/lib/recall/install.ts";
 import { recallErrorResponse } from "@/lib/recall/route-helpers.ts";
 import { requireUserId } from "@/lib/server-auth";
+import { RecallError, recallStorageMessage } from "@/lib/recall/errors.ts";
+import { readRecallRuntimeStatus, recallRuntimeProcessRunning } from "@/lib/recall/runtime-service.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -21,6 +24,15 @@ export async function POST() {
   try {
     const userId = await requireUserId();
     const config = getRecallConfig();
+    if (recallDatabaseQuarantined(config)) {
+      const status = await readRecallRuntimeStatus(userId);
+      if (status?.storageIssue === "low-disk" || status?.storageIssue === "checking-history") {
+        throw new RecallError("engine_unavailable", { userMessage: recallStorageMessage[status.storageIssue] });
+      }
+      if (recallRuntimeProcessRunning(status) || status?.serviceState === "stopping") {
+        throw new RecallError("engine_unavailable", { userMessage: "Wait for Recall to finish stopping before repairing its history." });
+      }
+    }
     await startInstall(userId, config);
     return NextResponse.json({
       started: true,

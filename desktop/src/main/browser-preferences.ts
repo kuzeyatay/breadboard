@@ -62,6 +62,11 @@ export class BrowserPreferenceStore {
     else next.translationSites = { ...next.translationSites, [site]: language };
     return this.save(next);
   }
+  /** "Don't show this again" on the flag-as-AI question. */
+  skipAiFlagConfirm(): boolean {
+    if (this.readError) return false;
+    return this.save({ ...this.snapshot(), aiFlagConfirm: false });
+  }
   permission(url: string): NotificationPermission {
     const origin = notificationOrigin(url);
     return !this.value.notificationsEnabled || !origin ? "denied" : this.value.sites[origin] ?? "default";

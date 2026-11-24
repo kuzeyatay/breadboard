@@ -39,7 +39,7 @@ import {readGardenResponseData} from '@/lib/hermes/garden-response-stream';
 import {normalizeChatTokenUsage} from '@/lib/chat-token-usage';
 import {delegatedThinkingUpdates} from '@/lib/hermes/super-agent-activity';
 const isSuperAgentEnabled=()=>false,isYoloModeEnabled=()=>false,isDirectModeEnabled=()=>true,isPersonalizeEnabled=()=>true;
-const persistQuartzChatSessions=()=>{},saveBranchGroups=()=>{},branchGroups={};
+const persistQuartzChatSessions=()=>{},saveBranchGroups=()=>{},branchGroups={},historyScope='quartz-fixture';
 const normalizeGenerativeUiResources=()=>[],handleGardenSourceImportResult=()=>{};
 const chatRowKey=(m,i)=>m.id||String(i);
 const selection={id:'response-selection',mode:'inline',sourceMessageId:'source',start:0,end:8,quote:'Magnetic'};

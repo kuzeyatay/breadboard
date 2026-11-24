@@ -111,17 +111,19 @@ export function groundedEdgeExplanation(input: {
   if (input.origin === "provenance") {
     return {
       state: "degraded",
-      text: boundedWords(`${input.sourceTitle} cites ${input.targetTitle} through its recorded source references.`),
+      text: "The first page lists the second as a source.",
       promptVersion: EDGE_EXPLANATION_PROMPT_VERSION,
     };
   }
-  const concepts = input.sharedConcepts.slice(0, 4).join(", ");
-  const evidence = concepts
-    ? `They share the canonical concepts ${concepts}`
-    : `Their strongest measured signal is ${input.strongestComponent} similarity`;
+  const concepts = new Intl.ListFormat("en").format(input.sharedConcepts.slice(0, 3));
+  const signal = {
+    embedding: "These passages discuss similar ideas using different wording.",
+    concept: "The pages cover overlapping concepts.",
+    lexical: "The pages use similar terminology.",
+  };
   return {
     state: "degraded",
-    text: boundedWords(`${input.sourceTitle} and ${input.targetTitle} are connected because ${evidence.toLowerCase()}. This is an inferred semantic affinity, not an objective claim.`),
+    text: concepts ? "Both pages cover " + concepts + "." : signal[input.strongestComponent],
     promptVersion: EDGE_EXPLANATION_PROMPT_VERSION,
   };
 }
@@ -258,7 +260,7 @@ export async function enrichEdgeExplanation(input: {
       [
         {
           role: "system",
-          content: renderSystemPrompt("topology-edge-explanation", undefined, { "relation_types": String(TOPOLOGY_RELATION_TYPES.join(", ")) }),
+          content: renderSystemPrompt("topology-edge-explanation", undefined, { "relation_types": String(TOPOLOGY_RELATION_TYPES.join(", ")) }) + " Write one or two short sentences explaining the specific shared idea, citation, or mechanism. The UI already shows both page titles, Garden names, relation and score. Use the supplied evidence and omit those repeated labels and scoring terminology.",
         },
         { role: "user", content: JSON.stringify({ sourceTitle: input.sourceTitle, targetTitle: input.targetTitle, sourceProjection: input.sourceProjection.slice(0, 5000), targetProjection: input.targetProjection.slice(0, 5000), sharedConcepts: input.sharedConcepts, components: input.components, affinity: input.score, gardenThreshold: input.threshold, origin: input.origin ?? "inferred", evidence: input.evidence?.slice(0, 12) }) },
       ],

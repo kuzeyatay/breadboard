@@ -21,7 +21,7 @@
 .trigger { position: relative; cursor: pointer; }
 .trigger[aria-expanded="true"] { background: color-mix(in srgb, var(--ink-muted) 14%, var(--paper-surface)); color: var(--ink-heading); }
 .trigger[data-downloading="true"] { color: var(--botanical); }
-.spinner { position: absolute; inset: 2px; border: 1.5px solid color-mix(in srgb, currentColor 20%, transparent); border-top-color: currentColor; border-right-color: currentColor; border-radius: 50%; animation: download-spin 1s linear infinite; pointer-events: none; }
+.spinner { position: absolute; inset: 2px; border: 1.5px solid color-mix(in srgb, currentColor 20%, transparent); border-top-color: currentColor; border-right-color: currentColor; border-radius: 50%; corner-shape: round; animation: download-spin 1s linear infinite; pointer-events: none; }
 @keyframes download-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .spinner { animation: none; border-color: currentColor; } }
 .toolbarError { position: absolute; top: 44px; right: 0; z-index: 30; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; width: 280px; max-width: calc(100vw - 16px); padding: 12px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--paper-raised); color: var(--ink-heading); font-size: 12px; line-height: 18px; white-space: normal; }

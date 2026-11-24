@@ -1,5 +1,6 @@
 import type { HermesSurface } from "./config.ts";
 import { interactiveVisualizerAvailable } from "./interactive-visualizer-config.ts";
+import { requestProse } from "./request-language.ts";
 
 const EXPLICIT_VISUALIZER =
   /\b(?:interactive\s+(?:visuali[sz](?:ation|er)|diagram|model|simulation)|visuali[sz]e|2d\s+(?:model|diagram)|3d\s+(?:model|diagram)|three(?:\.js)?\s+(?:model|scene))\b/i;
@@ -79,7 +80,8 @@ export function shouldAutoSelectInteractiveVisualizer(input: {
     input.authenticated,
     input.env,
   )) return false;
-  const text = input.text.trim();
+  // Pasted code, quotes and documents are material, not the request.
+  const text = requestProse(input.text).trim();
   if (!text || text.startsWith("/")) return false;
   if (SOURCE_CODE_REQUEST.test(text) || BASIC_CALCULATION.test(text)) return false;
   if (STATIC_IMAGE_REQUEST.test(text) && !MANIPULATION.test(text)) return false;

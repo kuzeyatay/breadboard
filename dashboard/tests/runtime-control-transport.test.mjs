@@ -94,12 +94,16 @@ test("Runtime control transport bounds Hot fan-out and keeps jobs separate from 
         pipelining: 0,
         keepAliveTimeout: RUNTIME_CONTROL_KEEP_ALIVE_MS,
         keepAliveMaxTimeout: RUNTIME_CONTROL_KEEP_ALIVE_MS,
+        headersTimeout: 0,
+        bodyTimeout: 0,
       },
       {
         connections: RUNTIME_SERVICE_CONTROL_CONNECTIONS,
         pipelining: 0,
         keepAliveTimeout: RUNTIME_CONTROL_KEEP_ALIVE_MS,
         keepAliveMaxTimeout: RUNTIME_CONTROL_KEEP_ALIVE_MS,
+        headersTimeout: 0,
+        bodyTimeout: 0,
       },
     ],
   );

@@ -463,8 +463,16 @@ export function sectionAwareEmbeddingAffinity(
   right: Pick<ScoringDocument, "embedding" | "sections">,
   centering?: EmbeddingCentering,
 ): { value: number; sections?: AffinityCandidate["sections"] } {
-  const leftWhole = centeredVector(left.embedding ?? [], centering);
-  const rightWhole = centeredVector(right.embedding ?? [], centering);
+  return compareEmbeddingSections(left, right, (vector) => centeredVector(vector, centering));
+}
+
+function compareEmbeddingSections(
+  left: Pick<ScoringDocument, "embedding" | "sections">,
+  right: Pick<ScoringDocument, "embedding" | "sections">,
+  comparable: (vector: readonly number[]) => readonly number[],
+): { value: number; sections?: AffinityCandidate["sections"] } {
+  const leftWhole = comparable(left.embedding ?? []);
+  const rightWhole = comparable(right.embedding ?? []);
   // Signed on purpose (see `centeredCosine`); the selection floor and the
   // threshold decide what is close enough, not a clamp at 0.
   let value = cosineSimilarity(leftWhole, rightWhole);
@@ -472,7 +480,7 @@ export function sectionAwareEmbeddingAffinity(
   for (const section of left.sections ?? []) {
     if (!section.embedding?.length) continue;
     const score = cosineSimilarity(
-      centeredVector(section.embedding, centering),
+      comparable(section.embedding),
       rightWhole,
     );
     if (score > value) {
@@ -484,7 +492,7 @@ export function sectionAwareEmbeddingAffinity(
     if (!section.embedding?.length) continue;
     const score = cosineSimilarity(
       leftWhole,
-      centeredVector(section.embedding, centering),
+      comparable(section.embedding),
     );
     if (score > value) {
       value = score;
@@ -503,6 +511,17 @@ export function scoreAffinityPairs(
   const centering = embeddingAvailable
     ? embeddingCentering(documents)
     : undefined;
+  // A vector can participate in thousands of pairs. Centre each one once
+  // per Garden instead of allocating a copy every time it is compared.
+  const centered = new WeakMap<readonly number[], readonly number[]>();
+  const comparable = (vector: readonly number[]): readonly number[] => {
+    if (!centering || !centering.strength || centering.mean.length !== vector.length) return vector;
+    const cached = centered.get(vector);
+    if (cached) return cached;
+    const value = centeredVector(vector, centering);
+    centered.set(vector, value);
+    return value;
+  };
   const pairs: AffinityCandidate[] = [];
   for (let leftIndex = 0; leftIndex < documents.length; leftIndex += 1) {
     for (
@@ -513,7 +532,7 @@ export function scoreAffinityPairs(
       const left = documents[leftIndex];
       const right = documents[rightIndex];
       const embedding = embeddingAvailable
-        ? sectionAwareEmbeddingAffinity(left, right, centering)
+        ? compareEmbeddingSections(left, right, comparable)
         : { value: 0 };
       const components = {
         embedding: embedding.value,
@@ -745,12 +764,12 @@ export function mergeAuthoredPairs(
     evidence?: TopologyEvidence[];
   }
 > {
-  const scored = new Map(
-    allCandidates.map((candidate) => [
-      unorderedPairKey(candidate.source, candidate.target),
-      candidate,
-    ]),
-  );
+  const authoredKeys = new Set(authored.map((edge) => unorderedPairKey(edge.source, edge.target)));
+  const scored = new Map<string, AffinityCandidate>();
+  for (const candidate of allCandidates) {
+    const key = unorderedPairKey(candidate.source, candidate.target);
+    if (authoredKeys.has(key)) scored.set(key, candidate);
+  }
   const merged = new Map<
     string,
     AffinityCandidate & {

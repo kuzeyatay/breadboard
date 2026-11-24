@@ -40,6 +40,7 @@ export interface TopologyNode {
   knowledgeType: string;
   /** Original source medium from Markdown frontmatter (`source_type`). */
   sourceType?: string;
+  activityTimes?: number[];
   contentHash: string;
   summary: EnrichmentText;
   primaryConcepts: string[];
@@ -78,6 +79,7 @@ export interface TopologyEdge {
   origin: TopologyEdgeOrigin;
   score: number;
   previousScore?: number;
+  changedAt?: number;
   threshold?: number;
   components: {
     embedding: number;

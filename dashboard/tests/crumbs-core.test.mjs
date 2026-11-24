@@ -308,6 +308,25 @@ test('AI: a comment is checked against the full page, and the discussion is summ
   await assert.rejects(crumbs.ai(1, { mode: 'check', url: 'http://127.0.0.1:1/x', claim: 'x' }), { status: 400 });
 });
 
+test('AI flags: one record per person per site in their own account, counted for everyone', async () => {
+  const flagged = 'https://www.slop.example/some/post?x=1';
+  assert.deepEqual(await people.guest.crumbs.aiFlags(1, flagged), { site: 'slop.example', count: 0, mine: false, level: null, signedIn: false });
+  await assert.rejects(people.guest.crumbs.aiFlag(1, flagged, true), { status: 401 });
+  await assert.rejects(people.alice.crumbs.aiFlag(1, 'http://localhost:3000/', true), { status: 400 });
+  assert.equal((await people.alice.crumbs.aiFlags(1, 'about:blank')).site, null);
+  const mine = await people.alice.crumbs.aiFlag(1, flagged, true);
+  assert.deepEqual(mine, { site: 'slop.example', count: 1, mine: true, level: null, signedIn: true });
+  assert.ok(net.state.records.has(`at://${A}/com.breadboard.aiflag/slop.example`), 'the flag is a record in the author repo');
+  await people.alice.crumbs.aiFlag(1, 'https://slop.example/other', true); // the same site again
+  await people.bob.crumbs.aiFlag(1, flagged, true);
+  const seen = await people.carol.crumbs.aiFlag(1, flagged, true);
+  assert.deepEqual(seen, { site: 'slop.example', count: 3, mine: true, level: 'yellow', signedIn: true });
+  assert.equal((await people.guest.crumbs.aiFlags(1, 'https://slop.example/')).count, 3);
+  const withdrawn = await people.carol.crumbs.aiFlag(1, flagged, false);
+  assert.deepEqual([withdrawn.count, withdrawn.mine, withdrawn.level], [2, false, null]);
+  assert.ok(!net.state.records.has(`at://${C}/com.breadboard.aiflag/slop.example`));
+});
+
 test('signing out forgets the tokens and tells the server; settings validate', async () => {
   const { crumbs, db } = people.carol;
   crumbs.setDefaultVisibility(1, 'public');

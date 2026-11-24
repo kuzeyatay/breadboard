@@ -83,7 +83,14 @@ export function taskRecoveryCheckpoint(input: {
   now?: number;
 }): { checkpoint?: TaskRecoveryCheckpoint; stopped?: string } {
   if (input.status === "aborted" || input.status === "cancelled") return { stopped: "cancelled" };
-  const unresolved = unresolvedTaskTools(input.tools);
+  // A finished answer whose run published an artifact after its last failed
+  // call already worked around that failure (office_run failing, then
+  // office_export succeeding). Re-running it only repeats the delivered answer.
+  const lastFailure = input.tools.findLastIndex(tool => tool.success === false);
+  const supersededByDelivery = input.completedTextAnswer === true && !input.failure &&
+    (input.artifacts?.length ?? 0) > 0 && lastFailure >= 0 &&
+    input.tools.slice(lastFailure + 1).some(tool => tool.success === true);
+  const unresolved = supersededByDelivery ? [] : unresolvedTaskTools(input.tools);
   if (unresolved.some(tool => !taskFailureCanRecover(tool.failure ?? { message: String(tool.summary ?? "") }))) {
     return { stopped: "requires_user_or_external_change" };
   }

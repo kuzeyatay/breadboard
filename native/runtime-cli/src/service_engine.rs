@@ -1,6 +1,7 @@
 use crate::control::{RuntimeServiceControl, RuntimeServiceControlError};
 use crate::runtime_diagnostics::{controller_error, ControllerOperation};
 use crate::shutdown::{AdmissionOpenError, ShutdownCoordinator};
+use breadboard_runtime_core::recall_storage::{prepare_new_recall_database, RecallStorage};
 use breadboard_runtime_core::{
     AdmissionGovernor, AuthenticatedJobContext, CurrentGenerationMembership,
     DashboardControlEnvironment, DurableServiceAcquireResult, DurableServiceAdmissionProfile,
@@ -51,8 +52,9 @@ const SERVICE_TIMER_INTERVAL: Duration = Duration::from_secs(1);
 const OUTBOX_CLAIM_TTL_MS: u64 = 30_000;
 const MAX_INTENTS_PER_TICK: usize = MAX_MANIFEST_ENTRIES;
 const MAX_HELD_LEASES: usize = MAX_MANIFEST_ENTRIES * MAX_CONCURRENCY as usize;
-const MAX_IDLE_STOP_WAITERS: usize = MAX_MANIFEST_ENTRIES;
-const MAX_IDLE_STOP_RECHECKS_PER_TICK: usize = 32;
+const MAX_PENDING_SERVICE_ACQUIRES: usize = MAX_MANIFEST_ENTRIES;
+const MAX_SERVICE_ACQUIRE_RECHECKS_PER_TICK: usize = 32;
+const SERVICE_RESOURCE_RECHECK_MS: u64 = 15_000;
 const MAX_RELEASE_TOMBSTONES: usize = 256;
 const RELEASE_TOMBSTONE_TTL_MS: u64 = 10 * 60 * 1000;
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(60);
@@ -718,18 +720,36 @@ struct HeldLease {
     pending_reply: Option<AcquireReplySender>,
     pending_deadline: Option<Instant>,
     pending_worker_dependency: Option<WorkerServiceDependencyAdmission>,
-    worker_cold_start_target_exit: bool,
-    worker_cold_start_restart: Option<DurableServiceRestartSchedule>,
-    worker_cold_start_reacquire_used: bool,
+    retryable_cold_start_exit: bool,
+    cold_start_restart: Option<DurableServiceRestartSchedule>,
+    cold_start_reacquire_used: bool,
 }
 
-struct PendingIdleAcquire {
+struct PendingServiceAcquire {
     authority: OwnedServiceAcquireAuthority,
     owner: HeldLeaseOwner,
     reply: AcquireReplySender,
     deadline: Instant,
-    stopping_generation: u64,
-    worker_cold_start_reacquire_used: bool,
+    wait: ServiceAcquireWait,
+    cold_start_reacquire_used: bool,
+}
+
+#[derive(Clone, Copy)]
+enum ServiceAcquireWait {
+    IdleStop(u64),
+    Recovery {
+        eligible_at_ms: u64,
+        deadline_error: RuntimeServiceControlError,
+    },
+}
+
+impl ServiceAcquireWait {
+    fn deadline_error(self) -> RuntimeServiceControlError {
+        match self {
+            Self::IdleStop(_) => RuntimeServiceControlError::Unavailable,
+            Self::Recovery { deadline_error, .. } => deadline_error,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -889,7 +909,7 @@ struct ServiceController {
     scheduler_context: AuthenticatedJobContext,
     bindings: BTreeMap<String, ServiceBinding>,
     held_leases: BTreeMap<String, HeldLease>,
-    pending_idle_acquires: VecDeque<PendingIdleAcquire>,
+    pending_service_acquires: VecDeque<PendingServiceAcquire>,
     gateway_lease_ids: BTreeMap<String, String>,
     pending_gateway_acquires: BTreeMap<String, PendingGatewayAcquire>,
     recall_lease_id: Option<String>,
@@ -897,6 +917,7 @@ struct ServiceController {
     pending_recall_reconcile: Option<PendingRecallReconcile>,
     recall_restart_barrier_epoch: Option<u64>,
     next_recall_attempt_ms: u64,
+    recall_storage: RecallStorage,
     pending_reconcile_replies: BTreeMap<(String, u64), PendingReconcileReply>,
     startup_gateway_due_ms: BTreeMap<String, u64>,
     schedule_drive_active: bool,
@@ -964,7 +985,7 @@ impl ServiceController {
             scheduler_context,
             bindings,
             held_leases: BTreeMap::new(),
-            pending_idle_acquires: VecDeque::new(),
+            pending_service_acquires: VecDeque::new(),
             gateway_lease_ids: BTreeMap::new(),
             pending_gateway_acquires: BTreeMap::new(),
             recall_lease_id: None,
@@ -972,6 +993,7 @@ impl ServiceController {
             pending_recall_reconcile: None,
             recall_restart_barrier_epoch: None,
             next_recall_attempt_ms: 0,
+            recall_storage: RecallStorage::default(),
             pending_reconcile_replies: BTreeMap::new(),
             startup_gateway_due_ms: BTreeMap::new(),
             schedule_drive_active: false,
@@ -1337,7 +1359,7 @@ impl ServiceController {
         owner: HeldLeaseOwner,
         reply: AcquireReplySender,
         pending_deadline_override: Option<Instant>,
-        worker_cold_start_reacquire_used: bool,
+        cold_start_reacquire_used: bool,
         drive_after_acquire: bool,
     ) -> Result<(), ServiceEngineError> {
         if pending_deadline_override.is_some_and(|deadline| Instant::now() >= deadline) {
@@ -1358,19 +1380,50 @@ impl ServiceController {
             }
             Err(error) => return Err(error.into()),
         };
-        if self.held_leases.len().saturating_add(self.pending_idle_acquires.len()) >= MAX_HELD_LEASES {
+        if self
+            .held_leases
+            .len()
+            .saturating_add(self.pending_service_acquires.len())
+            >= MAX_HELD_LEASES
+        {
             let _ = reply.send_control(Err(RuntimeServiceControlError::Unavailable));
             return Ok(());
         }
+        let pending_deadline = pending_deadline_override.unwrap_or_else(|| {
+            Instant::now()
+                .checked_add(timeouts.pending)
+                .unwrap_or_else(Instant::now)
+        });
         if let Err(error) = self.require_dependencies_ready(&service_id) {
-            let _ = reply.send_control(Err(RuntimeServiceControlError::Unavailable));
-            if matches!(error, ServiceEngineError::RequiredServiceUnavailable(_)) {
+            if let ServiceEngineError::RequiredServiceUnavailable(dependency) = &error {
+                let dependency = self.store.durable_service_snapshot(dependency)?;
+                if dependency.status.state == RuntimeServiceState::ResourceBlocked
+                    || dependency.status.state == RuntimeServiceState::Starting
+                    || snapshot_awaits_bounded_restart(&dependency)
+                {
+                    let eligible_at_ms = self.clock.now_ms().saturating_add(SERVICE_RESOURCE_RECHECK_MS);
+                    self.defer_service_acquire(PendingServiceAcquire {
+                        authority,
+                        owner,
+                        reply,
+                        deadline: pending_deadline,
+                        wait: ServiceAcquireWait::Recovery {
+                            eligible_at_ms,
+                            deadline_error: RuntimeServiceControlError::Unavailable,
+                        },
+                        cold_start_reacquire_used,
+                    });
+                } else {
+                    let _ = reply.send_control(Err(RuntimeServiceControlError::Unavailable));
+                }
                 return Ok(());
             }
+            let _ = reply.send_control(Err(RuntimeServiceControlError::Unavailable));
             return Err(error);
         }
         let service = self.store.durable_service_snapshot(&service_id)?;
-        if service_state_requires_endpoint_reservation(service.status.state)
+        if (service_state_requires_endpoint_reservation(service.status.state)
+            || snapshot_awaits_bounded_restart(&service))
             && !self.try_retain_endpoint_reservation(&service_id)?
         {
             let _ = reply.send_control(Err(RuntimeServiceControlError::Unavailable));
@@ -1415,32 +1468,62 @@ impl ServiceController {
                 DurableServiceAcquireResult::Acquired(claim),
             )) => claim,
             Ok(DurableWorkerServiceAcquireResult::Evaluated(
-                DurableServiceAcquireResult::RestartDeferred(_),
+                DurableServiceAcquireResult::RestartDeferred(schedule),
             )) => {
-                let _ = reply.send_control(Err(RuntimeServiceControlError::Unavailable));
+                self.defer_service_acquire(PendingServiceAcquire {
+                    authority,
+                    owner,
+                    reply,
+                    deadline: pending_deadline,
+                    wait: ServiceAcquireWait::Recovery {
+                        eligible_at_ms: schedule.eligible_at_ms,
+                        deadline_error: RuntimeServiceControlError::Unavailable,
+                    },
+                    cold_start_reacquire_used,
+                });
                 return Ok(());
             }
             Ok(DurableWorkerServiceAcquireResult::Evaluated(
                 DurableServiceAcquireResult::Denied(denial),
             )) => {
-                let _ = reply.send_control(Err(RuntimeServiceControlError::ResourceExhausted {
+                let deadline_error = RuntimeServiceControlError::ResourceExhausted {
                     required_headroom_mb: denial.required_headroom_mb,
                     available_headroom_mb: denial.available_headroom_mb,
-                }));
+                };
+                if matches!(
+                    denial.resource.as_str(),
+                    "windows_commit" | "windows_commit_critical" | "heavyweight_concurrency"
+                ) {
+                    self.defer_service_acquire(PendingServiceAcquire {
+                        authority,
+                        owner,
+                        reply,
+                        deadline: pending_deadline,
+                        wait: ServiceAcquireWait::Recovery {
+                            eligible_at_ms: now_ms.saturating_add(SERVICE_RESOURCE_RECHECK_MS),
+                            deadline_error,
+                        },
+                        cold_start_reacquire_used,
+                    });
+                } else {
+                    let _ = reply.send_control(Err(deadline_error));
+                }
                 return Ok(());
             }
             Err(error) => {
                 if let DurableServiceStoreError::IdleStopPending { generation, .. } = &error {
-                    if self.pending_idle_acquires.len() >= MAX_IDLE_STOP_WAITERS {
-                        let _ = reply.send_control(Err(RuntimeServiceControlError::Unavailable));
-                        return Ok(());
-                    }
                     let deadline = pending_deadline_override.unwrap_or_else(|| {
-                        Instant::now().checked_add(timeouts.idle_pending).unwrap_or_else(Instant::now)
+                        Instant::now()
+                            .checked_add(timeouts.idle_pending)
+                            .unwrap_or_else(Instant::now)
                     });
-                    self.pending_idle_acquires.push_back(PendingIdleAcquire {
-                        authority, owner, reply, deadline, stopping_generation: *generation,
-                        worker_cold_start_reacquire_used,
+                    self.defer_service_acquire(PendingServiceAcquire {
+                        authority,
+                        owner,
+                        reply,
+                        deadline,
+                        wait: ServiceAcquireWait::IdleStop(*generation),
+                        cold_start_reacquire_used,
                     });
                     return Ok(());
                 }
@@ -1465,17 +1548,11 @@ impl ServiceController {
             claim: acquired,
             owner,
             pending_reply: pending.then_some(reply.clone()),
-            pending_deadline: pending.then(|| {
-                pending_deadline_override.unwrap_or_else(|| {
-                    Instant::now()
-                        .checked_add(timeouts.pending)
-                        .unwrap_or_else(Instant::now)
-                })
-            }),
+            pending_deadline: pending.then_some(pending_deadline),
             pending_worker_dependency,
-            worker_cold_start_target_exit: false,
-            worker_cold_start_restart: None,
-            worker_cold_start_reacquire_used,
+            retryable_cold_start_exit: false,
+            cold_start_restart: None,
+            cold_start_reacquire_used,
         };
         self.held_leases.insert(lease_id.clone(), held);
         if !pending {
@@ -1658,6 +1735,18 @@ impl ServiceController {
                 pending.superseded = true;
             }
         }
+        if desired_state == RuntimeDesiredState::Running && self.recall_storage.issue().is_none() {
+            let reset = self.store.durable_service_snapshot("recall").and_then(|service| {
+                if service.status.state == RuntimeServiceState::Failed {
+                    self.store.reset_durable_service_for_explicit_retry("recall", self.clock.now_ms())?;
+                }
+                Ok(())
+            });
+            if reset.is_err() {
+                let _ = reply.send(Err(RuntimeServiceControlError::Internal));
+                return;
+            }
+        }
         self.next_recall_attempt_ms = 0;
         self.pending_recall_reconcile = Some(PendingRecallReconcile {
             desired_state,
@@ -1696,13 +1785,7 @@ impl ServiceController {
                 return;
             }
         };
-        let log_tail = match recall_log_tail(&self.paths) {
-            Ok(lines) => lines,
-            Err(_) => {
-                let _ = reply.send(Err(RuntimeServiceControlError::Internal));
-                return;
-            }
-        };
+        let log_tail = recall_log_tail(&self.paths).unwrap_or_default();
         let response = RuntimeRecallStatusResponse {
             protocol_version: RUNTIME_CONTROL_PROTOCOL_VERSION,
             ok: true,
@@ -1710,6 +1793,7 @@ impl ServiceController {
             desired_state: runtime_desired_state(intent.desired_state),
             service_state: service.status.state,
             owned_by_requester: intent.owner_user_id == Some(user_id),
+            storage_issue: self.recall_storage.issue(),
             log_tail,
         };
         let _ = reply.send(Ok(response));
@@ -1903,7 +1987,7 @@ impl ServiceController {
         }
         self.refresh_and_reconcile()?;
         if !draining {
-            self.advance_pending_idle_acquires()?;
+            self.advance_pending_service_acquires()?;
         }
         if !draining && self.shutdown.is_accepting_work() && !self.schedule_drive_active {
             self.schedule_drive_active = true;
@@ -1915,15 +1999,34 @@ impl ServiceController {
         Ok(())
     }
 
-    fn advance_pending_idle_acquires(&mut self) -> Result<(), ServiceEngineError> {
+    fn defer_service_acquire(&mut self, pending: PendingServiceAcquire) {
+        if self.pending_service_acquires.len() >= MAX_PENDING_SERVICE_ACQUIRES
+            || !service_acquire_wait_fits_deadline(pending.wait, self.clock.now_ms(), Instant::now(), pending.deadline)
+        {
+            let _ = pending.reply.send_control(Err(pending.wait.deadline_error()));
+            return;
+        }
+        self.pending_service_acquires.push_back(pending);
+    }
+
+    fn advance_pending_service_acquires(&mut self) -> Result<(), ServiceEngineError> {
         // Recheck a bounded slice without blocking this controller or holding
-        // a store mutex while the old process tree drains. Retrying the exact
-        // opaque authority revalidates job cancellation/admission atomically.
-        let count = self.pending_idle_acquires.len().min(MAX_IDLE_STOP_RECHECKS_PER_TICK);
+        // a store mutex during recovery. Using the original authority makes
+        // every new acquisition pass the same ownership and admission checks.
+        let now_ms = self.clock.now_ms();
+        let count = self.pending_service_acquires.len().min(MAX_SERVICE_ACQUIRE_RECHECKS_PER_TICK);
         for _ in 0..count {
-            let pending = self.pending_idle_acquires.pop_front().expect("counted idle waiter");
-            if self.shutdown.is_requested() || Instant::now() >= pending.deadline {
+            let pending = self.pending_service_acquires.pop_front().expect("counted service waiter");
+            if self.shutdown.is_requested() {
                 let _ = pending.reply.send_control(Err(RuntimeServiceControlError::Unavailable));
+                continue;
+            }
+            if Instant::now() >= pending.deadline {
+                let _ = pending.reply.send_control(Err(pending.wait.deadline_error()));
+                continue;
+            }
+            if matches!(pending.wait, ServiceAcquireWait::Recovery { eligible_at_ms, .. } if now_ms < eligible_at_ms) {
+                self.pending_service_acquires.push_back(pending);
                 continue;
             }
             let owner_current = match &pending.owner {
@@ -1945,15 +2048,20 @@ impl ServiceController {
                     }),
                 HeldLeaseOwner::WorkerInstance { .. } => true, // Revalidated in the acquisition transaction below.
             };
-            let service = self.store.durable_service_snapshot(pending.authority.service_id())?;
-            if !owner_current || (service.status.state == RuntimeServiceState::Stopping
-                && service.generation != pending.stopping_generation) {
+            if !owner_current {
                 let _ = pending.reply.send_control(Err(RuntimeServiceControlError::Unavailable));
                 continue;
             }
+            if let ServiceAcquireWait::IdleStop(stopping_generation) = pending.wait {
+                let service = self.store.durable_service_snapshot(pending.authority.service_id())?;
+                if service.status.state == RuntimeServiceState::Stopping && service.generation != stopping_generation {
+                    let _ = pending.reply.send_control(Err(RuntimeServiceControlError::Unavailable));
+                    continue;
+                }
+            }
             self.begin_owned_acquire_with_deadline(
                 pending.authority, pending.owner, pending.reply, Some(pending.deadline),
-                pending.worker_cold_start_reacquire_used, false,
+                pending.cold_start_reacquire_used, false,
             )?;
         }
         Ok(())
@@ -2477,6 +2585,27 @@ impl ServiceController {
                     ));
                 }
                 let snapshot = self.store.durable_service_snapshot("recall")?;
+                let previous_issue = self.recall_storage.issue();
+                let offline = recall_service_has_no_resident_tree(snapshot.status.state);
+                self.recall_storage.tick(
+                    &self.paths,
+                    now_ms,
+                    matches!(snapshot.status.state, RuntimeServiceState::Ready | RuntimeServiceState::Busy),
+                    offline,
+                );
+                if self.recall_storage.issue().is_some() {
+                    self.stop_recall_lease()?;
+                    if let Some(pending) = self.pending_recall_reconcile.take() {
+                        let _ = pending.reply.send(Err(RuntimeServiceControlError::Unavailable));
+                    }
+                    return Ok(());
+                }
+                if previous_issue.is_some() {
+                    if snapshot.status.state == RuntimeServiceState::Failed {
+                        self.store.reset_durable_service_for_explicit_retry("recall", now_ms)?;
+                    }
+                    self.next_recall_attempt_ms = 0;
+                }
                 if !advance_recall_restart_barrier(
                     &mut self.recall_restart_barrier_epoch,
                     intent.decision_epoch,
@@ -2788,6 +2917,9 @@ impl ServiceController {
     }
 
     fn prepare_launch(&self, service_id: &str) -> Result<ServiceLaunchRequest, ServiceEngineError> {
+        if service_id == "recall" && self.recall_storage.issue().is_some() {
+            return Err(ServiceEngineError::RequiredServiceUnavailable(service_id.into()));
+        }
         let definition = self.registry.service(service_id)?;
         let profile = definition
             .launch_profile(self.mode)
@@ -2821,14 +2953,20 @@ impl ServiceController {
         } else {
             None
         };
-        Ok(self.registry.prepare_service_launch(
+        let request = self.registry.prepare_service_launch(
             &self.paths,
             &self.scheduler_authority,
             service_id,
             port,
             environment,
             recall_configuration.as_ref(),
-        )?)
+        )?;
+        if service_id == "recall" {
+            prepare_new_recall_database(&self.paths).map_err(|error| {
+                ServiceEngineError::Controller(format!("preparing Recall storage: {error}"))
+            })?;
+        }
+        Ok(request)
     }
 
     /// Best-effort diagnostic naming the manifest install probes that are not
@@ -3274,34 +3412,29 @@ impl ServiceController {
             .ok_or(ServiceEngineError::Invariant(
                 "pending terminal receipt disappeared",
             ))?;
-        let worker_cold_start_target_exit =
-            terminal.classification() == ProcessExitClassification::TargetExit;
+        let cold_start_exit = service_cold_start_can_retry(terminal.classification());
         match self
             .store
             .confirm_and_finish_retained_durable_service_exit(&key.0, key.1, terminal, now_ms)
         {
             Ok(_) => {
-                if worker_cold_start_target_exit {
+                if cold_start_exit {
                     for held in self.held_leases.values_mut().filter(|held| {
                         held.claim.service_id() == key.0
                             && held.claim.generation() == key.1
                             && held.pending_reply.is_some()
-                            && held.pending_worker_dependency.is_some()
-                            && matches!(&held.owner, HeldLeaseOwner::WorkerInstance { .. })
-                            && !held.worker_cold_start_reacquire_used
+                            && !held.cold_start_reacquire_used
                     }) {
-                        held.worker_cold_start_target_exit = true;
+                        held.retryable_cold_start_exit = true;
                     }
                 }
                 // An on-demand service restarts only through a fresh acquire,
                 // so a waiter on the generation that just exited can never be
                 // satisfied by it; the bounded retry projects the service as
                 // `starting` and the waiter would otherwise sit out its whole
-                // startup budget (a chat turn waited ~2 minutes on a mem0
-                // process that died a second after launch). Worker dependency
-                // acquires flagged above keep their bounded re-acquire; eager
-                // and scheduled services are restarted by this engine and
-                // their waiters may still be served.
+                // startup budget. Acquires flagged above keep their bounded
+                // re-acquire; eager and scheduled services are restarted by
+                // the controller.
                 if self.registry.service(&key.0)?.startup_policy == ServiceStartupPolicy::OnDemand {
                     self.fail_pending_acquires_for_generation_unless_reacquiring(
                         &key.0, key.1, now_ms,
@@ -3377,7 +3510,7 @@ impl ServiceController {
                 {
                     self.next_eager_attempt_ms.insert(
                         service_id,
-                        now_ms.saturating_add(RESOURCE_BLOCKED_EAGER_RECHECK_MS),
+                        now_ms.saturating_add(SERVICE_RESOURCE_RECHECK_MS),
                     );
                 }
                 continue;
@@ -3502,11 +3635,9 @@ impl ServiceController {
             let service_id = held.claim.service_id().to_owned();
             let service_generation = held.claim.generation();
             let pending_reply = held.pending_reply.is_some();
-            let pending_worker_dependency = held.pending_worker_dependency.is_some()
-                && matches!(&held.owner, HeldLeaseOwner::WorkerInstance { .. });
-            let worker_cold_start_target_exit = held.worker_cold_start_target_exit;
-            let worker_cold_start_restart = held.worker_cold_start_restart;
-            let worker_cold_start_reacquire_used = held.worker_cold_start_reacquire_used;
+            let retryable_cold_start_exit = held.retryable_cold_start_exit;
+            let cold_start_restart = held.cold_start_restart;
+            let cold_start_reacquire_used = held.cold_start_reacquire_used;
             let snapshot = snapshots
                 .get(&service_id)
                 .ok_or(ServiceEngineError::Invariant(
@@ -3553,10 +3684,10 @@ impl ServiceController {
                 self.revoke_held_lease(&lease_id, now_ms)?;
                 continue;
             }
-            if let Some(restart) = worker_cold_start_restart {
+            if let Some(restart) = cold_start_restart {
                 if !self.shutdown.is_accepting_work()
                     || now_ms >= restart.window_ends_at_ms
-                    || !worker_cold_start_reacquire_still_permitted(
+                    || !cold_start_reacquire_still_permitted(
                         self.registry.service(&service_id)?.startup_policy,
                         self.registry.service(&service_id)?.restart_policy,
                         snapshot,
@@ -3571,32 +3702,32 @@ impl ServiceController {
                 if now_ms < restart.eligible_at_ms {
                     continue;
                 }
-                self.reacquire_worker_cold_start_dependency(&lease_id, now_ms)?;
+                self.reacquire_cold_start_service(&lease_id, now_ms)?;
                 continue;
             }
             if !service_is_live {
                 let definition = self.registry.service(&service_id)?;
-                let restart = worker_cold_start_reacquire_schedule(
+                let restart = cold_start_reacquire_schedule(
                     definition.startup_policy,
                     definition.restart_policy,
                     snapshot,
                     service_generation,
-                    pending_reply && pending_worker_dependency,
-                    worker_cold_start_target_exit,
-                    worker_cold_start_reacquire_used,
+                    pending_reply,
+                    retryable_cold_start_exit,
+                    cold_start_reacquire_used,
                     self.shutdown.is_accepting_work(),
                 );
                 let restart_fits_deadline = restart.is_some_and(|schedule| {
-                    worker_cold_start_restart_fits_deadline(schedule, now_ms, now, pending_deadline)
+                    cold_start_restart_fits_deadline(schedule, now_ms, now, pending_deadline)
                 });
                 if restart_fits_deadline {
                     let held = self.held_leases.get_mut(&lease_id).ok_or(
                         ServiceEngineError::Invariant(
-                            "worker dependency lease disappeared before restart deferral",
+                            "service lease disappeared before restart deferral",
                         ),
                     )?;
-                    held.worker_cold_start_restart = restart;
-                    held.worker_cold_start_reacquire_used = true;
+                    held.cold_start_restart = restart;
+                    held.cold_start_reacquire_used = true;
                     continue;
                 }
                 self.revoke_held_lease(&lease_id, now_ms)?;
@@ -3636,7 +3767,7 @@ impl ServiceController {
         Ok(())
     }
 
-    fn reacquire_worker_cold_start_dependency(
+    fn reacquire_cold_start_service(
         &mut self,
         lease_id: &str,
         now_ms: u64,
@@ -3645,7 +3776,7 @@ impl ServiceController {
             .held_leases
             .remove(lease_id)
             .ok_or(ServiceEngineError::Invariant(
-                "worker dependency restart lease disappeared",
+                "service restart lease disappeared",
             ))?;
         match self.store.release_durable_service_lease(
             &held.claim,
@@ -3658,25 +3789,29 @@ impl ServiceController {
                 return Err(error.into());
             }
         }
-        let dependency =
-            held.pending_worker_dependency
-                .take()
-                .ok_or(ServiceEngineError::Invariant(
-                    "worker dependency restart lost its registry authority",
-                ))?;
+        let authority = match &held.owner {
+            HeldLeaseOwner::WorkerInstance { .. } => {
+                OwnedServiceAcquireAuthority::WorkerDependency(
+                    held.pending_worker_dependency.take().ok_or(ServiceEngineError::Invariant(
+                        "worker dependency restart lost its registry authority",
+                    ))?,
+                )
+            }
+            _ => OwnedServiceAcquireAuthority::Independent(held.claim.service_id().to_owned()),
+        };
         let reply = held
             .pending_reply
             .take()
             .ok_or(ServiceEngineError::Invariant(
-                "worker dependency restart lost its pending responder",
+                "service restart lost its pending responder",
             ))?;
         let pending_deadline = held.pending_deadline.ok_or(ServiceEngineError::Invariant(
-            "worker dependency restart lost its original deadline",
+            "service restart lost its original deadline",
         ))?;
         let owner = held.owner;
         self.remember_release(lease_id.to_owned(), now_ms);
         self.begin_owned_acquire_with_deadline(
-            OwnedServiceAcquireAuthority::WorkerDependency(dependency),
+            authority,
             owner,
             reply,
             Some(pending_deadline),
@@ -3721,7 +3856,7 @@ impl ServiceController {
     }
 
     /// The tree-exit variant of `fail_pending_acquires_for_generation`: a
-    /// worker dependency acquire that was just marked for a bounded cold-start
+    /// service acquire that was just marked for a bounded cold-start
     /// re-acquire keeps waiting; every other waiter on the exited generation
     /// is answered now.
     fn fail_pending_acquires_for_generation_unless_reacquiring(
@@ -3737,9 +3872,7 @@ impl ServiceController {
                 held.claim.service_id() == service_id
                     && held.claim.generation() == generation
                     && held.pending_reply.is_some()
-                    && !(held.worker_cold_start_target_exit
-                        && held.pending_worker_dependency.is_some()
-                        && matches!(&held.owner, HeldLeaseOwner::WorkerInstance { .. }))
+                    && !held.retryable_cold_start_exit
             })
             .map(|(lease_id, _)| lease_id.clone())
             .collect();
@@ -3916,7 +4049,7 @@ impl ServiceController {
     }
 
     fn fail_pending_acquires(&mut self) {
-        for pending in self.pending_idle_acquires.drain(..) {
+        for pending in self.pending_service_acquires.drain(..) {
             let _ = pending.reply.send_control(Err(RuntimeServiceControlError::Unavailable));
         }
         for held in self.held_leases.values_mut() {
@@ -4207,23 +4340,27 @@ fn service_state_requires_endpoint_reservation(state: RuntimeServiceState) -> bo
     )
 }
 
+fn service_cold_start_can_retry(exit: ProcessExitClassification) -> bool {
+    matches!(exit, ProcessExitClassification::TargetExit | ProcessExitClassification::ResourceExhausted)
+}
+
 #[allow(clippy::too_many_arguments)]
-fn worker_cold_start_reacquire_schedule(
+fn cold_start_reacquire_schedule(
     startup_policy: ServiceStartupPolicy,
     restart_policy: RestartPolicy,
     snapshot: &DurableServiceSnapshot,
     lease_generation: u64,
-    pending_worker_dependency: bool,
-    target_exit: bool,
+    pending_acquire: bool,
+    retryable_exit: bool,
     reacquire_used: bool,
     accepting_work: bool,
 ) -> Option<DurableServiceRestartSchedule> {
     if startup_policy != ServiceStartupPolicy::OnDemand
         || restart_policy != RestartPolicy::OnFailure
-        || snapshot.status.state != RuntimeServiceState::Failed
+        || !matches!(snapshot.status.state, RuntimeServiceState::Starting | RuntimeServiceState::Failed)
         || snapshot.generation != lease_generation
-        || !pending_worker_dependency
-        || !target_exit
+        || !pending_acquire
+        || !retryable_exit
         || reacquire_used
         || !accepting_work
     {
@@ -4244,7 +4381,7 @@ fn worker_cold_start_reacquire_schedule(
     }
 }
 
-fn worker_cold_start_reacquire_still_permitted(
+fn cold_start_reacquire_still_permitted(
     startup_policy: ServiceStartupPolicy,
     restart_policy: RestartPolicy,
     snapshot: &DurableServiceSnapshot,
@@ -4257,7 +4394,10 @@ fn worker_cold_start_reacquire_still_permitted(
     {
         return false;
     }
-    if snapshot.status.state == RuntimeServiceState::Failed
+    if matches!(
+        snapshot.status.state,
+        RuntimeServiceState::Starting | RuntimeServiceState::Failed | RuntimeServiceState::ResourceBlocked
+    )
         && snapshot.generation == failed_generation
     {
         return matches!(
@@ -4276,17 +4416,39 @@ fn worker_cold_start_reacquire_still_permitted(
         )
 }
 
-fn worker_cold_start_restart_fits_deadline(
+fn cold_start_restart_fits_deadline(
     schedule: DurableServiceRestartSchedule,
     now_ms: u64,
     now: Instant,
     pending_deadline: Option<Instant>,
 ) -> bool {
-    let wait = Duration::from_millis(schedule.eligible_at_ms.saturating_sub(now_ms));
-    pending_deadline.is_some_and(|deadline| now.checked_add(wait).is_some_and(|due| due < deadline))
+    pending_deadline.is_some_and(|deadline| {
+        service_acquire_wait_fits_deadline(
+            ServiceAcquireWait::Recovery {
+                eligible_at_ms: schedule.eligible_at_ms,
+                deadline_error: RuntimeServiceControlError::Unavailable,
+            },
+            now_ms,
+            now,
+            deadline,
+        )
+    })
 }
 
-const RESOURCE_BLOCKED_EAGER_RECHECK_MS: u64 = 15_000;
+fn service_acquire_wait_fits_deadline(
+    wait: ServiceAcquireWait,
+    now_ms: u64,
+    now: Instant,
+    deadline: Instant,
+) -> bool {
+    let delay = match wait {
+        ServiceAcquireWait::IdleStop(_) => Duration::ZERO,
+        ServiceAcquireWait::Recovery { eligible_at_ms, .. } => {
+            Duration::from_millis(eligible_at_ms.saturating_sub(now_ms))
+        }
+    };
+    now.checked_add(delay).is_some_and(|due| due < deadline)
+}
 
 fn resource_blocked_eager_recheck_due(now_ms: u64, next_attempt_ms: Option<u64>) -> bool {
     next_attempt_ms.is_none_or(|due| now_ms >= due)
@@ -4713,7 +4875,7 @@ mod tests {
     }
 
     #[test]
-    fn worker_cold_start_reacquire_is_exactly_one_target_exit_restart() {
+    fn cold_start_reacquire_is_bounded_for_process_and_memory_exits() {
         let schedule = DurableServiceRestartSchedule {
             eligible_at_ms: 110,
             window_ends_at_ms: 1_100,
@@ -4721,9 +4883,12 @@ mod tests {
             maximum_restarts: 2,
             window_exhausted: false,
         };
-        let snapshot = failed_service_snapshot(7, schedule);
+        let mut snapshot = failed_service_snapshot(7, schedule);
+        // The durable store shows "starting" during backoff even though the
+        // previous process tree already exited.
+        snapshot.status.state = RuntimeServiceState::Starting;
         assert_eq!(
-            worker_cold_start_reacquire_schedule(
+            cold_start_reacquire_schedule(
                 ServiceStartupPolicy::OnDemand,
                 RestartPolicy::OnFailure,
                 &snapshot,
@@ -4735,6 +4900,9 @@ mod tests {
             ),
             Some(schedule)
         );
+        assert!(service_cold_start_can_retry(ProcessExitClassification::TargetExit));
+        assert!(service_cold_start_can_retry(ProcessExitClassification::ResourceExhausted));
+        assert!(!service_cold_start_can_retry(ProcessExitClassification::Stopped));
 
         for (pending_worker, target_exit, used, accepting) in [
             (false, true, false, true),
@@ -4743,7 +4911,7 @@ mod tests {
             (true, true, false, false),
         ] {
             assert_eq!(
-                worker_cold_start_reacquire_schedule(
+                cold_start_reacquire_schedule(
                     ServiceStartupPolicy::OnDemand,
                     RestartPolicy::OnFailure,
                     &snapshot,
@@ -4757,7 +4925,7 @@ mod tests {
             );
         }
         assert_eq!(
-            worker_cold_start_reacquire_schedule(
+            cold_start_reacquire_schedule(
                 ServiceStartupPolicy::Eager,
                 RestartPolicy::OnFailure,
                 &snapshot,
@@ -4770,7 +4938,7 @@ mod tests {
             None
         );
         assert_eq!(
-            worker_cold_start_reacquire_schedule(
+            cold_start_reacquire_schedule(
                 ServiceStartupPolicy::OnDemand,
                 RestartPolicy::Never,
                 &snapshot,
@@ -4786,7 +4954,7 @@ mod tests {
         let mut resource_blocked = snapshot.clone();
         resource_blocked.status.state = RuntimeServiceState::ResourceBlocked;
         assert_eq!(
-            worker_cold_start_reacquire_schedule(
+            cold_start_reacquire_schedule(
                 ServiceStartupPolicy::OnDemand,
                 RestartPolicy::OnFailure,
                 &resource_blocked,
@@ -4810,7 +4978,7 @@ mod tests {
             },
         );
         assert_eq!(
-            worker_cold_start_reacquire_schedule(
+            cold_start_reacquire_schedule(
                 ServiceStartupPolicy::OnDemand,
                 RestartPolicy::OnFailure,
                 &exhausted,
@@ -4825,7 +4993,7 @@ mod tests {
     }
 
     #[test]
-    fn worker_cold_start_reacquire_preserves_schedule_and_original_deadline() {
+    fn cold_start_reacquire_preserves_schedule_and_original_deadline() {
         let schedule = DurableServiceRestartSchedule {
             eligible_at_ms: 110,
             window_ends_at_ms: 1_100,
@@ -4834,10 +5002,20 @@ mod tests {
             window_exhausted: false,
         };
         let snapshot = failed_service_snapshot(7, schedule);
-        assert!(worker_cold_start_reacquire_still_permitted(
+        assert!(cold_start_reacquire_still_permitted(
             ServiceStartupPolicy::OnDemand,
             RestartPolicy::OnFailure,
             &snapshot,
+            7,
+            schedule,
+            109,
+        ));
+        let mut resource_blocked = snapshot.clone();
+        resource_blocked.status.state = RuntimeServiceState::ResourceBlocked;
+        assert!(cold_start_reacquire_still_permitted(
+            ServiceStartupPolicy::OnDemand,
+            RestartPolicy::OnFailure,
+            &resource_blocked,
             7,
             schedule,
             109,
@@ -4849,7 +5027,7 @@ mod tests {
                 eligible_at_ms: 120,
                 ..schedule
             });
-        assert!(!worker_cold_start_reacquire_still_permitted(
+        assert!(!cold_start_reacquire_still_permitted(
             ServiceStartupPolicy::OnDemand,
             RestartPolicy::OnFailure,
             &changed_schedule,
@@ -4859,20 +5037,42 @@ mod tests {
         ));
 
         let now = Instant::now();
-        assert!(worker_cold_start_restart_fits_deadline(
+        assert!(cold_start_restart_fits_deadline(
             schedule,
             100,
             now,
             now.checked_add(Duration::from_millis(11)),
         ));
-        assert!(!worker_cold_start_restart_fits_deadline(
+        assert!(!cold_start_restart_fits_deadline(
             schedule,
             100,
             now,
             now.checked_add(Duration::from_millis(10)),
         ));
-        assert!(!worker_cold_start_restart_fits_deadline(
+        assert!(!cold_start_restart_fits_deadline(
             schedule, 100, now, None,
+        ));
+    }
+
+    #[test]
+    fn resource_recovery_wait_preserves_the_original_deadline_and_admission_error() {
+        let now = Instant::now();
+        let denial = RuntimeServiceControlError::ResourceExhausted {
+            required_headroom_mb: 4_100,
+            available_headroom_mb: 2_000,
+        };
+        let wait = ServiceAcquireWait::Recovery {
+            eligible_at_ms: 1_000 + SERVICE_RESOURCE_RECHECK_MS,
+            deadline_error: denial,
+        };
+        assert_eq!(wait.deadline_error(), denial);
+        let exact_delay = Duration::from_millis(SERVICE_RESOURCE_RECHECK_MS);
+        assert!(!service_acquire_wait_fits_deadline(wait, 1_000, now, now + exact_delay));
+        assert!(service_acquire_wait_fits_deadline(
+            wait,
+            1_000,
+            now,
+            now + exact_delay + Duration::from_millis(1),
         ));
     }
 
@@ -5077,11 +5277,11 @@ mod tests {
         assert!(resource_blocked_eager_recheck_due(1_000, None));
         assert!(!resource_blocked_eager_recheck_due(
             1_000,
-            Some(1_000 + RESOURCE_BLOCKED_EAGER_RECHECK_MS)
+            Some(1_000 + SERVICE_RESOURCE_RECHECK_MS)
         ));
         assert!(resource_blocked_eager_recheck_due(
-            1_000 + RESOURCE_BLOCKED_EAGER_RECHECK_MS,
-            Some(1_000 + RESOURCE_BLOCKED_EAGER_RECHECK_MS)
+            1_000 + SERVICE_RESOURCE_RECHECK_MS,
+            Some(1_000 + SERVICE_RESOURCE_RECHECK_MS)
         ));
     }
 

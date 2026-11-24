@@ -16,10 +16,10 @@ import {
   recallClient,
   type RecallHealth,
   type RecallMeeting,
-  type RecallSearchHit,
+  type RecallSearchQuery,
   type RecallTranscriptSegment,
 } from "./client.ts";
-import { RecallError } from "./errors.ts";
+import { RecallError, recallStorageMessage } from "./errors.ts";
 import {
   projectRecallProcessState,
   type RecallProcessState,
@@ -44,10 +44,13 @@ import {
   readRecallRuntimeStatus,
   recallRuntimeManaged,
   reconcileRecallRuntime,
+  recallRuntimeProcessRunning,
   type RecallRuntimeStatus,
+  type RecallStorageIssue,
 } from "./runtime-service.ts";
 import { getRecallSettings, recallDb, updateRecallSettings, type RecallSettings } from "./settings.ts";
 import { recallEarlierDays, storeRecallDailySummaries } from "./daily-summaries.ts";
+import { searchStoredScreenHistory } from "./stored-screen-history.ts";
 
 export interface RecallStatus {
   /** Feature switch — false disables the tab, the routes, and the tools. */
@@ -57,6 +60,8 @@ export interface RecallStatus {
   install: RecallInstallState;
   installStatus: RecallInstallStatus | null;
   process: RecallProcessState;
+  desiredRecording: boolean;
+  storageIssue: RecallStorageIssue | null;
   /** The engine answered a health probe just now. */
   reachable: boolean;
   health: RecallHealth | null;
@@ -120,6 +125,9 @@ export async function getRecallStatus(
     install,
     installStatus: readInstallStatus(config),
     process: process_,
+    desiredRecording: runtimeStatus?.desiredState === "running",
+    storageIssue: (runtimeStatus?.desiredState === "running" ? runtimeStatus.storageIssue : null)
+      ?? (managed && recallDatabaseQuarantined(config) ? "history-needs-repair" : null),
     reachable: health !== null,
     health,
     settings,
@@ -144,9 +152,10 @@ export async function searchRecall(
   args: RecallSearchArgs,
   {
     forAgent = false,
+    allowStoredScreenHistory = false,
     config = getRecallConfig(),
     client,
-  }: { forAgent?: boolean; config?: RecallConfig; client?: RecallClient } = {},
+  }: { forAgent?: boolean; allowStoredScreenHistory?: boolean; config?: RecallConfig; client?: RecallClient } = {},
 ): Promise<RecallSearchResult> {
   const settings = getRecallSettings(userId);
   assertReadable(settings, config, forAgent);
@@ -159,7 +168,7 @@ export async function searchRecall(
 
   // Over-fetch a little so exclusions removing rows do not silently shrink the
   // page below what the caller asked for.
-  const page = await (client ?? recallClient(config)).search({
+  const query: RecallSearchQuery = {
     query: args.query,
     contentType: CONTENT_TYPES[args.contentType ?? "all"] ?? "all",
     limit: Math.min(limit * 2, config.maxResults * 2),
@@ -167,9 +176,17 @@ export async function searchRecall(
     endTime: end,
     appName: args.appName,
     windowName: args.windowName,
+  };
+  const page = await (client ?? recallClient(config)).search(query).catch(error => {
+    if (allowStoredScreenHistory && !forAgent && recallRuntimeManaged()
+      && error instanceof RecallError && error.code === "engine_unavailable") {
+      const stored = searchStoredScreenHistory(config.dataDir, query, config.maxResultChars + 1);
+      if (stored) return stored;
+    }
+    throw error;
   });
 
-  return shapeSearchResults(page.hits as readonly RecallSearchHit[], {
+  return shapeSearchResults(page.hits, {
     excludedWindows: settings.excludedWindows,
     limit,
     maxTextChars: config.maxResultChars,
@@ -192,14 +209,17 @@ export async function recallActivitySummary(
   const start =
     args.startTime?.trim() || `${settings.defaultLookbackHours}h ago`;
   const end = args.endTime?.trim() || "now";
+  const earlierDays = args.appName || settings.excludedWindows.length ? [] : recallEarlierDays(recallDb, start, end);
   const summary = await (client ?? recallClient(config)).activitySummary({
     startTime: start,
     endTime: end,
     appName: args.appName,
+  }).catch(error => {
+    if (earlierDays.length && error instanceof RecallError && error.code === "engine_unavailable") return null;
+    throw error;
   });
-  const earlierDays = recallEarlierDays(recallDb, start, end);
   return earlierDays.length
-    ? { range: { start, end }, summary, earlierDays, earlierDaysNote: "Recall keeps full detail for two weeks. For these older days only a stored daily summary exists." }
+    ? { range: { start, end }, summary, earlierDays, earlierDaysNote: "Recall deleted days before 2026-11-11; for these only a stored daily summary exists." }
     : { range: { start, end }, summary };
 }
 
@@ -207,15 +227,14 @@ const summaryPass = globalThis as typeof globalThis & { __breadboardRecallSummar
 
 /**
  * Keep a summary of each day before the engine's retention deletes it.
- * ponytail: a timer in this process, five minutes after the first app open and
- * hourly after. A day is lost only if Breadboard stays closed for the two
- * weeks after it; move this to a Runtime schedule if that ever matters.
+ * Collect these while the dashboard is open. Recorder storage maintenance
+ * runs independently under Runtime supervision.
  */
 function scheduleDailySummaries(config: RecallConfig): void {
   if (summaryPass.__breadboardRecallSummaryPass) return;
   summaryPass.__breadboardRecallSummaryPass = true;
-  const pass = () => {
-    void storeRecallDailySummaries(recallDb, recallClient(config)).catch(() => undefined);
+  const pass = async () => {
+    await storeRecallDailySummaries(recallDb, recallClient(config)).catch(() => undefined);
     setTimeout(pass, 60 * 60_000).unref?.();
   };
   setTimeout(pass, 5 * 60_000).unref?.();
@@ -360,10 +379,17 @@ export async function controlRecall(
           cause,
         });
       });
-      if (before?.desiredState === "running") {
+      if (before?.desiredState === "running" && before.storageIssue) {
+        throw new RecallError("engine_start_failed", { userMessage: recallStorageMessage[before.storageIssue] });
+      }
+      if (recallRuntimeProcessRunning(before)) {
         throw new RecallError("engine_already_running");
       }
-      await reconcileRecallRuntime(userId, "running", settings);
+      await reconcileRecallRuntime(userId, "running", settings).catch(async (error: unknown) => {
+        const issue = (await observedRecallRuntimeStatus(userId))?.storageIssue;
+        if (issue) throw new RecallError("engine_start_failed", { userMessage: recallStorageMessage[issue] });
+        throw error;
+      });
       return {
         action,
         state: reconciledProcessState(true),
@@ -446,6 +472,11 @@ export async function autoStartRecallCapture(
   const install = installState(config);
   if (config.enabled && settings.captureEnabled) scheduleDailySummaries(config);
 
+  if (runtimeStatus?.desiredState === "running" && runtimeStatus.storageIssue
+    && runtimeStatus.storageIssue !== "history-needs-repair") {
+    return { started: false, outcome: "already_running", state };
+  }
+
   // A quarantined database makes every start exit at once, so repair comes
   // before any start decision. Each attempt copies the whole database, hence
   // one attempt per six hours while the marker is still there.
@@ -454,6 +485,7 @@ export async function autoStartRecallCapture(
     settings.captureEnabled &&
     settings.autoStartCapture &&
     install.installed &&
+    !recallRuntimeProcessRunning(runtimeStatus) &&
     recallDatabaseQuarantined(config)
   ) {
     const last = readInstallStatus(config);

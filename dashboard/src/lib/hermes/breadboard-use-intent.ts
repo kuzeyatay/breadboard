@@ -1,4 +1,5 @@
 import type { HermesSurface } from "./config.ts";
+import { requestProse } from "./request-language.ts";
 
 export const BREADBOARD_USE_SKILL = "breadboard-use";
 const ACTION = /\b(?:open|close|dismiss|exit|end|stop|switch|navigate|go|click|press|type|fill|scroll|select|search|use|control|operate)\b/i;
@@ -61,7 +62,8 @@ export function breadboardUseCommandText(input: {
   text: string; surface: HermesSurface; authenticated: boolean;
   priorMessages?: ReadonlyArray<{ role: string; content: string }>;
 }): { text: string; automatic: boolean } {
-  const text = input.text.trim();
+  // Pasted code, quotes and documents are material, not the request.
+  const text = requestProse(input.text).trim();
   const prose = surfaceProse(text);
   const available = input.authenticated && ["dashboard_terminal", "garden_chat"].includes(input.surface);
   if (available && !text.startsWith("/") && screenRecordingRequest(text)) {

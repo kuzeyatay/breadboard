@@ -1,3 +1,4 @@
+import { explainFailure } from "../failure-explanations.ts";
 import { codeWithoutRepositoryDirective, codexDriveDirective, isCodeWritingRequest } from "./codex-drive.ts";
 import { gardenHasRepository } from "../code-index/create-repository.ts";
 import { modelLaunchableRuntimeAgents } from "./capability-combinations.ts";
@@ -7,6 +8,7 @@ import { voiceReplyWithOpener } from "../speech/voice-opener-context.ts";
 import { parseBrowserTerminalAccess } from "../browser-terminal.ts";
 import { resolveUnifiedWorkflowContinuation } from "../workflows/unified-continuation.ts";
 import { browserTerminalPrompt, setBrowserTerminalContext } from "./browser-terminal-context.ts";
+import { codeOriginPrompt } from "../conversations/origin-label.ts";
 import { hermesPromptText } from "../agent-runtime/hermes-prompt.ts";
 import { selectedGardenDocumentContext, selectedGardenDocumentQuestionPrompt } from "./garden-reader.ts";
 import { agentPreferencesContext } from "../agent-preferences/store.ts";
@@ -69,6 +71,7 @@ import {
   riskClassForPermission,
 } from "./autonomy.ts";
 import { connectedAppRegistryForTurn } from "./unified-tool-registry.ts";
+import { renderConnectionShortlistDirective, shortlistConnections } from "./connection-routing.ts";
 import { connectedRepositoryForTurn } from "../code-index/chat-turn.ts";
 import {
   loadSuperAgentInventory,
@@ -114,6 +117,7 @@ import { deliverCompletedResearch, completedResearchEventStream } from "../conve
 import { deliverCompletedHyperframes } from "../conversations/deliver-completed-hyperframes.ts";
 import { loadConversationMemoryBundle } from "../conversations/memory.ts";
 import { personalTurnPrompt } from "../personal-context/resolve.ts";
+import { answerFeedbackContext } from "./answer-signals.ts";
 import { gardenInstructions } from "../garden-settings.ts";
 import {
   associateArtifactToolCall,
@@ -1070,6 +1074,9 @@ export async function openGardenAgentChat(
         connectedApps.systemContext,
       ].filter(Boolean).join("\n\n"),
       additional: [
+        payload.internalAgentContinuation === true ? "" : answerFeedbackContext(
+          conversation, memory.recentMessages.filter(message => message.order_index < reservedUserOrderIndex), textSelection?.sourceMessageId,
+        ),
         superAgentInventory ? renderSuperAgentTurnFocus(superAgentInventory) : "",
         // Ahead of the topology packet: what the Garden holds is read before
         // how its concepts relate, because the first question of a Garden turn
@@ -1087,6 +1094,10 @@ export async function openGardenAgentChat(
         repository?.systemContext ?? "",
         // Empty unless this turn was offered a shortlist above.
         renderSkillShortlistDirective(skillShortlist),
+        // Which of the turn's connections this request is about, and the order to try them in.
+        payload.internalAgentContinuation === true
+          ? ""
+          : renderConnectionShortlistDirective(shortlistConnections(resolved.userText || text, connectedApps.catalog)),
         codexDrive ? codexDriveDirective() : codingRequest ? codeWithoutRepositoryDirective(true) : "",
         documents.context,
         renderWatchVideoContext(preparedGardenVideos),
@@ -1262,6 +1273,19 @@ export async function openGardenAgentChat(
           ...(carriedDelegations.length
             ? { delegatedAgents: carriedDelegations }
             : {}),
+          // Same enrollment as turn-service: without it a Garden turn whose
+          // Hermes process was memory-killed mid-answer could only ever read
+          // "interrupted", while the same turn in the Terminal resumed.
+          taskRecovery: {
+            request: text,
+            rootClientMessageId: reservedClientMessageId,
+            turn: 0,
+            context: { activeGardenSlug: clusterSlug },
+            superAgent,
+            personalize: payload.personalize !== false,
+            adhdMode: payload.adhdMode === true,
+            yoloMode,
+          },
         },
       });
     } catch (error) {
@@ -1276,7 +1300,7 @@ export async function openGardenAgentChat(
     const runtimeMessageId = hermesMessageId(reservedClientMessageId);
     // Screen contents are ephemeral turn context, not persisted run history.
     const screenContext = await browserTerminalPrompt(browserAccess, true, { userId });
-    const runtimeSystem = [runSystem, screenContext].filter(Boolean).join("\n\n");
+    const runtimeSystem = [runSystem, screenContext, codeOriginPrompt(conversation.origin_label)].filter(Boolean).join("\n\n");
     const finalConversation = conversation;
     return legacyGardenEventStream(
       session,
@@ -1506,7 +1530,14 @@ function gardenTurnContext(
       ? `Approved local folders: ${roots
           .map((root) => `${root.displayName} (${root.canonicalPath})`)
           .join("; ")}.`
-      : "No local folders are approved for this turn.",
+      : prepared.grant.allowedTools.terminal_execute_command
+        ? "No local folders are pre-approved, but that does not limit you."
+        : "No local folders are approved for this turn.",
+    // "No folders approved" alone read as "you cannot touch this computer", so
+    // a granted terminal was never called ("I can't access Downloads").
+    prepared.grant.allowedTools.terminal_execute_command
+      ? "You can act on this computer: terminal_execute_command reaches any path (Downloads, Documents, Program Files) and can run installers; a command outside approved folders raises Breadboard's permission request on its own, which YOLO approves automatically. computer_use operates desktop apps and setup wizards. Never tell the user you cannot access their files or run a program — do it."
+      : "",
     prepared.grant.withheldCapabilities.length
       ? `Withheld pending the user's approval: ${prepared.grant.withheldCapabilities.join(", ")}. Breadboard has already shown the user a permission request; do not ask for approval in prose and do not restate the task.`
       : "",
@@ -2131,8 +2162,7 @@ function legacyGardenEventStream(
         markStatus(session, "failed");
         finishRuntimeRun(runId, "error");
         revokeCapabilityDecision(session.row.id, "abandoned");
-        const failureMessage =
-          error instanceof Error ? error.message : "Agent stream failed.";
+        const failureMessage = explainFailure(error, "Agent stream failed.");
         const verification = assessVerification("", evidence, { answerModel: null });
         emit({ type: "verification", verification });
         if (session.row.conversation_id !== null) {

@@ -22,9 +22,11 @@ test("dashboard test discovery partitions the exact real-browser lane", () => {
   assert.ok(discovered.includes("dashboard-test-runner.test.mjs"));
   assert.deepEqual(partition.browser, [...SERIAL_BROWSER_TEST_FILES]);
   assert.deepEqual(partition.browser, [
+    "answer-feedback-browser.test.mjs",
     "diagram-in-chat-browser.test.mjs",
     "api-anything-ui.test.mjs",
     "system-prompts-browser.test.mjs",
+    "settings-memory-popover-browser.test.mjs",
     "desktop-tab-overflow-browser.test.mjs",
     "chat-notification-visibility-browser.test.mjs",
     "chat-notification-real-renderer.test.mjs",

@@ -10,6 +10,9 @@
 
 import type { ScheduledChatJobRow } from "./store.ts";
 
+const RETRY_DELAY_MS = 2 * 60_000;
+const RETRY_WINDOW_MS = 24 * 3_600_000;
+
 /** Run every due job once. Returns the jobs it dispatched. */
 export async function runDueScheduledChats(
   now: Date = new Date(),
@@ -32,6 +35,13 @@ export async function runDueScheduledChats(
         error: result.error ?? null,
         at: new Date(),
       });
+      // The runtime was not up (app just started, or it crashed): try again in
+      // a couple of minutes rather than skipping to the next occurrence. Give up
+      // after a day so a permanently disabled runtime doesn't retry forever.
+      const dueAt = job.due_at ?? job.next_run_at;
+      if (result.retryable && Date.now() - Date.parse(dueAt) < RETRY_WINDOW_MS) {
+        store.retrySoon(job.id, dueAt, new Date(Date.now() + RETRY_DELAY_MS));
+      }
     } catch (cause) {
       // The runner catches its own failures, so reaching here means something
       // outside it broke. Record it anyway: recordRun is what releases the

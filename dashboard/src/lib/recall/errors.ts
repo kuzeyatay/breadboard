@@ -3,6 +3,15 @@
 // "something went wrong", and never a filesystem path, bearer token, or
 // command line.
 
+import type { RecallStorageIssue } from "./runtime-service.ts";
+
+export const recallStorageMessage: Record<RecallStorageIssue, string> = {
+  "low-disk": "Recall paused recording to protect its history. It will resume when the drive has at least 2 GiB free.",
+  "checking-history": "Breadboard is checking Recall’s history. Recording will resume if the check passes.",
+  "history-needs-repair": "Recall’s history needs repair. Open Recall settings to check or repair it.",
+  "storage-unavailable": "Breadboard can’t access Recall’s storage right now. Check that its drive is available.",
+};
+
 export type RecallErrorCode =
   | "feature_disabled"
   | "not_installed"
@@ -24,17 +33,17 @@ export type RecallErrorCode =
 
 const USER_MESSAGES: Record<RecallErrorCode, string> = {
   feature_disabled:
-    "Recall is turned off. Enable it in Settings → Recall.",
+    "Recall is turned off. Enable it in Screen Time → Recall settings.",
   not_installed:
-    "The Recall capture engine is not installed yet. Install it from Settings → Recall.",
+    "The Recall capture engine is not installed yet. Install it from Screen Time → Recall settings.",
   install_in_progress:
-    "The Recall capture engine is still installing. Watch the progress in Settings → Recall.",
+    "The Recall capture engine is still installing. Watch the progress in Screen Time → Recall settings.",
   install_failed:
-    "Installing the Recall capture engine failed. Check your network connection and try again from Settings → Recall.",
+    "Installing the Recall capture engine failed. Check your network connection and try again from Screen Time → Recall settings.",
   engine_unavailable:
-    "The Recall capture engine is not running, so there is no history to read.",
+    "Recall’s history is temporarily unavailable. Open Recall settings to check its status.",
   engine_auth_failed:
-    "The Recall capture engine rejected Breadboard's key. Restart capture from Settings → Recall.",
+    "The Recall capture engine rejected Breadboard's key. Restart capture from Screen Time → Recall settings.",
   engine_rejected: "The Recall capture engine rejected the request.",
   engine_already_running: "Recall capture is already running.",
   engine_not_running: "Recall capture is not running.",
@@ -43,7 +52,7 @@ const USER_MESSAGES: Record<RecallErrorCode, string> = {
   capture_disabled:
     "Recall capture is switched off, so nothing is being recorded.",
   agent_access_disabled:
-    "The agent is not allowed to read your Recall history. Turn on agent access in Settings → Recall.",
+    "The agent is not allowed to read your Recall history. Turn on agent access in Screen Time → Recall settings.",
   // Not a failure: the runtime turns this into a prompt and retries once the
   // user answers, so the message reads as the question they will be asked.
   recall_permission_required: "Change what Recall is recording?",

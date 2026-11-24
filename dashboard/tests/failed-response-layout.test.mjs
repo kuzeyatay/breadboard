@@ -40,6 +40,9 @@ const bundle = await esbuild.build({
     const SelectableAssistantMarkdown = ChatMarkdown, SteeredAssistantResponse = ChatMarkdown;
     export function Fixture({message, delegationInterrupted = false, failureText = null, failureInline = false, running = false, disabled = false, branched = true}) {
       const index = 1, lastAssistantIndex = 1, visibleAssistantContent = message.content;
+      const continuation = {}, storedAssistantContent = message.content, inlineCorrections = [];
+      const preparationLabel = undefined, surface = 'dashboard_terminal', sessionId = null;
+      const messageRewriteReview = () => undefined, naturalRewriteFor = () => undefined;
       const responseInterrupted = !!message.interrupted || failureInline;
       const onRetryMessage = () => {}, retryAssistantAsBranch = () => {};
       const activeRun = running, runInFlight = running, conversationLocked = false;
@@ -76,7 +79,7 @@ test("restored failures show their saved error once between thinking and every n
     assert.equal(html.split("The runner could not start.").length - 1, 1);
     assert.ok(html.indexOf("assistant-response-meta") < html.indexOf("The runner could not start."));
     assert.ok(html.indexOf("The runner could not start.") < html.indexOf('aria-label="Assistant response actions"'));
-    for (const label of ["Copy response", "Read response aloud", "Mark response as helpful", "Mark response as not helpful", "Edit assistant response", "Regenerate response", "More response actions", "Previous response branch"]) {
+    for (const label of ["Copy response", "Response feedback", "Read response aloud", "Edit assistant response", "Regenerate response", "More response actions", "Previous response branch"]) {
       assert.ok(html.includes(`aria-label="${label}"`), label);
     }
     assert.doesNotMatch(html, /assistant-response-notice|<details|>Retry<|>Details</);

@@ -61,6 +61,9 @@ export function ensureScheduledChatSchema(db: Db): void {
     "lease_expires_at",
     "lease_expires_at TEXT",
   );
+  // The occurrence a run that could not start (runtime still booting, app was
+  // off) is retrying for, so the retry can tell the agent how late it is.
+  ensureColumn(db, "scheduled_chat_jobs", "missed_due_at", "missed_due_at TEXT");
   ensureColumn(
     db,
     "scheduled_chat_jobs",

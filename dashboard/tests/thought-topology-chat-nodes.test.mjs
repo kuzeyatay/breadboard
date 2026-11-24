@@ -150,6 +150,32 @@ test("a completed answer stores its turn vectors; the map reads them and never e
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM thought_topology_chat_turn_vectors").get().n, 0);
 });
 
+test("a question in one Garden links to the closest page of another Garden", async () => {
+  const { crossGardenChatLinks } = chatNodes;
+  const physicsDir = fs.mkdtempSync(path.join(os.tmpdir(), "topology-chats-physics-"));
+  fs.mkdirSync(path.join(physicsDir, ".breadboard"));
+  fs.writeFileSync(path.join(physicsDir, ".breadboard/thought-topology-cache.json"), JSON.stringify({
+    schemaVersion: 1, sourceRevision: "r", scoringVersion: "v", edges: {},
+    nodes: { "phys:grad": cacheNode("phys:grad", [1, 0, 0]), "phys:chain": cacheNode("phys:chain", [0, 1, 0]), "phys:series": cacheNode("phys:series", [0, 0, 1]) },
+  }));
+  const physicsId = Number(db.prepare("INSERT INTO clusters (user_id, name, slug) VALUES (?, 'Physics', 'physics')").run(userId).lastInsertRowid);
+  const asked = chat(userId, "Composites", [["user", "how does the chain rule work for composites?"], ["assistant", "Use the chain rule."]]);
+  withViewerChats(topology(), viewer(userId));
+  await settleChatEmbedding();
+
+  const gardens = [
+    { clusterId, slug: "calc", gardenDir },
+    { clusterId: physicsId, slug: "physics", gardenDir: physicsDir },
+  ];
+  const links = crossGardenChatLinks(userId, gardens);
+  const fromChat = links.filter((entry) => entry.chatId === asked.id);
+  assert.deepEqual(fromChat.map((entry) => [entry.fromSlug, entry.toSlug, entry.pageId]), [["calc", "physics", "phys:chain"]]);
+  assert.ok(fromChat[0].score >= chatNodes.CHAT_LINK_FLOOR);
+  assert.ok(links.every((entry) => entry.fromSlug !== entry.toSlug), "a chat's own Garden is not a cross-Garden target");
+  assert.deepEqual(crossGardenChatLinks(userId, gardens.slice(0, 1)), [], "one Garden has nothing to cross to");
+  assert.deepEqual(crossGardenChatLinks(otherId, gardens), [], "only the viewer's own chats link");
+});
+
 test("anonymous viewers and lexical maps", () => {
   const base = topology();
   assert.equal(withViewerChats(base, viewer(null)), base);

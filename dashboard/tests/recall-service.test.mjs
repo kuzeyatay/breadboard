@@ -8,6 +8,7 @@ const key = "__recallServiceTest";
 const state = () => globalThis[key];
 const prelude = `const state = () => globalThis[${JSON.stringify(key)}];`;
 const stubs = {
+  "stored-screen-history.ts": "export const searchStoredScreenHistory = () => null;",
   "settings.ts": `${prelude}
     export const getRecallSettings = () => state().settings;
     export const recallDb = null;
@@ -26,7 +27,8 @@ const stubs = {
       state().runtime = {desiredState, ownedByRequester: true, serviceState: desiredState === "running" ? "healthy" : "stopped"};
       if (desiredState === "running") state().onStart?.();
     };
-    export const recallRuntimeProcessRunning = status => status?.desiredState === "running";`,
+    export const recallRuntimeProcessRunning = status => status?.desiredState === "running" &&
+      ["pending", "starting", "healthy", "degraded", "ready", "busy"].includes(status.serviceState);`,
 };
 const bundle = await esbuild.build({
   entryPoints: [fileURLToPath(new URL("../src/lib/recall/service.ts", import.meta.url))],
@@ -82,6 +84,16 @@ test("first launch installs once, waits, then starts with the current settings",
   assert.deepEqual(state().reconciles[0].configuration.excludedWindows, ["Bank"]);
   assert.equal((await startup()).outcome, "already_running");
   assert.equal(state().reconciles.length, 1);
+});
+
+test("low disk leaves the native running request in place until the user stops it", async () => {
+  reset({ installed: true, quarantined: true, runtime: { desiredState: "running", ownedByRequester: true,
+    serviceState: "available-but-stopped", storageIssue: "low-disk" } });
+  assert.equal((await startup()).outcome, "already_running");
+  assert.equal(state().installs, 0);
+  assert.deepEqual(state().reconciles, []);
+  await service.controlRecall(7, "stop");
+  assert.deepEqual(state().reconciles, [{ desiredState: "stopped", configuration: null }]);
 });
 
 test("opting out during installation prevents capture when the download finishes", async () => {

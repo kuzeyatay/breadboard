@@ -184,3 +184,28 @@ test("the cursor is saved so a restart resumes instead of starting over", async 
   await until(() => net.state.subscribeUrls.length >= 2 && net.state.sockets.size === 1, "reconnected");
   assert.match(net.state.subscribeUrls.at(-1), /cursor=\d+/);
 });
+
+test("AI flags count one per person per site, and the address outline turns yellow then red", async () => {
+  const F = "com.breadboard.aiflag";
+  const flags = viewer => get(`/aiflags?url=${encodeURIComponent("https://www.slop.example/post/1")}${viewer ? `&viewer=${viewer}` : ""}`);
+  const flagDb = await openDatabase({ file: ":memory:" });
+  const flagger = await createIndexer({ db: flagDb, config: { ...settings({}), aiFlagWarn: 2, aiFlagAlert: 3 } });
+  const ask = async viewer => (await flagger.api({ method: "GET", path: "/aiflags", query: new URLSearchParams({ url: "https://slop.example/", ...(viewer ? { viewer } : {}) }), host: "", ip: "1", headers: {} }));
+  const commit = (who, operation, rkey = "slop.example") => flagger.handleEvent({ did: who, kind: "commit", commit: { operation, collection: F, rkey, record: { $type: F, site: rkey, createdAt: "2026-11-21T10:00:00.000Z" } } });
+  assert.deepEqual(await ask(), { site: "slop.example", count: 0, mine: false, level: null });
+  await commit(alice, "create");
+  await commit(alice, "update"); // the same person again
+  await commit(bob, "create", "not a site");
+  assert.deepEqual(await ask(alice), { site: "slop.example", count: 1, mine: true, level: null });
+  await commit(bob, "create");
+  assert.equal((await ask(carol)).level, "yellow");
+  await commit(carol, "create");
+  assert.deepEqual(await ask(carol), { site: "slop.example", count: 3, mine: true, level: "red" });
+  await commit(carol, "delete");
+  assert.equal((await ask()).level, "yellow");
+  await flagDb.close();
+  // And through the live stream on the shared indexer, with default thresholds.
+  net.push(net.put(dave, F, "slop.example", { $type: F, site: "slop.example", createdAt: "2026-11-21T10:00:00.000Z" }));
+  await until(async () => (await flags(dave)).mine === true, "flag indexed");
+  assert.deepEqual(await flags(), { site: "slop.example", count: 1, mine: false, level: null });
+});

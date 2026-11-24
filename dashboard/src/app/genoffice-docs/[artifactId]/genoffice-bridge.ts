@@ -200,7 +200,15 @@ export function installGenOfficeBridge({
       window.print();
       return { ok: true };
     },
-    exportPdf: async () => ({ ok: false, error: "Save the document, then use Breadboard's PDF tools." }),
+    // A Word document exports through the browser's print dialog ("Save as PDF"), at the document's own
+    // page size; the original stays a Word file.
+    exportPdf: async (_name: string, pageWidthTwips: number, pageHeightTwips: number) => {
+      const page = document.createElement("style");
+      page.textContent = `@page { size: ${pageWidthTwips / 1440}in ${pageHeightTwips / 1440}in; margin: 0 }`;
+      document.head.append(page);
+      try { window.print(); } finally { page.remove(); }
+      return { ok: true, path: "Save as PDF in the print dialog" };
+    },
     printPdfBuffer: async () => ({ ok: false, error: "PDF export is unavailable in the embedded editor." }),
     saveMergedPdf: async () => ({ ok: false, error: "PDF export is unavailable in the embedded editor." }),
     openNewTab: async () => {},

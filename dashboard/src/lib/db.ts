@@ -430,6 +430,9 @@ ensureColumn(
   "history_surface",
   "history_surface TEXT NOT NULL DEFAULT 'garden_chat'",
 );
+// The reader's Assistant keeps a separate history per Quartz page or Garden file
+// ('' is the garden home and every Assistant chat made before pages had their own).
+ensureColumn("chat_sessions", "page_key", "page_key TEXT NOT NULL DEFAULT ''");
 // Virtual grouping of clusters into folders on the dashboard / garden overview.
 ensureColumn("clusters", "folder", "folder TEXT");
 ensureColumn("users", "username", "username TEXT");

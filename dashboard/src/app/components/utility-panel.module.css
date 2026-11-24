@@ -32,7 +32,7 @@
 .heading { margin: 0; font-size: 26px; line-height: 1.2; font-weight: 650; letter-spacing: -.6px; }
 .description { flex: none; margin: 0; padding: 0 24px 18px; color: var(--ink-muted); font-size: 13px; line-height: 1.5; }
 .scrollArea { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 2px 24px 24px; }
-.iconButton { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 44px; height: 44px; padding: 0; border: 0; border-radius: 50%; background: color-mix(in srgb, var(--ink-heading) 7%, var(--paper-surface)); color: var(--ink-muted); cursor: pointer; touch-action: manipulation; }
+.iconButton { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 44px; height: 44px; padding: 0; border: 0; border-radius: 50%; corner-shape: round; background: color-mix(in srgb, var(--ink-heading) 7%, var(--paper-surface)); color: var(--ink-muted); cursor: pointer; touch-action: manipulation; }
 .iconButton:disabled { opacity: .45; cursor: not-allowed; }
 .panel button:focus-visible, .panel a:focus-visible { outline: 2px solid var(--neu-focus); outline-offset: 3px; }
 @media (hover: hover) { .iconButton:hover { background: color-mix(in srgb, var(--ink-heading) 12%, var(--paper-surface)); color: var(--ink-heading); } }

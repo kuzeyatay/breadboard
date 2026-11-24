@@ -223,6 +223,13 @@ function addedNodeIds(
   return new Set(projection.nodes.filter((node) => !previousIds.has(node.id)).map((node) => node.id));
 }
 
+function scopedBuildVersions(configuredVersions: TopologyCacheVersions) {
+  return { ...configuredVersions,
+    nodePromptVersion: stableHashText(configuredVersions.nodePromptVersion, scopedSystemPromptText("topology-node-summary")),
+    edgePromptVersion: stableHashText(configuredVersions.edgePromptVersion, scopedSystemPromptText("topology-edge-explanation")),
+  };
+}
+
 function topologyMatchesVersions(
   topology: ThoughtTopology,
   versions: TopologyCacheVersions,
@@ -367,6 +374,25 @@ async function embedChangedNodes(
   };
 }
 
+function selectTopologyConnections(
+  projection: GardenProjection,
+  embeddingAvailable: boolean,
+  additions: ReadonlySet<string> | null,
+) {
+  const candidates = scoreAffinityPairs(projection.nodes, embeddingAvailable);
+  // Centred cosine is used when the Garden has enough pages.
+  const centering = embeddingAvailable ? embeddingCentering(projection.nodes).strength : 0;
+  const threshold = adaptiveThreshold(candidates.map((candidate) => candidate.score), centering);
+  // Authored links already exist, so they don't consume inferred anchors.
+  const authoredKeys = new Set(projection.authoredEdges.map((edge) => [edge.source, edge.target].sort().join("\u0000")));
+  const inferable = candidates.filter((candidate) => !authoredKeys.has([candidate.source, candidate.target].sort().join("\u0000")));
+  const inferred = selectSparseInferredEdges(inferable, threshold, documentCapacities(projection.nodes), centering);
+  // A pure addition preserves relationships between existing pages.
+  const selected = mergeAuthoredPairs(inferred, projection.authoredEdges, candidates)
+    .filter((candidate) => additions === null || additions.has(candidate.source) || additions.has(candidate.target));
+  return { threshold, selected };
+}
+
 export async function buildThoughtTopologyFromProjection(input: {
   clusterId: number;
   gardenId: string;
@@ -383,11 +409,7 @@ export async function buildThoughtTopologyFromProjection(input: {
 }): Promise<{ topology: ThoughtTopology; cache: ThoughtTopologyCache; enrichmentSkipped: number }> {
   return withGardenSystemPromptContext(input.gardenId, async () => {
   const dependencies = input.dependencies ?? {};
-  const configuredVersions = dependencies.cacheVersions ?? DEFAULT_TOPOLOGY_CACHE_VERSIONS;
-  const versions = { ...configuredVersions,
-    nodePromptVersion: stableHashText(configuredVersions.nodePromptVersion, scopedSystemPromptText("topology-node-summary")),
-    edgePromptVersion: stableHashText(configuredVersions.edgePromptVersion, scopedSystemPromptText("topology-edge-explanation")),
-  };
+  const versions = scopedBuildVersions(dependencies.cacheVersions ?? DEFAULT_TOPOLOGY_CACHE_VERSIONS);
   const clock = () => (dependencies.now?.() ?? new Date()).getTime();
   const enrichmentDeadline = clock() + (dependencies.enrichmentBudgetMs ?? DEFAULT_ENRICHMENT_BUDGET_MS);
   const baseGenerator = dependencies.generator === undefined
@@ -464,29 +486,15 @@ export async function buildThoughtTopologyFromProjection(input: {
   const additions = input.previousTopology && topologyMatchesVersions(input.previousTopology, versions)
     ? addedNodeIds(input.previousTopology, input.projection)
     : null;
-  const candidates = scoreAffinityPairs(input.projection.nodes, embedding.available);
-  // The scale the pair scores live on: centred cosine for a Garden with
-  // enough pages, raw cosine for a tiny one (see `embeddingCentering`).
-  const centering = embedding.available ? embeddingCentering(input.projection.nodes).strength : 0;
-  const threshold = adaptiveThreshold(candidates.map((candidate) => candidate.score), centering);
-  // Authored pairs are edges already; letting them compete for a page's
-  // inferred anchors would spend those on links the page has regardless.
-  const authoredKeys = new Set(input.projection.authoredEdges.map((edge) => [edge.source, edge.target].sort().join("\u0000")));
-  const inferable = candidates.filter((candidate) => !authoredKeys.has([candidate.source, candidate.target].sort().join("\u0000")));
-  const inferred = selectSparseInferredEdges(inferable, threshold, documentCapacities(input.projection.nodes), centering);
-  const merged = mergeAuthoredPairs(inferred, input.projection.authoredEdges, candidates)
-    // For a pure addition, the published relationships between old pages are
-    // already authoritative. Only choose relationships that place a new page
-    // into that graph; the old edge set is copied below without reconstruction.
-    .filter((candidate) =>
-      additions === null || additions.has(candidate.source) || additions.has(candidate.target));
+  // Only retain the selected pairs while the model generates explanations.
+  const { threshold, selected } = selectTopologyConnections(input.projection, embedding.available, additions);
   const byId = new Map(input.projection.nodes.map((node) => [node.id, node]));
   const nextEdgeCache: ThoughtTopologyCache["edges"] = {};
   // The model explains a long document's edge from the part that matched,
   // not from its table of contents.
   const spanProjection = (node: ProjectedTopologyNode, label: string | undefined) =>
     (label ? node.spans.find((span) => span.label === label)?.text : undefined) ?? node.semanticText;
-  const edgeInputs = merged.flatMap((candidate) => {
+  const edgeInputs = selected.flatMap((candidate) => {
     const left = byId.get(candidate.source);
     const right = byId.get(candidate.target);
     if (!left || !right) return [];
@@ -656,6 +664,24 @@ export async function buildThoughtTopologyFromProjection(input: {
   input.saveNode?.(embedding.records["meta:garden"]);
 
   const generatedAt = (dependencies.now?.() ?? new Date()).toISOString();
+  const builtAt = Date.parse(generatedAt);
+  const previousNodes = new Map(input.previousTopology?.nodes.map(n => [n.id, n]));
+  const previousEdges = new Map(input.previousTopology?.edges.map(e => [e.id, e]));
+  for (const node of input.projection.nodes) {
+    const prior = previousNodes.get(node.id);
+    const stamps = prior?.activityTimes ?? node.activityTimes ?? [];
+    const changed = input.previousTopology && prior?.contentHash !== node.contentHash;
+    // Age out old events only when the document changes. The viewer applies
+    // its window at read time, so a rebuild alone cannot change activity.
+    node.activityTimes = changed
+      ? [...new Set([...stamps, builtAt])].filter(t => t >= builtAt - 7 * 86400000)
+      : stamps;
+  }
+  for (const edge of edges) {
+    const prior = previousEdges.get(edge.id);
+    edge.changedAt = input.previousTopology && (!prior || edge.score - prior.score >= 0.03)
+      ? builtAt : prior?.changedAt;
+  }
   const degraded = !embedding.available ||
     gardenSummary.state !== "ready" ||
     input.projection.nodes.some((node) => node.summary.state !== "ready") ||
@@ -718,7 +744,8 @@ export async function buildThoughtTopologyInRuntimeWorker(input: {
   const contentFingerprint = gardenContentFingerprint(gardenDir);
   const previous = readThoughtTopology(gardenDir);
   const oldCache = readThoughtTopologyCache(gardenDir);
-  const versions = input.dependencies?.cacheVersions ?? DEFAULT_TOPOLOGY_CACHE_VERSIONS;
+  const versions = withGardenSystemPromptContext(input.gardenId,
+    () => scopedBuildVersions(input.dependencies?.cacheVersions ?? DEFAULT_TOPOLOGY_CACHE_VERSIONS));
   const reusable =
     previous &&
     oldCache &&

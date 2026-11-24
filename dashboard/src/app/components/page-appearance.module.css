@@ -36,6 +36,7 @@
   padding: 0;
   border: 1px solid var(--neu-border);
   border-radius: 50%;
+  corner-shape: round;
   background: var(--neu-surface);
   color: var(--botanical);
   box-shadow: var(--neu-raised-shadow);
@@ -171,6 +172,7 @@
   position: absolute;
   inset: 10px 0;
   border-radius: 999px;
+  corner-shape: round;
   background: var(--line-strong);
   box-shadow: var(--neu-inset-shadow);
 }
@@ -186,6 +188,7 @@
   width: 20px;
   height: 20px;
   border-radius: 50%;
+  corner-shape: round;
   background: var(--paper-raised);
   box-shadow: 0 1px 4px rgb(10 20 15 / 20%);
 }

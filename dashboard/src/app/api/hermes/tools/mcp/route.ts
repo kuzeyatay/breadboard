@@ -52,8 +52,10 @@ import { isCodeIndexConnectionSlug } from "@/lib/code-index/repository-digest.ts
 import { getConversationById } from "@/lib/conversations/store.ts";
 import { missingRunArtifact } from "@/lib/hermes/artifact-completion.ts";
 import { callMcpInstaller, MCP_INSTALLER_CONNECTION } from "@/lib/hermes/mcp-installer.ts";
+import { mcpFailureGuidance, retryTransient, type ConnectionCandidate } from "@/lib/hermes/connection-routing.ts";
 import { DOORY_CONNECTION } from "@/lib/doory/context.ts";
 import { VIDEO_STUDIO_CONNECTION } from "@/lib/timeline-studio/context.ts";
+import { SPACES_PAGE_CONNECTION } from "@/lib/spaces/page-context.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -133,6 +135,28 @@ export async function POST(request: Request) {
         "The capability decision is unavailable.",
       );
     }
+    // A failed call carries its next move (retry, the closest other connection,
+    // a built-in tool), so the turn falls back instead of ending on it. Only
+    // for failures: a 4xx is a policy or permission answer, never routed around.
+    const ownerId = session.user_id;
+    const withFallback = (error: ApiError, failedSlug: string): ApiError => {
+      // A server that is down is an outage, not a refusal, so it gets the hint too.
+      if (error.status < 500 && error.code !== "mcp_not_connected") return error;
+      let alternatives: ConnectionCandidate[] = [];
+      try {
+        if (ownerId !== null) alternatives = listMcpConnections(ownerId, true)
+          .filter((candidate) => decision.selectedConnections.includes(candidate.slug))
+          .map((candidate) => ({
+            slug: candidate.slug,
+            name: candidate.displayName || candidate.slug,
+            tools: proxyMcpTools(ownerId, candidate.slug).map((entry) => entry.name),
+          }));
+      } catch {
+        // Guidance without alternatives still points at built-in tools.
+      }
+      const guidance = mcpFailureGuidance({ failedSlug, tool, code: error.code, args, alternatives });
+      return guidance ? new ApiError(error.status, error.code, `${error.message} ${guidance}`) : error;
+    };
 
     const body = await readJsonBody(request, 384 * 1024);
     const slug = text(body.connection, "connection", 48).toLowerCase();
@@ -242,6 +266,17 @@ export async function POST(request: Request) {
         eventType: "mcp.tool_completed", runtimeSessionId: session.id,
         userId: session.user_id, gardenId: session.garden_id,
         payload: { runId: run.id, provider: DOORY_CONNECTION, tool, success: (data as { isError?: boolean }).isError !== true },
+      });
+      return NextResponse.json({ ok: true, data });
+    }
+
+    if (slug === SPACES_PAGE_CONNECTION) {
+      const { callSpacesPageTool } = await import("@/lib/spaces/page-bridge.ts");
+      const data = await callSpacesPageTool({ userId: session.user_id, tool, args, signal: request.signal });
+      recordAuditEvent({
+        eventType: "mcp.tool_completed", runtimeSessionId: session.id,
+        userId: session.user_id, gardenId: session.garden_id,
+        payload: { runId: run.id, provider: SPACES_PAGE_CONNECTION, tool, success: (data as { isError?: boolean }).isError !== true },
       });
       return NextResponse.json({ ok: true, data });
     }
@@ -393,12 +428,11 @@ export async function POST(request: Request) {
             success: false,
           },
         });
-        if (error instanceof ApiError) throw error;
-        throw new ApiError(
+        throw withFallback(error instanceof ApiError ? error : new ApiError(
           502,
           "connected_app_action_failed",
           "The connected-app action failed. Provider details were redacted.",
-        );
+        ), slug);
       }
     }
 
@@ -484,11 +518,11 @@ export async function POST(request: Request) {
       config,
     );
     if (statuses[slug]?.status !== "connected") {
-      throw new ApiError(
+      throw withFallback(new ApiError(
         409,
         "mcp_not_connected",
         "That connection is not connected.",
-      );
+      ), slug);
     }
     if (tool === "__breadboard_list_tools") {
       // Read-only discovery on the selected, same-user connection. Return
@@ -546,11 +580,19 @@ export async function POST(request: Request) {
       },
     });
     try {
-      const data = await callProxyMcpTool({
-        userId: session.user_id,
+      // A call that never reached the MCP server is retried with backoff when it
+      // cannot write; anything else fails through to withFallback below.
+      const callerId = session.user_id;
+      const data = await retryTransient(() => callProxyMcpTool({
+        userId: callerId,
         slug,
         tool,
         args,
+        signal: request.signal,
+      }), {
+        idempotent: declared.annotations?.destructiveHint !== true && connectionToolAllowed(tool),
+        isTransient: (error) =>
+          error instanceof LocalMcpBrokerError && (error.code === "runtime_unavailable" || error.code === "unavailable"),
         signal: request.signal,
       });
       recordAuditEvent({
@@ -567,6 +609,12 @@ export async function POST(request: Request) {
           success: true,
         },
       });
+      // A tool that answered with an error reached its server and failed there:
+      // the result still goes back, carrying the same next move a thrown failure gets.
+      if (data && typeof data === "object" && (data as { isError?: unknown }).isError === true) {
+        const fallback = withFallback(new ApiError(502, "mcp_tool_error", ""), slug).message.trim();
+        if (fallback) return NextResponse.json({ ok: true, data: { ...(data as object), breadboardFallback: fallback } });
+      }
       return NextResponse.json({ ok: true, data });
     } catch (error) {
       recordAuditEvent({
@@ -585,23 +633,23 @@ export async function POST(request: Request) {
       });
       if (error instanceof LocalMcpBrokerError) {
         if (error.code === "BREADBOARD_RESOURCE_EXHAUSTED") {
-          throw new ApiError(503, error.code, error.message);
+          throw withFallback(new ApiError(503, error.code, error.message), slug);
         }
         if (error.code === "cancelled") {
           throw new ApiError(499, "mcp_tool_cancelled", "The MCP tool call was cancelled.");
         }
         if (error.code === "timeout") {
-          throw new ApiError(504, "mcp_tool_timeout", "The MCP tool did not finish in time.");
+          throw withFallback(new ApiError(504, "mcp_tool_timeout", "The MCP tool did not finish in time."), slug);
         }
         if (error.code === "runtime_unavailable" || error.code === "unavailable") {
-          throw new ApiError(503, "mcp_runtime_unavailable", "The local MCP runtime is unavailable.");
+          throw withFallback(new ApiError(503, "mcp_runtime_unavailable", "The local MCP runtime is unavailable."), slug);
         }
       }
-      throw new ApiError(
+      throw withFallback(new ApiError(
         502,
         "mcp_tool_failed",
         "The MCP tool failed. Sensitive runtime details were redacted.",
-      );
+      ), slug);
     }
   } catch (error) {
     return apiErrorResponse(error);

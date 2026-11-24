@@ -35,6 +35,8 @@ export type ContentDetails = {
   /** Runtime-only authenticated library entries; never emitted into the static index. */
   gardenFileId?: string
   gardenFileKind?: "file" | "folder"
+  /** The Garden file a generated text note stands for (Spaces documents); the file is what opens. */
+  gardenFileMirror?: string
 }
 
 interface Options {
@@ -151,6 +153,7 @@ export const ContentIndex: QuartzEmitterPlugin<Partial<Options>> = (opts) => {
             sourceDocument:
               typeof fm?.source_document === "string" ? fm.source_document : undefined,
             flagColor: typeof fm?.flag_color === "string" ? fm.flag_color : undefined,
+            gardenFileMirror: typeof fm?.garden_file_id === "string" ? fm.garden_file_id : undefined,
             locations: toStringArray(fm?.locations),
             content: file.data.text ?? "",
             richContent: opts?.rssFullHtml

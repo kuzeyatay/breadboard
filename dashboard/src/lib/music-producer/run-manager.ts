@@ -12,6 +12,22 @@ import { startOuterAgentRun, readOuterAgentRunView, abortOuterAgentRun, type Out
 import { createMusicLaunch, musicLaunch, updateMusicLaunch, recoverMusicArtifactRuns, musicSwarmRequestId } from "./store.ts";
 import { musicProducerUserMessage } from "./identity.ts";
 import type { MusicWorkerRequest } from "./worker.ts";
+/**
+ * A resume keeps the original model and adapter binding, but a managed
+ * ACE-Step's loopback port and key belong to the current Runtime: a Runtime
+ * restart re-allocates them, and the saved port then refuses ("Could not
+ * reach ACE-Step"). An external endpoint is the user's own and stays as saved.
+ */
+export function resumedProviderConfig(previousJson: string | undefined, userId: number) {
+  if (!previousJson) return resolveAceStepConfig(userId);
+  const previous = JSON.parse(previousJson) as ReturnType<typeof resolveAceStepConfig>;
+  if (!previous.managed) return previous;
+  const current = resolveAceStepConfig(userId);
+  return current.managed
+    ? { ...previous, baseUrl: current.baseUrl, apiKey: current.apiKey, directory: current.directory }
+    : previous;
+}
+
 export async function startRun(input: Omit<MusicWorkerRequest, "launchId"> & {
   userId: number;
   clientMessageId: string;
@@ -72,7 +88,7 @@ export async function startRun(input: Omit<MusicWorkerRequest, "launchId"> & {
       });
     }
     updateMusicLaunch(input.userId, id, {
-      context_json: JSON.stringify(musicArtifactContext(input.userId, id)), provider_json: previous?.provider_json ?? JSON.stringify(resolveAceStepConfig(input.userId)),
+      context_json: JSON.stringify(musicArtifactContext(input.userId, id)), provider_json: JSON.stringify(resumedProviderConfig(previous?.provider_json, input.userId)),
       ...(previous ? { request_json: previous.request_json, provider_receipt: previous.provider_receipt, provider_state: previous.provider_state } : {})
     });
     const job = await startOuterAgentRun({

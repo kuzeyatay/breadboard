@@ -28,7 +28,7 @@ export async function fakeAceStep(options = {}) {
     } else if (req.url === "/query_result") {
       const id = JSON.parse(body).task_id_list[0];
       const status = options.failed ? 2 : options.running ? 0 : 1;
-      res.end(envelope([{ task_id: id, status, result: status === 1 ? JSON.stringify([{ file: "/v1/audio?path=fixture.wav", status: 1, seed_value: "42" }]) : "[]" }]));
+      res.end(envelope([{ task_id: id, status, result: status === 1 ? JSON.stringify([{ file: "/v1/audio?path=fixture.wav", status: 1, seed_value: "42" }]) : "[]", ...(status === 0 ? { progress_text: "" } : {}) }]));
     } else if (req.url?.startsWith("/v1/audio")) {
       if (options.redirect) { res.writeHead(302, { location: options.redirect }); res.end(); return; }
       res.setHeader("content-type", options.corrupt ? "text/html" : "audio/wav");

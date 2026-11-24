@@ -28,8 +28,10 @@ import ActivityPanel from "./hermes/activity-panel";
 import MetalSendButton from "./effects/metal-send-button";
 import InlineQuestionAttachments from "./inline-question-attachments";
 import ViewportPopover from "./viewport-popover";
+import ChatDraftFormatting from "./chat/chat-draft-formatting";
+import { UserMessageText } from "./hermes/command-text";
 import { Ellipsis, X } from "lucide-react";
-import AssistantMessageActions, { MessageActionsSlot } from "./assistant-message-actions";
+import AssistantMessageActions, { AssistantResponseBranchNavigation, MessageActionsSlot, type AssistantResponseBranch } from "./assistant-message-actions";
 import type { VerificationSummary } from "@/lib/hermes/evidence";
 import ChatMarkdown, {
   chatTextAnnotationsEqual,
@@ -189,6 +191,22 @@ function selectionCandidate(
   const rect = range.getBoundingClientRect();
   if (!rect.width && !rect.height) return null;
   return { sourceMessageId, ...draft, anchor: floatingRect(rect) };
+}
+
+/** Selection reader for message bodies that are not a SelectableAssistantMarkdown
+ * (agent run cards). Selections inside a nested markdown row are left to it. */
+export function readRegionSelection(
+  root: HTMLElement,
+  sourceMessageId: string,
+  onSelection: (selection: ChatTextSelectionCandidate) => void,
+) {
+  window.requestAnimationFrame(() => {
+    const node = window.getSelection()?.anchorNode;
+    const element = node instanceof Element ? node : node?.parentElement;
+    if (element?.closest("[data-chat-selectable-message]")) return;
+    const candidate = selectionCandidate(root, sourceMessageId);
+    if (candidate) onSelection(candidate);
+  });
 }
 
 // Memoized against everything but a real change: the virtual list re-invokes
@@ -659,6 +677,8 @@ export function InlineSelectionAnswerPopover({
   deleteDisabled = false,
   initialEditing = true,
   note,
+  branch,
+  newQuestionRequest,
 }: {
   anchor: FloatingAnchorRect;
   /** Resolve the painted excerpt again after scrolling or transcript reflow. */
@@ -710,6 +730,10 @@ export function InlineSelectionAnswerPopover({
   deleteDisabled?: boolean;
   initialEditing?: boolean;
   note?: string;
+  /** Earlier questions asked on this highlight, switched like chat branches. */
+  branch?: AssistantResponseBranch;
+  /** Bumped by the host to open an empty question (another reply on the same answer). */
+  newQuestionRequest?: number;
 }) {
   const popoverRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -736,6 +760,10 @@ export function InlineSelectionAnswerPopover({
     persistDraft,
   );
   const editing = draft !== null;
+  useEffect(() => {
+    if (newQuestionRequest) setDraft("");
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only a new request opens the editor
+  }, [newQuestionRequest]);
   const [submittedAttachments, setSubmittedAttachments] = useState<readonly ChatAttachment[]>([]);
   const [attachmentStatus, setAttachmentStatus] = useState("");
   const [uploadingImages, setUploadingImages] = useState(0);
@@ -1058,7 +1086,7 @@ export function InlineSelectionAnswerPopover({
       // is acting on.
       if (
         target instanceof Element &&
-        target.closest(".bb-chat-selection-menu, .bb-inline-answer, .bb-composer-overlay")
+        target.closest(".bb-chat-selection-menu, .bb-inline-answer, .bb-composer-overlay, [data-chat-draft-formatting]")
       ) {
         return;
       }
@@ -1200,6 +1228,7 @@ export function InlineSelectionAnswerPopover({
       <div className="flex items-start justify-between gap-2">
         {editing ? (
           <div className="bb-inline-answer-question min-w-0 flex-1">
+            <ChatDraftFormatting inputRef={editorRef} value={draft ?? ""} />
             {attachmentPreviews(attachedFiles, true)}
             <div className="relative">
               <textarea
@@ -1219,13 +1248,13 @@ export function InlineSelectionAnswerPopover({
                 className="block w-full resize-none rounded-sm bg-transparent py-1 text-sm leading-[22px] text-[var(--ink-heading)] placeholder:text-[var(--ink-muted)] outline-none"
                 aria-label="Edit question about highlighted text"
                 aria-describedby={promptSuggestion.text ? promptSuggestion.descriptionId : undefined}
-                aria-keyshortcuts={promptSuggestion.text ? "Tab Escape" : undefined}
+                aria-keyshortcuts={promptSuggestion.text ? "Tab Escape Alt+I" : undefined}
               />
               {promptSuggestion.text && <>
                 <PromptSuggestionOverlay key={promptSuggestion.text} text={promptSuggestion.text}
-                  placeholder="Ask a question…" compact multiline />
+                  reason={promptSuggestion.reason} editorRef={editorRef} placeholder="Ask a question…" compact multiline />
                 <span id={promptSuggestion.descriptionId} className="sr-only">
-                  Suggested question: {promptSuggestion.text} Press Tab to use it or Escape to dismiss.
+                  Suggested question: {promptSuggestion.text} Press Tab to use it, Escape to dismiss, or Alt+I for the reason.
                 </span>
               </>}
             </div>
@@ -1260,16 +1289,19 @@ export function InlineSelectionAnswerPopover({
         ) : question ? (
           // The question is the edit affordance: clicking it reopens the words
           // that were asked, and sending replaces the answer under them.
-          <button
-            type="button"
-            onClick={() => setDraft(question)}
-            disabled={!onAskAgain || questionDisabled}
-            className="bb-inline-answer-question min-w-0 flex-1 py-1 text-left font-medium transition disabled:cursor-default"
-            title={onAskAgain ? "Edit this question" : undefined}
-            aria-label={onAskAgain ? "Edit this question" : undefined}
-          >
-            <p className="text-sm leading-[22px] text-[var(--ink-heading)]">{question}</p>
-          </button>
+          <div className="bb-inline-answer-question relative min-w-0 flex-1 py-1 text-left font-medium">
+            {onAskAgain && <button
+              type="button"
+              onClick={() => setDraft(question)}
+              disabled={questionDisabled}
+              className="absolute inset-0 rounded-sm"
+              title="Edit this question"
+              aria-label="Edit this question"
+            />}
+            <div className="pointer-events-none relative text-sm leading-[22px] text-[var(--ink-heading)] [&_a]:pointer-events-auto">
+              <UserMessageText content={question} />
+            </div>
+          </div>
         ) : !pending && !answer && onAskAgain ? (
           <button
             type="button"
@@ -1357,6 +1389,7 @@ export function InlineSelectionAnswerPopover({
           <AssistantMessageActions
             content={answer}
             retryControl={retryControl}
+            branch={branch}
             responseStartedAt={startedAt}
             responseDurationMs={responseDurationMs}
             responseCompletedAt={responseCompletedAt}
@@ -1364,7 +1397,7 @@ export function InlineSelectionAnswerPopover({
           />
         </MessageActionsSlot>
       ) : retryControl ? (
-        <div className="mt-2 flex items-center">{retryControl}</div>
+        <div className="mt-2 flex items-center">{retryControl}{branch ? <AssistantResponseBranchNavigation branch={branch} className="ml-1" /> : null}</div>
       ) : null}
       </div>
     </div>,

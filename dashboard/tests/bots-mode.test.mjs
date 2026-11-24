@@ -99,13 +99,19 @@ test("the default team does real work, and an existing unedited default is upgra
   const { LEGACY_PREBUILT_PERSONALITIES } = await import("../src/lib/bots/presets.ts");
   db.prepare("INSERT INTO users(id,username,email,password_hash) VALUES (3,'bots-legacy','legacy@example.test','x')").run();
   const legacy = db.prepare("INSERT INTO conversation_bots(user_id,id,name,description,personality,avatar,prebuilt) VALUES (3,?,?,?,?,?,1)");
-  legacy.run("byte", "Byte", "old", LEGACY_PREBUILT_PERSONALITIES.byte, JSON.stringify({ shape: "mech", color: "#809bd4", face: "eyes" }));
+  legacy.run("byte", "Byte", "old", LEGACY_PREBUILT_PERSONALITIES.byte[0], JSON.stringify({ shape: "mech", color: "#809bd4", face: "eyes" }));
+  legacy.run("nova", "Nova", "old", LEGACY_PREBUILT_PERSONALITIES.nova[1], JSON.stringify({ shape: "circle", color: "#ac7bea", face: "eyes" }));
   legacy.run("boo", "Boo", "mine", "You are Boo, my own edit.", JSON.stringify({ shape: "ghost", color: "#e8e4f0", face: "mouth" }));
   const team = Object.fromEntries(botsStore().list(3).map(bot => [bot.id, bot]));
   assert.match(team.byte.personality, /engineer[\s\S]*run it or its tests/, "an untouched default gets its job");
   assert.equal(team.byte.effort, "high");
+  assert.match(team.nova.personality, /research_begin/, "a v2 default gets the tool names too");
   assert.equal(team.boo.personality, "You are Boo, my own edit.", "a default the user edited is theirs");
-  for (const id of ["sage", "spark", "moss", "byte", "nova"]) assert.match(team[id].personality, /Do the work instead of describing it/);
+  for (const id of ["sage", "spark", "moss", "byte", "nova"]) {
+    // Every default names where it works from, its method, its outputs, its bar and its handoffs.
+    assert.match(team[id].personality, /Works from:[\s\S]*Method:[\s\S]*Delivers:[\s\S]*Quality bar:[\s\S]*Hands off:[\s\S]*do the work instead of describing it/, id);
+    assert.ok(team[id].personality.length < 6000, `${id} fits the editor's limit`);
+  }
 });
 
 test("the provider turn sends the saved personality, persists the reply and uses subsequent edits", async () => {
@@ -251,6 +257,63 @@ test("each bot keeps its own memory: bot_memory remembers, recalls, forgets, and
   assert.equal(botsStore().recall(1, "sage").some(memory => memory.id === saved.id), false);
   allowed = false;
   assert.equal((await call({ action: "recall", bot: "sage" })).status, 403, "the turn's capability grant gates the tool");
+});
+
+test("Bread manages the team from plain requests: bot_manage creates, updates and removes", async () => {
+  for (const surface of ["dashboard_terminal", "garden_chat"]) assert.ok(allowedToolsForSurface(surface).includes("bot_manage"), surface);
+  assert.ok(!allowedToolsForSurface("quartz_ai").includes("bot_manage"));
+  const session = { id: 9, user_id: 1, conversation_id: 90, surface: "garden_chat" };
+  let allowed = true;
+  const route = loadModule(new URL("../src/app/api/hermes/tools/bot-manage/route.ts", import.meta.url), {
+    "next/server": { NextResponse: { json: Response.json } },
+    "@/lib/hermes/route-helpers.ts": { ...core, requireEnabled: () => {}, apiErrorResponse: error => { const { status, body } = core.describeError(error); return Response.json(body, { status }); } },
+    "@/lib/hermes/tool-service-auth.ts": { capabilityForInternalToolRequest: () => "token" },
+    "@/lib/hermes/capability-token.ts": { verifyCapabilityToken: () => ({ ok: true, token: { breadboardSessionId: "9", conversationId: 90, hermesSessionId: "h" } }), tokenAllows: () => allowed },
+    "@/lib/hermes/runtime-store.ts": { getRuntimeSessionById: () => session, runtimeExternalSessionId: () => "h" },
+    "@/lib/bots/server.ts": { botsStore },
+    "@/lib/bots/store.ts": botModule,
+    "@/lib/bots/mentions.ts": await import("../src/lib/bots/mentions.ts"),
+    "@/lib/bots/presets.ts": await import("../src/lib/bots/presets.ts"),
+    "@/lib/bots/types.ts": await import("../src/lib/bots/types.ts"),
+  });
+  const call = async args => { const response = await route.POST(new Request("http://localhost/x", { method: "POST", body: JSON.stringify({ args }) })); return { status: response.status, body: await response.json() }; };
+  const job = name => `You are ${name}, the user's chess coach. Works from: their games and the web. Method: review each game move by move and find the turning point. Delivers: annotated games and drills. Quality bar: every line checked. Hands off: reading lists to Nova.`;
+  assert.equal((await call({ action: "create", name: "Rook", description: "", personality: "You are Rook. Be nice." })).status, 400, "a one-line persona is sent back for a real job");
+  const made = await call({ action: "create", name: "Rook", description: "Chess coach.", personality: job("Rook"), memories: ["Rated about 1200 on Lichess.", "  "] });
+  assert.equal(made.status, 200);
+  assert.equal(made.body.data.created.handle, "rook");
+  assert.equal(made.body.data.created.memories, 1);
+  assert.match(made.body.data.note, /schedule_create[\s\S]*@rook/, "Bread is pointed at routines for recurring jobs");
+  const rook = botsStore().list(1).find(bot => bot.name === "Rook");
+  assert.match(rook.personality, /chess coach[\s\S]*do the work instead of describing it/, "every created bot gets the team's work rules");
+  assert.ok(rook.avatar.shape && /^#[0-9a-f]{6}$/i.test(rook.avatar.color), "a missing avatar is chosen for it");
+  assert.deepEqual(botsStore().recall(1, rook.id).map(memory => memory.text), ["Rated about 1200 on Lichess."], "the request's facts are its first memories");
+  assert.equal((await call({ action: "create", name: "rook", description: "", personality: job("rook") })).status, 409, "handle clash");
+  assert.equal((await call({ action: "create", name: "Bread", description: "", personality: job("Bread") })).status, 409, "Bread is taken");
+  assert.equal((await call({ name: "Pawn", description: "", personality: job("Pawn"), avatar: { shape: "cat", color: "#123456", face: "mouth" }, effort: "high" })).body.data.created.avatar.shape, "cat", "create is the default action");
+  assert.equal((await call({ action: "create", name: "Bad", description: "", personality: job("Bad"), effort: "turbo" })).status, 400);
+
+  // "Give Rook a red avatar and make it think harder": only those fields change.
+  const updated = await call({ action: "update", bot: "@rook", avatar: { color: "#e5484d" }, effort: "high" });
+  assert.equal(updated.status, 200);
+  const rook2 = botsStore().get(1, rook.id);
+  assert.deepEqual([rook2.avatar.shape, rook2.avatar.color, rook2.effort, rook2.personality], [rook.avatar.shape, "#e5484d", "high", rook.personality]);
+  assert.equal((await call({ action: "update", bot: "rook", name: "Pawn" })).status, 409, "a rename cannot take a teammate's handle");
+  assert.equal((await call({ action: "update", bot: "rook", personality: "short" })).status, 400);
+  assert.equal((await call({ action: "update", bot: "bread", description: "x" })).status, 400, "Bread is not a bot to edit");
+  assert.equal((await call({ action: "update", bot: "nobody", description: "x" })).status, 404);
+  assert.equal((await call({ action: "update", bot: "sage", description: "Exam coach." })).body.data.updated.description, "Exam coach.", "defaults can be tuned too");
+  botsStore().save(1, { ...botsStore().get(1, "sage"), description: "Study coach." }, "sage");
+
+  session.user_id = 2;
+  assert.equal(botsStore().list(2).some(bot => bot.name === "Rook"), false, "created on the caller's team only");
+  assert.equal((await call({ action: "remove", bot: "rook" })).status, 404, "another account cannot touch it");
+  session.user_id = 1;
+  assert.equal((await call({ action: "remove", bot: "pawn" })).body.data.removed, "Pawn");
+  assert.equal(botsStore().list(1).some(bot => bot.name === "Pawn"), false);
+  allowed = false;
+  assert.equal((await call({ action: "create", name: "Knight", description: "", personality: job("Knight") })).status, 403);
+  for (const bot of botsStore().list(1).filter(bot => ["Rook", "Pawn"].includes(bot.name))) botsStore().archive(1, bot.id);
 });
 
 test("a routine whose prompt names a bot runs as that bot (orgo/rakazo routines)", async () => {

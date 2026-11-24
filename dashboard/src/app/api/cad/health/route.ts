@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { SupervisorControlError } from "@/lib/supervisor-control.ts";
 import { requireUserId, RouteError } from "@/lib/server-auth";
 import { CadServiceError } from "@/lib/cad/errors.ts";
 import { cadServiceConfigured, cadServiceHealth } from "@/lib/cad/service.ts";
@@ -91,6 +92,10 @@ export async function GET() {
         },
         { status: 200 },
       );
+    }
+    // A service that could not start says which one and why (no paths or secrets).
+    if (error instanceof SupervisorControlError) {
+      return NextResponse.json({ ok: false, error: error.message, code: error.code }, { status: error.status });
     }
     return NextResponse.json({ ok: false, error: "internal_error" }, { status: 500 });
   }

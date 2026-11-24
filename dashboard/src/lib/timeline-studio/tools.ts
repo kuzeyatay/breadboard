@@ -12,6 +12,9 @@ import { getRuntimeRun, parseRuntimeRunDispatch } from "../hermes/run-store.ts";
 import { findVideoBlob } from "../conversations/video-blob-store.ts";
 import { callStudio, studioTools, VideoStudioBridgeError, withoutMediaBytes } from "./bridge.ts";
 import { studioPresence } from "./context.ts";
+import { saveToSpaces } from "../spaces/garden-save.ts";
+import type { GardenFileEntry } from "../garden-files/types.ts";
+import { Readable } from "node:stream";
 import { studioDataDir } from "./server.ts";
 
 const MEDIA_KINDS = new Set(["video", "image", "audio"]);
@@ -60,6 +63,18 @@ export async function storeExport(userId: number, filename: string, body: Readab
 
 export function latestExport(userId: number, since = 0): CapturedExport | null {
   return (exportsByUser.get(userId) ?? []).filter(entry => entry.at >= since).at(-1) ?? null;
+}
+
+/** An export saved into Spaces: a new version of the open video file, or a new file on the first save. */
+export async function saveExportToSpaces(userId: number, exportId: string, target: { gardenId: string; fileId: string | null; title: string }): Promise<GardenFileEntry> {
+  const entry = (exportsByUser.get(userId) ?? []).find(candidate => candidate.id === exportId);
+  if (!entry) throw new ArtifactStoreError(404, "video_studio_export_missing", "Export the video first.");
+  const extension = path.extname(entry.filename).slice(1).toLowerCase() || "mp4";
+  const stream = Readable.toWeb(fs.createReadStream(entry.path)) as ReadableStream<Uint8Array>;
+  const saved = await saveToSpaces(userId, { ...target, extension }, stream);
+  const presence = studioPresence(userId);
+  if (presence?.garden?.gardenId === target.gardenId) presence.garden.fileId = saved.id;
+  return saved;
 }
 
 /** An export becomes a new version of the artifact the studio was opened on. */
@@ -144,6 +159,11 @@ export async function callVideoStudioTool(input: {
       for (let waited = 0; !entry && waited < 60_000; waited += 500) {
         await new Promise(resolve => setTimeout(resolve, 500));
         entry = latestExport(userId, since);
+      }
+      const garden = studioPresence(userId)?.garden;
+      if (entry && garden) {
+        const saved = await saveExportToSpaces(userId, entry.id, garden);
+        return { result, spacesFile: { gardenId: saved.gardenId, fileId: saved.id, name: saved.name, version: saved.version }, note: `The export is saved in Spaces as version ${saved.version} of ${JSON.stringify(saved.name)}.` };
       }
       if (entry) {
         const artifact = await deliverExport({ ...input, entry });

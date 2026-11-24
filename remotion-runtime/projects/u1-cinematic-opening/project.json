@@ -1,0 +1,35 @@
+{
+  "title": "Cinematic opening",
+  "purpose": "Create a brief atmospheric opening shot for the existing timeline.",
+  "audience": "Viewers of the existing video",
+  "duration": 5,
+  "fps": 30,
+  "format": "landscape",
+  "creativeDirection": {
+    "tone": "cinematic and restrained",
+    "look": "deep teal-black space, a rotating faceted glass-like form with fine cyan light trails and a restrained warm-white core",
+    "typography": "No on-screen text",
+    "pacing": "Slow reveal, then a decisive close-in"
+  },
+  "audio": {
+    "music": null
+  },
+  "scenes": [
+    {
+      "id": "opening",
+      "file": "Video.tsx",
+      "startTime": 0,
+      "duration": 5,
+      "purpose": "Establish a polished visual opening through an abstract 3D object reveal.",
+      "shots": [
+        {
+          "visualType": "3d",
+          "renderer": "three",
+          "camera": "Begin wide in darkness, dolly toward and orbit the emerging object, settle close on its lit core.",
+          "text": []
+        }
+      ],
+      "transitionOut": "Cut on the luminous core into the existing video."
+    }
+  ]
+}

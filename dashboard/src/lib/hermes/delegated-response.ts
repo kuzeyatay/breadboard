@@ -1,6 +1,7 @@
 interface DelegatedResponseMessage {
   role: string;
   content: string;
+  clientMessageId?: string;
   internalAgentContinuation?: boolean;
   delegatedAgentRun?: boolean;
   externalAgentOutcome?: string;
@@ -52,9 +53,11 @@ export function delegatedResponsePresentation(
   const fallbackContent = reports.length
     ? `The final response was interrupted. The completed work is saved below.\n\n${reports.join("\n\n---\n\n")}`
     : "";
+  // A recovery answer replaces the earlier reply, so it reads as a normal turn.
+  const recovery = message.clientMessageId?.startsWith("recovery:") === true;
   return {
     stateLabel: interrupted ? "Interrupted" : failed || incomplete
-      ? "Response interrupted" : streaming ? "Preparing response" : "Result delivered",
+      ? "Response interrupted" : recovery ? undefined : streaming ? "Preparing response" : "Result delivered",
     failed: failed || interrupted || incomplete,
     fallbackContent,
   };

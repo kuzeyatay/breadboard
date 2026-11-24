@@ -7,6 +7,7 @@ import rehypeKatex from "rehype-katex";
 import AssistantResponseMeta from "@/app/components/assistant-response-meta";
 import { assistantThinkingUpdates, isAssistantTextPreview } from "@/lib/assistant-thinking";
 import { normalizeMathDelimiters } from "@/lib/chat-markdown-math";
+import { commandRulePrefix } from "@/lib/hermes/terminal-command-prefix";
 import {
   assistantLiveActivityReady,
   assistantResponseElapsedMs,
@@ -280,7 +281,16 @@ export default function ActivityPanel({
                 onClick={() => onPermissionDecision("always")}
                 className="neu-button rounded-full bg-[var(--paper-raised)] px-4 py-2 text-xs font-medium text-[var(--botanical)] transition hover:bg-[var(--paper-bg)]"
               >
-                Allow similar for session
+                {(() => {
+                  // Terminal commands get a standing Codex-style prefix rule.
+                  // The plugin asks every terminal card with this sentence.
+                  const prefix =
+                    pendingPermission.command &&
+                    pendingPermission.description.startsWith("Run this command on your computer?")
+                      ? commandRulePrefix(pendingPermission.command)
+                      : null;
+                  return prefix ? `Always allow ${prefix.join(" ")}` : "Allow similar for session";
+                })()}
               </button>
             ) : null}
             <button

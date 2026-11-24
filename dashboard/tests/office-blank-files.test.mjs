@@ -8,7 +8,8 @@ import { blankOfficeFile } from "../src/lib/office/blank.ts";
 import { OFFICE_KINDS, officeKindForName } from "../src/lib/office/types.ts";
 
 test("every Office kind has a blank file", async () => {
-  for (const { kind } of OFFICE_KINDS) assert.ok((await blankOfficeFile(kind, "Plan")).byteLength > 0, kind);
+  // A video has no blank: it is made in the Video editor and saved on its first export.
+  for (const { kind } of OFFICE_KINDS.filter(info => info.kind !== "mp4")) assert.ok((await blankOfficeFile(kind, "Plan")).byteLength > 0, kind);
 });
 
 test("OOXML blanks are packages with their main part", async () => {

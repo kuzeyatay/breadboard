@@ -20,13 +20,14 @@
 //     unprompted, and they say more in aggregate than the thumb does. They all
 //     land in this one table so the analysis has a single thing to read.
 //
-// Nothing in here changes how an answer is produced. Signals are recorded, and
-// `answer-signal-analysis.ts` reads them; the loop from signal back to behavior
-// is deliberately routed through a human (see `proposeStandingPreferences`).
+// A reply can use explicit feedback on the answer it follows. Cross-chat
+// standing preferences still go through `proposeStandingPreferences`.
 
 import type DatabaseType from "better-sqlite3";
 
 import db from "../db.ts";
+import type { ConversationMessageRow, ConversationRow } from "../conversations/store.ts";
+import { isInlineConversationMessage } from "../conversations/message-context.ts";
 
 type Db = DatabaseType.Database;
 
@@ -265,20 +266,53 @@ export function recordAnswerSignal(
 }
 
 /** The rating currently standing against one answer, if any. */
-export function getAnswerRating(
+function readRating(
   userId: number,
   messageId: number,
   database?: Db,
-): RatingKind | null {
-  const target = handle(database);
-  const row = target
+) {
+  return handle(database)
     .prepare(
-      `SELECT signal_kind FROM answer_signals
+      `SELECT signal_kind, reason FROM answer_signals
        WHERE user_id = ? AND message_id = ? AND signal_kind IN (?, ?)
        LIMIT 1`,
     )
-    .get(userId, messageId, ...RATING_KINDS) as { signal_kind: RatingKind } | undefined;
-  return row?.signal_kind ?? null;
+    .get(userId, messageId, ...RATING_KINDS) as { signal_kind: RatingKind; reason: SignalReason | null } | undefined;
+}
+
+export function getAnswerRating(userId: number, messageId: number, database?: Db): RatingKind | null {
+  return readRating(userId, messageId, database)?.signal_kind ?? null;
+}
+
+const reasonGuidance: Record<SignalReason, string> = {
+  wrong: "They flagged a factual error. Recheck relevant claims before relying on them.",
+  too_long: "They found it too long. Lead with the answer and keep the follow-up concise.",
+  missed_point: "They said it missed the point. Address their question directly.",
+  style: "They disliked the style. Try a different presentation suited to the current request.",
+};
+
+/** Apply a rating only to a follow-up on this chat path or the specifically quoted answer. */
+export function answerFeedbackContext(
+  conversation: Pick<ConversationRow, "id" | "user_id">,
+  history: readonly ConversationMessageRow[],
+  sourceMessageId?: string,
+): string {
+  const answer = history.findLast(message => {
+    if (message.conversation_id !== conversation.id || message.role !== "assistant" || message.status !== "complete") return false;
+    if (!sourceMessageId) return !isInlineConversationMessage(message);
+    // Quartz selections carry a transcript row key. The chat and Garden
+    // workspace selections carry the underlying client ID or stored ID.
+    const storedId = `msg_${message.id}`;
+    return [message.client_message_id, storedId, `client:${message.client_message_id}:assistant`, `id:${storedId}`].includes(sourceMessageId);
+  });
+  if (!answer) return "";
+  const rating = readRating(conversation.user_id, answer.id);
+  if (!rating) return "";
+  const subject = sourceMessageId ? "the quoted answer" : "your previous answer in the main chat";
+  if (rating.signal_kind === "rated_up") {
+    return `The user marked ${subject} helpful. When building on it, keep the approach that worked and follow their current request.`;
+  }
+  return `The user marked ${subject} unhelpful. If the current request builds on it, reconsider your approach. ${rating.reason ? reasonGuidance[rating.reason] : ""}`.trimEnd();
 }
 
 /**

@@ -33,7 +33,10 @@ export interface SelectableChatMessage {
 }
 
 type Highlight = ChatTextSelectionReference & { color?: ChatHighlightColor; note?: string };
-type OpenAnswer = { id: string; anchor: FloatingAnchorRect };
+type OpenAnswer = { id: string; anchor: FloatingAnchorRect; newQuestion?: number };
+type SelectionThread = { selection: ChatTextSelectionReference; question?: string; attachments?: ChatAttachment[]; answer?: SelectableChatMessage;
+  /** Every question asked on this highlight, oldest first (the last is this one). */
+  attempts?: SelectionThread[] };
 const EMPTY_ANNOTATIONS: readonly ChatTextAnnotation[] = [];
 
 function normalizeSelections(value: unknown): ChatTextSelectionReference[] {
@@ -95,7 +98,7 @@ export function useTextSelectionController({ scope, conversationId, canStar, per
   }
 
   const threads = useMemo(() => {
-    const result = new Map<string, { selection: ChatTextSelectionReference; question?: string; attachments?: ChatAttachment[]; answer?: SelectableChatMessage }>();
+    const result = new Map<string, SelectionThread>();
     for (const selection of savedSelections) {
       if (!deleted.includes(selection.id)) result.set(selection.id, { selection });
     }
@@ -104,16 +107,26 @@ export function useTextSelectionController({ scope, conversationId, canStar, per
       const selection = message.textSelection;
       if (message.role === "user") {
         pending = selection?.mode === "inline" ? selection.id : undefined;
-        if (pending && selection && !deleted.includes(pending)) result.set(pending, {
-          selection, question: message.content,
-          attachments: reusableChatAttachments(message.attachments).filter(item => !item.context),
-        });
+        if (pending && selection && !deleted.includes(pending)) {
+          // Asking again keeps the earlier pair as a branch, like chat edits.
+          const previous = result.get(pending);
+          const earlier = previous && (previous.question !== undefined || previous.answer)
+            ? [...(previous.attempts ?? []), { ...previous, attempts: undefined }] : undefined;
+          result.set(pending, {
+            selection, question: message.content,
+            attachments: reusableChatAttachments(message.attachments).filter(item => !item.context),
+            attempts: earlier,
+          });
+        }
       } else {
         const id = selection?.mode === "inline" ? selection.id : pending;
         const thread = id ? result.get(id) : undefined;
         if (thread) thread.answer = message;
         pending = undefined;
       }
+    }
+    for (const thread of result.values()) {
+      if (thread.attempts) thread.attempts = [...thread.attempts, thread];
     }
     return result;
   }, [deleted, messages, savedSelections]);
@@ -246,12 +259,20 @@ export function useTextSelectionController({ scope, conversationId, canStar, per
     setComposerSelection(current => current?.id === id ? null : current);
   }
 
-  const replyToAnswer = useCallback((selection: ChatTextSelectionReference, anchor: FloatingAnchorRect) => {
-    setSavedSelections(current => [...current, selection]);
+  const replyToAnswer = useCallback((reply: ChatTextSelectionReference, anchor: FloatingAnchorRect) => {
+    // Replying again to the same answer asks another question on the one
+    // whole-answer highlight, so its replies switch like chat branches.
+    const existing = [...threads.values()].find(thread =>
+      thread.selection.wholeMessage && thread.selection.sourceMessageId === reply.sourceMessageId)?.selection;
+    const selection = existing ?? reply;
+    if (!existing) setSavedSelections(current => [...current, selection]);
     setMenu(null);
-    setOpenAnswers(current => [...retainParents(current, selection.sourceMessageId), { id: selection.id, anchor }]);
+    setOpenAnswers(current => [...retainParents(current, selection.sourceMessageId),
+      { id: selection.id, anchor, newQuestion: existing ? Date.now() : undefined }]);
     window.getSelection()?.removeAllRanges();
-  }, [retainParents, setSavedSelections]);
+  }, [retainParents, setSavedSelections, threads]);
+  // Which earlier question/answer pair a highlight shows; absent = the newest.
+  const [attemptChoice, setAttemptChoice] = useState<Record<string, number>>({});
 
   const selectedHighlight = menu ? highlights.find(item => item.sourceMessageId === menu.sourceMessageId && chatTextSelectionsOverlap(item, menu)) : undefined;
   const lastMessage = messages.at(-1);
@@ -262,10 +283,19 @@ export function useTextSelectionController({ scope, conversationId, canStar, per
       note={selectedHighlight?.note} onSaveNote={saveNote}
       onAskInChat={() => beginQuestion("chat")} onAskHere={() => beginQuestion("inline")} onClose={closeMenu} />}
     {openAnswers.map((open, index) => {
-      const thread = threads.get(open.id);
-      if (!thread) return null;
-      const pending = concurrentInline ? thread.answer?.pending === true : busy && lastMessage?.textSelection?.id === open.id;
+      const latest = threads.get(open.id);
+      if (!latest) return null;
+      const latestPending = concurrentInline ? latest.answer?.pending === true : busy && lastMessage?.textSelection?.id === open.id;
+      const attempts = latestPending ? undefined : latest.attempts;
+      const attemptIndex = attempts ? Math.min(attemptChoice[open.id] ?? attempts.length - 1, attempts.length - 1) : 0;
+      const thread = attempts?.[attemptIndex] ?? latest;
+      const pending = latestPending;
+      const showAttempt = (next: number) => setAttemptChoice(current => ({ ...current, [open.id]: next }));
       return <InlineSelectionAnswerPopover key={open.id} anchor={open.anchor} selection={thread.selection} question={thread.question}
+        branch={attempts && attempts.length > 1 ? { current: attemptIndex + 1, total: attempts.length,
+          onPrevious: () => showAttempt(Math.max(0, attemptIndex - 1)),
+          onNext: () => showAttempt(Math.min(attempts.length - 1, attemptIndex + 1)) } : undefined}
+        newQuestionRequest={open.newQuestion}
         suggestionSelection={thread.selection} suggestionModel={suggestionModel}
         persistDraft={persistDraft}
         questionAttachments={thread.attachments}
@@ -279,7 +309,10 @@ export function useTextSelectionController({ scope, conversationId, canStar, per
         responseCompletedAt={thread.answer?.responseCompletedAt} verification={thread.answer?.verification}
         annotations={thread.answer ? annotations.get(thread.answer.id) ?? EMPTY_ANNOTATIONS : EMPTY_ANNOTATIONS}
         onSelection={receiveSelection} onOpenAnnotation={openAnnotation} onStop={() => onStop(open.id)}
-        onAskAgain={(concurrentInline ? !pending : !busy) ? (question, attachments) => onAsk(question, thread.selection, attachments) : undefined}
+        onAskAgain={(concurrentInline ? !pending : !busy) ? (question, attachments) => {
+          setAttemptChoice(current => { const next = { ...current }; delete next[open.id]; return next; });
+          onAsk(question, thread.selection, attachments);
+        } : undefined}
         onClose={() => setOpenAnswers(current => current.slice(0, index))} onDelete={() => deleteAnswer(open.id)} />;
     })}
   </>;

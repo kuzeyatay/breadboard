@@ -2,14 +2,14 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
-import { ArrowLeft, Download, MoreHorizontal, X, Pencil, Save, RotateCcw } from "lucide-react";
+import { ArrowLeft, Clapperboard, Download, MoreHorizontal, X, Pencil, Save, RotateCcw } from "lucide-react";
 import ChatMarkdown from "@/app/components/chat-markdown";
 import { gardenFileApi, gardenFileExtension, gardenFileSize, type GardenFileEntry, type GardenFileVersion } from "@/lib/garden-files/types";
 import type { ModelAttachmentFormat } from "@/lib/model-attachments";
 import styles from "./garden-files.module.css";
 import { fileRequest } from "@/lib/garden-files/client";
 import { usePageLoading } from "@/app/components/use-page-loading";
-import { officeEditorApp } from "@/lib/office/types";
+import { officeEditorApp, spacesStudio } from "@/lib/office/types";
 import { fileExplorerControl, openInFileExplorer } from "@/lib/desktop-file-explorer";
 
 const ModelViewer = dynamic(() => import("@/app/components/cad/model-viewer"), { ssr: false });
@@ -41,6 +41,41 @@ function NativeWord({ file, editing, onSaved, onDirty, onError, copyRequest }: {
   }, [file, onSaved, onDirty, onError]);
   useEffect(() => { if (copyRequest) frame.current?.contentWindow?.postMessage({ type: "breadboard:genoffice-save-copy" }, location.origin); }, [copyRequest]);
   return <iframe ref={frame} src={src} title={`${editing ? "Edit" : "Preview"} ${file.name}`} className={styles.frame} allow={editing ? "clipboard-read; clipboard-write" : ""} />;
+}
+
+/** An AFFiNE page (page + whiteboard): Breadboard's BlockSuite editor saves each change as a new Garden version. */
+function AffinePage({ file, editing, onSaved, onDirty, onError, flush }: { file: GardenFileEntry; editing: boolean; onSaved: (file: GardenFileEntry) => void; onDirty: (dirty: boolean) => void; onError: (error: string, conflict: boolean) => void; flush: { current: (() => Promise<void>) | null } }) {
+  const frame = useRef<HTMLIFrameElement>(null);
+  const latest = useRef({ file, onSaved, onDirty, onError });
+  latest.current = { file, onSaved, onDirty, onError };
+  // Saving must not reload the editor: the address only changes with the file or the mode.
+  const src = useMemo(() => `/affine-editor/index.html?${new URLSearchParams({ gardenId: file.gardenId, fileId: file.id, mode: editing ? "edit" : "preview" })}`, [file.gardenId, file.id, editing]);
+  useEffect(() => {
+    let flushed: (() => void) | null = null;
+    const receive = (event: MessageEvent) => {
+      if (event.source !== frame.current?.contentWindow || event.origin !== window.location.origin) return;
+      const data = event.data ?? {};
+      if (data.fileId !== latest.current.file.id) return;
+      if (data.type === "breadboard:affine-saved" && data.file) latest.current.onSaved({ ...latest.current.file, ...data.file });
+      if (data.type === "breadboard:affine-dirty") latest.current.onDirty(data.dirty === true);
+      if (data.type === "breadboard:affine-error") latest.current.onError(String(data.error), data.conflict === true);
+      if (data.type === "breadboard:affine-flushed") { flushed?.(); flushed = null; }
+    };
+    window.addEventListener("message", receive);
+    flush.current = () => new Promise<void>(resolve => {
+      if (!frame.current?.contentWindow) { resolve(); return; }
+      flushed = resolve;
+      frame.current.contentWindow.postMessage({ type: "breadboard:affine-flush" }, location.origin);
+      setTimeout(() => { flushed = null; resolve(); }, 8000);
+    });
+    return () => { window.removeEventListener("message", receive); flush.current = null; };
+  }, [flush]);
+  useEffect(() => {
+    const theme = (event: StorageEvent) => { if (event.key === "breadboard:theme") frame.current?.contentWindow?.postMessage({ type: "breadboard:theme", theme: event.newValue }, location.origin); };
+    window.addEventListener("storage", theme);
+    return () => window.removeEventListener("storage", theme);
+  }, []);
+  return <iframe ref={frame} src={src} title={`${editing ? "Edit" : "View"} ${file.name}`} className={styles.frame} allow="clipboard-read; clipboard-write; fullscreen" />;
 }
 
 /** GenOffice Sheets, Slides, PDF and Markdown, run by a server-side editor session on a copy of this file. */
@@ -128,6 +163,9 @@ export default function GardenFileViewer({ file, onChanged, onClose, onDirtyChan
   const endpoint = gardenFileApi(file.gardenId, file.id), source = `${endpoint}/content`, mode = file.capabilities.editor;
   // Sheets, Slides, PDF and Markdown edit in their GenOffice editors; Word keeps the Docs editor.
   const office = file.canEdit ? officeEditorApp(file.name) : null, officeFlush = useRef<(() => Promise<void>) | null>(null);
+  // Spaces designs and videos open in Design and Video, mounted right here instead of on a page of their own.
+  const studio = file.canEdit ? spacesStudio(file.path) : null;
+  const affine = file.capabilities.viewer === "affine", affineFlush = useRef<(() => Promise<void>) | null>(null);
   const modelFormat = gardenFileExtension(file.name) as ModelAttachmentFormat, convertModel = ["step", "stp", "iges", "igs", "brep"].includes(modelFormat);
   const resourceUrl = useCallback((url: string) => {
     if (/^(?:blob:|data:)/i.test(url)) return url;
@@ -163,7 +201,7 @@ export default function GardenFileViewer({ file, onChanged, onClose, onDirtyChan
   useEffect(() => {
     const controller = new AbortController();
     setError(""); setPreview(null); setEditor(null);
-    const native = ["pdf", "image", "audio", "video", "binary"].includes(file.capabilities.viewer);
+    const native = ["pdf", "image", "audio", "video", "binary", "affine"].includes(file.capabilities.viewer);
     if (editing && office) setLoading(false);
     else if ((editing && (mode === "text" || mode === "cells" || mode === "blocks")) || !native) {
       setLoading(true);
@@ -214,6 +252,12 @@ export default function GardenFileViewer({ file, onChanged, onClose, onDirtyChan
     if (next === "move") void fileRequest<{ files: GardenFileEntry[] }>(gardenFileApi(file.gardenId)).then(body => setFolders(body.files.filter(entry => entry.kind === "folder").map(entry => entry.path))).catch(cause => setError(cause.message));
   };
   const toggleEdit = async () => {
+    if (editing && affine) {
+      // The page editor saves its pending changes before it switches to reading.
+      setBusy(true);
+      try { await affineFlush.current?.(); } finally { setBusy(false); }
+      setNativeDirty(false); setEditing(false); setAction(null); return;
+    }
     if (editing && office) {
       // The editor's own unsaved changes are saved into the Garden before it closes.
       setBusy(true);
@@ -233,14 +277,18 @@ export default function GardenFileViewer({ file, onChanged, onClose, onDirtyChan
   };
 
   let viewer;
-  if (editing && office) viewer = <OfficeEditor key={reload} file={file} onSaved={changed} onError={nativeError} flush={officeFlush} />;
+  // A Spaces video looks like an uploaded one (the player) until Edit video opens the editor here.
+  if (studio === "video" && !editing) viewer = <div className={styles.prose}><div className={styles.sourcePlayer}><video key={`${file.version}:${reload}`} controls src={source} preload="metadata" onError={() => setError("This video codec cannot be played here. Download it to open it in another app.")} /></div></div>;
+  else if (studio) viewer = <iframe key={reload} className={styles.frame} title={`${studio === "design" ? "Design" : "Video"}: ${file.name}`} allow="clipboard-read; clipboard-write; fullscreen" src={`/spaces/edit?${new URLSearchParams({ garden: file.gardenId, file: file.id, embed: "1" })}`} />;
+  else if (affine) viewer = <AffinePage key={reload} file={file} editing={editing && file.canEdit} onSaved={changed} onDirty={setNativeDirty} onError={nativeError} flush={affineFlush} />;
+  else if (editing && office) viewer = <OfficeEditor key={reload} file={file} onSaved={changed} onError={nativeError} flush={officeFlush} />;
   else if (editing && editor && (mode === "text" || mode === "cells" || mode === "blocks")) {
     viewer = mode === "text" ? <textarea autoFocus className={styles.textEditor} aria-label={`Edit ${file.name}`} spellCheck={file.capabilities.viewer === "markdown"} value={content} onChange={event => setContent(event.target.value)} />
       : <div className={styles.scroll}><input className={styles.filter} aria-label="Find a cell or slide" placeholder={mode === "cells" ? "Find a sheet or cell…" : "Find slide text…"} value={filter} onChange={event => setFilter(event.target.value)} />
         {editor.truncated && <p className={styles.hint}>Only the first editable items are shown. Other content is preserved when saving.</p>}
         <table className={styles.table}><tbody>{editor.blocks?.filter(block => `${block.anchor} ${blocks[block.anchor]}`.toLowerCase().includes(filter.toLowerCase())).map(block => <tr key={block.anchor}><th>{block.sheet ? `${block.sheet} · ${block.cell}` : `Slide ${block.slide ?? ""}`}</th><td><textarea aria-label={block.anchor} disabled={!block.editable} value={blocks[block.anchor] ?? ""} onChange={event => setBlocks(current => ({ ...current, [block.anchor]: event.target.value }))} rows={mode === "cells" ? 1 : 3} /></td></tr>)}</tbody></table></div>;
   } else if (mode === "docx" && nativeReady) viewer = <NativeWord key={reload} file={file} editing={editing} onSaved={changed} onDirty={setNativeDirty} onError={nativeError} copyRequest={copyRequest} />;
-  else if (file.capabilities.viewer === "pdf") viewer = <div className={styles.pdf}><PdfViewer key={reload} title={file.name} sourceUrl={source} readOnly={!file.canEdit || mode !== "pdf"} fileRevision={file.revision} showNavbarFlowers={false} /></div>;
+  else if (file.capabilities.viewer === "pdf") viewer = <div className={styles.pdf}><PdfViewer key={reload} title={file.name} sourceUrl={source} readOnly={!file.canEdit || mode !== "pdf"} fileRevision={file.revision} showNavbarFlowers={false} framed /></div>;
   else if (file.capabilities.viewer === "image") viewer = <div className={styles.imageCanvas}><div className={styles.zoom}><button onClick={() => setZoom(value => Math.max(.25, value - .25))} aria-label="Zoom out">−</button><button onClick={() => setZoom(1)}>{Math.round(zoom * 100)}%</button><button onClick={() => setZoom(value => Math.min(4, value + .25))} aria-label="Zoom in">+</button></div><img key={`${file.version}:${reload}`} src={source} alt={file.name} style={{ maxWidth: `${zoom * 100}%`, width: zoom > 1 ? `${zoom * 100}%` : undefined }} onError={() => setError("This image could not be displayed. You can still download the original.")} /></div>;
   else if (file.capabilities.viewer === "audio") viewer = <div className={styles.media}><audio key={`${file.version}:${reload}`} controls src={source} preload="metadata" onError={() => setError("This audio format cannot be played here. Download it to open it in another app.")} /></div>;
   else if (file.capabilities.viewer === "video") viewer = <div className={styles.media}><video key={`${file.version}:${reload}`} controls src={source} preload="metadata" onError={() => setError("This video codec cannot be played here. Download it to open it in another app.")} /></div>;
@@ -260,8 +308,9 @@ export default function GardenFileViewer({ file, onChanged, onClose, onDirtyChan
     <header className={styles.toolbar}>
       <button onClick={onClose} title="Back to garden" aria-label="Back to garden"><ArrowLeft size={17} /></button>
       <div className={styles.title}><strong title={file.path}>{file.name}</strong><span>{file.folder ? `${file.folder} · ` : ""}{gardenFileSize(file.size)}{file.visibility === "private" ? " · Private" : " · Shared with garden"}</span></div>
-      {file.canEdit && (office || (mode && mode !== "pdf")) && <button onClick={() => void toggleEdit()} disabled={busy || loading} className={styles.labeled}>{editing ? <X size={15} /> : <Pencil size={15} />}{editing ? "Done" : "Edit"}</button>}
-      {editing && mode !== "docx" && !office && <button className={styles.labeled} onClick={() => void save()} disabled={!dirty || busy}><Save size={15} />{busy ? "Saving…" : "Save"}</button>}
+      {file.canEdit && !studio && (office || (mode && mode !== "pdf")) && <button onClick={() => void toggleEdit()} disabled={busy || loading} className={styles.labeled}>{editing ? <X size={15} /> : <Pencil size={15} />}{editing ? "Done" : "Edit"}</button>}
+      {studio === "video" && <button type="button" className={styles.labeled} aria-pressed={editing} onClick={() => setEditing(open => !open)}><Clapperboard size={15} />{editing ? "Back to video" : "Edit video"}</button>}
+      {editing && mode !== "docx" && mode !== "affine" && !office && !studio && <button className={styles.labeled} onClick={() => void save()} disabled={!dirty || busy}><Save size={15} />{busy ? "Saving…" : "Save"}</button>}
       <a href={`${source}?download=1`} download={file.name} aria-label="Download original" title="Download"><Download size={17} /></a>
       {file.canEdit && <details ref={menu} className={styles.menu}><summary aria-label="File actions" title="File actions"><MoreHorizontal size={18} /></summary><div>
         <button onClick={() => chooseAction("rename")} disabled={dirty}>Rename</button><button onClick={() => chooseAction("move")} disabled={dirty}>Move to…</button>

@@ -16,6 +16,7 @@
 // out, with `automatic` recorded on the turn so the choice is auditable.
 
 import type { HermesSurface } from "./config.ts";
+import { requestProse } from "./request-language.ts";
 
 /** The first-party skill directory name, which is also its slash command. */
 export const AUDIO_ANALYSIS_SKILL = "audio-analysis";
@@ -68,7 +69,8 @@ export interface AudioAnalysisIntentInput {
 export function audioAnalysisCommandText(
   input: AudioAnalysisIntentInput,
 ): { text: string; automatic: boolean } {
-  const text = input.text.trim();
+  // Pasted code, quotes and documents are material, not the request.
+  const text = requestProse(input.text).trim();
   const prose = text.replace(ANY_URL, " ");
   const available =
     input.authenticated &&

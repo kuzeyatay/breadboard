@@ -35,7 +35,7 @@ const stubs = new Map([
   ["./garden-markdown-artifacts", "export default ()=>null"],
   ["../use-quartz-reader-layout", "export const useQuartzReaderLayout=()=>({readerLayoutStyle:{},setAssistantWidth:()=>{}})"],
   ["@/app/components/hermes/garden-assistant-switch", "import React from 'react';export default ({activeMarkdown})=>React.createElement('output',{'data-assistant-context':true},JSON.stringify(activeMarkdown))"],
-  ...["../quartz-inline-answer-popover", "../garden-markdown-artifacts"].map(name => [name, "export default ()=>null"]),
+  ...["../quartz-inline-answer-popover", "../garden-markdown-artifacts", "../garden-source-view"].map(name => [name, "export default ()=>null"]),
 ]);
 await import('../scripts/build-quartz-editor.mjs');
 const host = await build({

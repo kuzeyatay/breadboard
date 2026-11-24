@@ -5,6 +5,7 @@ import os from "node:os";
 import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
 import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import { externalRuntimeSpawn as spawn } from "../external-runtime-process.ts";
+import { claudeRoot, profileDir, profileRows, restProfile, sessionTranscript } from "../../../scripts/claude-profiles.mjs";
 import type { ChatTokenUsage } from "../chat-token-usage.ts";
 import { repositoryRoot } from "../runtime-paths.ts";
 import { tierAllows, type AutonomyTier } from "../hermes/autonomy.ts";
@@ -202,6 +203,12 @@ export function startRun(input: StartClaudeCodeRunInput): { runId: string; statu
   const secret = process.env.BREADBOARD_HERMES_TOOL_SECRET?.trim() || process.env.HERMES_TOOL_SECRET?.trim();
   if (!secret) throw new Error("Breadboard tool authentication is not configured.");
 
+  const root = claudeRoot();
+  const attempted = new Set<string>();
+  const nextAccount = () => profileRows(root).find(row => !attempted.has(row.id) && row.resetAt <= Date.now());
+  const initial = nextAccount();
+  if (!initial) throw new Error("No Claude account is available. Check sign-in and usage in Settings.");
+
   // The MCP config carries the tool secret, so it lives in a private folder for the run only.
   const configDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-claude-"));
   const configPath = path.join(configDirectory, "mcp.json");
@@ -239,63 +246,101 @@ export function startRun(input: StartClaudeCodeRunInput): { runId: string; statu
     ...(input.model ? ["--model", input.model] : []),
   ];
   const runId = `ccrun_${randomUUID().replaceAll("-", "")}`;
-  const child = spawn(executable, args, {
-    cwd: input.workingDirectory, windowsHide: true, stdio: ["pipe", "pipe", "pipe"], env: process.env,
-  });
   const run: RunState = {
-    runId, userId: input.userId, status: "running", sequence: 0, events: [], child, stderr: "",
+    runId, userId: input.userId, status: "running", sequence: 0, events: [], child: null, stderr: "",
     answer: "", lastText: "", toolCount: 0, toolNames: new Map(), startedAt: Date.now(),
     cleanup: () => fs.rmSync(configDirectory, { recursive: true, force: true }),
   };
   runs.set(runId, run);
   const text = input.goal ? `/goal ${input.goal.replace(/\s+/g, " ").trim()}` : input.prompt;
-  child.stdin.end(`${JSON.stringify(userMessage(text, input.images ?? []))}\n`);
   emit(run, "run.started", { model: input.model ?? "default", permissionMode: permissions.args[1], ...(input.goal ? { goal: input.goal } : {}) });
 
-  let buffer = "";
-  const ingestLine = (line: string) => {
-    if (!line.trim()) return;
-    try {
-      const value = JSON.parse(line) as unknown;
-      if (value && typeof value === "object" && !Array.isArray(value)) ingestClaudeEvent(run, value as Record<string, unknown>);
-    } catch { /* not a protocol line */ }
-  };
-  child.stdout.setEncoding("utf8");
-  child.stderr.setEncoding("utf8");
-  child.stdout.on("data", (chunk: string) => {
-    buffer += chunk;
-    const lines = buffer.split(/\r?\n/);
-    buffer = lines.pop() ?? "";
-    lines.forEach(ingestLine);
-  });
-  child.stderr.on("data", (chunk: string) => { run.stderr = `${run.stderr}${chunk}`.slice(-32_000); });
-  child.on("error", (error) => {
-    run.child = null;
-    if (run.status !== "running") return;
-    run.status = "failed";
-    emit(run, "run.failed", { error: error.message });
-    finish(run, { outcome: "failed", content: error.message, usage: run.usage });
-  });
-  // `close` waits for stdout to drain, so the answer is whole before the run ends.
-  child.on("close", (code) => {
-    run.child = null;
-    ingestLine(buffer);
-    buffer = "";
-    if (run.status !== "running") return;
-    const elapsedSec = Math.max(0, (Date.now() - run.startedAt) / 1_000);
-    const answer = run.answer || run.lastText;
-    if (code === 0 && answer) {
-      run.status = "completed";
-      emit(run, "text.completed", { text: answer });
-      emit(run, "run.completed", { summary: answer, elapsedSec, toolCount: run.toolCount });
-      finish(run, { outcome: "completed", content: answer, usage: run.usage });
-      return;
-    }
-    const error = run.stderr.trim().split(/\r?\n/).slice(-1)[0] || `${CLAUDE_CODE_AGENT_NAME} exited with code ${code ?? "unknown"}`;
-    run.status = "failed";
-    emit(run, "run.failed", { error, elapsedSec, toolCount: run.toolCount });
-    finish(run, { outcome: "failed", content: error, usage: run.usage });
-  });
+  function startAttempt(id: string, transcript?: string): void {
+    attempted.add(id);
+    const child = spawn(executable!, transcript ? [...args, "--resume", transcript] : args, {
+      cwd: input.workingDirectory, windowsHide: true, stdio: ["pipe", "pipe", "pipe"],
+      env: id === "default" ? process.env : { ...process.env, CLAUDE_CONFIG_DIR: profileDir(root, id) },
+    });
+    run.child = child;
+    let sessionId = "";
+    let limited = false;
+    let failedResult = false;
+    let resetAt = 0;
+    const turn = transcript ? userMessage("Continue the interrupted request from the saved conversation.", []) : userMessage(text, input.images ?? []);
+    child.stdin.end(JSON.stringify(turn) + "\n");
+    let buffer = "";
+    const ingestLine = (line: string) => {
+      if (!line.trim()) return;
+      try {
+        const value = JSON.parse(line) as unknown;
+        if (!value || typeof value !== "object" || Array.isArray(value)) return;
+        const frame = value as Record<string, unknown>;
+        if (typeof frame.session_id === "string") sessionId = frame.session_id;
+        const limit = frame.rate_limit_info as { status?: string; resetsAt?: number } | undefined;
+        if (frame.type === "rate_limit_event" && limit?.status === "rejected") {
+          limited = true;
+          resetAt = Number(limit.resetsAt) * 1000;
+        }
+        if (frame.error === "rate_limit") limited = true;
+        if (frame.type === "result") failedResult = frame.is_error === true;
+        ingestClaudeEvent(run, frame);
+      } catch { /* not a protocol line */ }
+    };
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      buffer += chunk;
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() ?? "";
+      lines.forEach(ingestLine);
+    });
+    child.stderr.on("data", (chunk: string) => { run.stderr = `${run.stderr}${chunk}`.slice(-32_000); });
+    child.on("error", (error) => {
+      run.child = null;
+      if (run.status !== "running") return;
+      run.status = "failed";
+      emit(run, "run.failed", { error: error.message });
+      finish(run, { outcome: "failed", content: error.message, usage: run.usage });
+    });
+    // `close` waits for stdout to drain, so the answer is whole before the run ends.
+    child.on("close", (code) => {
+      run.child = null;
+      ingestLine(buffer);
+      buffer = "";
+      if (run.status !== "running") return;
+      if (limited && (code !== 0 || failedResult)) {
+        try {
+          restProfile(root, id, resetAt);
+          const fallback = nextAccount();
+          const saved = sessionTranscript(root, id, sessionId) ?? transcript;
+          if (fallback && saved) {
+            run.stderr = "";
+            run.answer = "";
+            run.lastText = "";
+            startAttempt(fallback.id, saved);
+            return;
+          }
+          run.stderr = run.answer || "Claude reached its usage limit.";
+        } catch (error) {
+          run.stderr = error instanceof Error ? error.message : "Could not resume Claude Code.";
+        }
+      }
+      const elapsedSec = Math.max(0, (Date.now() - run.startedAt) / 1_000);
+      const answer = run.answer || run.lastText;
+      if (code === 0 && !failedResult && answer) {
+        run.status = "completed";
+        emit(run, "text.completed", { text: answer });
+        emit(run, "run.completed", { summary: answer, elapsedSec, toolCount: run.toolCount });
+        finish(run, { outcome: "completed", content: answer, usage: run.usage });
+        return;
+      }
+      const error = run.stderr.trim().split(/\r?\n/).slice(-1)[0] || `${CLAUDE_CODE_AGENT_NAME} exited with code ${code ?? "unknown"}`;
+      run.status = "failed";
+      emit(run, "run.failed", { error, elapsedSec, toolCount: run.toolCount });
+      finish(run, { outcome: "failed", content: error, usage: run.usage });
+    });
+  }
+  startAttempt(initial.id);
   return { runId, status: run.status };
 }
 

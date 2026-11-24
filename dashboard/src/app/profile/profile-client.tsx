@@ -15,9 +15,10 @@ import SignOutButton from "@/app/components/sign-out-button";
 import { FileArchive, RefreshCw } from "lucide-react";
 
 import BackLink from "@/app/components/back-link";
+import SettingsSectionNav from "@/app/components/settings-section-nav";
 import NavbarFlowerWind from "@/app/components/navbar-flower-wind";
 import DefaultModelPanel, { FallbackModelPanel } from "./default-model-panel";
-import BrainMapPanel from "./brain-map-panel";
+
 import BrowserProfilePanel from "./browser-profile-panel";
 import DownloadSettingsPanel from "./download-settings-panel";
 import ContactsPanel from "./contacts-panel";
@@ -1753,7 +1754,7 @@ function NavbarPanel({
     }
   }
 
-  const visibleShortcuts = NAVBAR_SHORTCUTS.filter((shortcut) => shortcut.key !== "browser");
+  const visibleShortcuts = NAVBAR_SHORTCUTS.filter((shortcut) => shortcut.key !== "browser" && shortcut.key !== "workTimer");
   const on = visibleShortcuts.filter((shortcut) => shortcuts[shortcut.key]).length;
 
   return (
@@ -2356,6 +2357,7 @@ function GardenRow({
 
 export default function ProfileClient({
   stats,
+  returnTo,
   initialThoughtTopologyAutoUpdate = true,
   initialWebPdfCleanup = true,
   initialAskPasswordAtStartup = true,
@@ -2368,13 +2370,12 @@ export default function ProfileClient({
   contactTotal,
   syncedCalendars,
   calendarVaultConfigured,
-  initialTab,
-  initialBrainScope,
   initialIdentity = null,
 }: {
   /** The linked Crumbs account. Its photo and name are Breadboard's own. */
   initialIdentity?: { handle: string | null; displayName: string | null; avatar: string | null } | null;
   stats: ProfileStats;
+  returnTo?: string;
   initialThoughtTopologyAutoUpdate?: boolean;
   initialWebPdfCleanup?: boolean;
   initialAskPasswordAtStartup?: boolean;
@@ -2387,13 +2388,8 @@ export default function ProfileClient({
   contactTotal: number;
   syncedCalendars: CalendarCollection[];
   calendarVaultConfigured: boolean;
-  initialTab: "profile" | "knowledge";
-  initialBrainScope: string;
 }) {
-  const router = useRouter();
   const { account, totals, streaks, habit, surfaces, gardens, artifactKinds, agents } = stats;
-  const [tab, setTab] = useState<"profile" | "knowledge">(initialTab);
-  const [brainScope, setBrainScope] = useState(initialBrainScope);
   const [showNavbarFlowers, setShowNavbarFlowers] = useState(initialNavbarFlowers);
   // The heading is the name when there is one, because that is the thing this
   // page is about. The username does not disappear — it moves down a line, to
@@ -2408,58 +2404,19 @@ export default function ProfileClient({
   const artifactMax = artifactKinds.reduce((best, entry) => Math.max(best, entry.count), 0);
   const agentMax = agents.reduce((best, entry) => Math.max(best, entry.runs), 0);
 
-  const selectTab = useCallback((nextTab: "profile" | "knowledge") => {
-    setTab(nextTab);
-    const params = new URLSearchParams(window.location.search);
-    if (nextTab === "knowledge") {
-      params.set("tab", nextTab);
-    } else {
-      // `scope` and `organization` are the Knowledge tab's own state — an
-      // organization-scoped map is still reachable by link, but leaving the
-      // tab takes its scope with it rather than stranding it in the URL.
-      params.delete("tab");
-      params.delete("scope");
-      params.delete("organization");
-    }
-    const query = params.toString();
-    router.replace(query ? `/settings?${query}` : "/settings", { scroll: false });
-  }, [router]);
 
   return (
     <div data-hide-scrollbars className="flex min-h-screen flex-col bg-[var(--paper-bg)] text-white">
-      <header className="breadboard-flower-navbar relative flex shrink-0 items-center justify-between gap-4 border-b border-gray-800 px-6 py-3.5">
+      <header className="breadboard-flower-navbar relative flex shrink-0 items-center justify-between gap-2 border-b border-gray-800 px-3 py-3.5 sm:gap-4 sm:px-6">
         <NavbarFlowerWind showFlowers={showNavbarFlowers} />
         <div className="relative z-10 flex min-w-0 items-center gap-3">
           <BackLink fallbackHref="/new-tab" fallbackLabel="Back to home" />
           <span className="text-gray-700">/</span>
-          <h1 className="truncate text-sm font-semibold text-white">
-            {tab === "knowledge" ? "Knowledge" : "Settings"}
-          </h1>
+          <h1 className="truncate text-sm font-semibold text-white">Settings</h1>
         </div>
-        <nav className="relative z-10 inline-flex shrink-0 items-center rounded-md border border-gray-800 bg-gray-900/80 p-1 shadow-inner">
-          {(["profile", "knowledge"] as const).map((name) => (
-            <button
-              key={name}
-              type="button"
-              onClick={() => selectTab(name)}
-              aria-current={tab === name ? "page" : undefined}
-              className={
-                tab === name
-                  ? "rounded-md bg-white px-3 py-1.5 text-xs font-medium text-gray-950 shadow-sm"
-                  : "rounded-md px-3 py-1.5 text-xs font-medium text-gray-400 transition hover:text-white"
-              }
-            >
-              {name === "profile" ? "Settings" : "Knowledge"}
-            </button>
-          ))}
-        </nav>
+        <SettingsSectionNav active="/settings" returnTo={returnTo} />
       </header>
 
-      {tab === "knowledge" ? (
-        <main className="mx-auto w-full max-w-[1600px] flex-1 px-3 py-4 sm:px-5 sm:py-6">
-          <BrainMapPanel initialScope={brainScope} onScopeChange={setBrainScope} />
-        </main>
-      ) : (
       <main className="mx-auto w-full max-w-5xl flex-1 px-6 py-8">
         {/* ------------------------------------------------------ identity */}
         <section className="neu-surface-raised flex flex-wrap items-center gap-5 rounded-2xl border border-gray-800 p-5">
@@ -2810,7 +2767,6 @@ export default function ProfileClient({
         <AuditFeed entries={stats.audit} />
 
       </main>
-      )}
     </div>
   );
 }

@@ -6,6 +6,7 @@ import type { HermesSurface } from "./config.ts";
 import { asksForImageMarks } from "../image-annotation-prompt.ts";
 import { interactiveVisualizerAvailable } from "./interactive-visualizer-config.ts";
 import { DIAGRAM_IN_CHAT_SKILL } from "./interactive-visualizer-skills.ts";
+import { requestProse } from "./request-language.ts";
 export { DIAGRAM_IN_CHAT_SKILL } from "./interactive-visualizer-skills.ts";
 
 /** The first-party skill directory name, which is also its slash command. */
@@ -133,7 +134,8 @@ export interface DiagramIntentInput {
 }
 
 export function shouldAutoSelectDiagramInChat(input: DiagramIntentInput): boolean {
-  const text = input.text.trim();
+  // Pasted code, quotes and documents are material, not the request.
+  const text = requestProse(input.text).trim();
   // Both conversational surfaces, and neither of the unauthenticated ones:
   // the diagram is filed as an artifact on the conversation. An explicit
   // command already says what the turn is, so never argue with one.

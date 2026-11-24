@@ -92,6 +92,19 @@ export function prepareTurn(input: PrepareTurnInput): PreparedTurn {
     superAgent: input.superAgent,
     researchPipeline: input.researchPipeline,
   });
+  // Codex-style: when the model holds the audited terminal, a *read* whose
+  // only gap is "which folder?" goes to the model, which can look for itself;
+  // any command outside approved folders still raises its own permission card.
+  // Writes and deletes keep asking for a destination, as Codex gates writes.
+  const modelCanFindTarget =
+    grant.allowedTools.terminal_execute_command === true &&
+    grant.pendingPermissions.length > 0 &&
+    grant.pendingPermissions.every(
+      (permission) =>
+        permission.kind === "filesystem" &&
+        !permission.path?.trim() &&
+        (permission.operations ?? ["read"]).every((operation) => operation === "read"),
+    );
   return {
     plan,
     grant,
@@ -102,12 +115,12 @@ export function prepareTurn(input: PrepareTurnInput): PreparedTurn {
     // spends a turn on the model explaining its own permissions. An untargeted
     // request has no folder to ask about, so it goes to the model to clarify.
     blocked:
-      !grant.executable ||
+      (!grant.executable && !modelCanFindTarget) ||
       grant.pendingPermissions.some(
         (permission) =>
           permission.kind === "filesystem" && Boolean(permission.path?.trim()),
       ),
-    pendingPermissions: grant.pendingPermissions,
+    pendingPermissions: modelCanFindTarget ? [] : grant.pendingPermissions,
   };
 }
 

@@ -222,7 +222,7 @@ test("the standalone dashboard build uses the isolated Rust graph compiler", () 
   const buildScript = fs.readFileSync(new URL("../scripts/build-dashboard.mjs", import.meta.url), "utf8");
   const leanScript = fs.readFileSync(new URL("../scripts/dev-fast.mjs", import.meta.url), "utf8");
   const nextConfig = fs.readFileSync(new URL("../../dashboard/next.config.ts", import.meta.url), "utf8");
-  assert.match(buildScript, /const dashboardBuildHeapMb = 8_192/);
+  assert.match(buildScript, /const dashboardBuildHeapMb = buildMemory\.heapMb/);
   assert.match(buildScript, /`--max-old-space-size=\$\{dashboardBuildHeapMb\}`/);
   assert.match(buildScript, /mem0\.status !== 0[\s\S]*process\.exit\(mem0\.status \?\? 1\)/);
   assert.doesNotMatch(buildScript, /mem0 provisioning failed[\s\S]*fall back to lexical/);

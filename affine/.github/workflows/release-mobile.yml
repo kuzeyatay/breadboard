@@ -1,0 +1,56 @@
+name: Build Mobile Candidates
+'on':
+  workflow_call:
+    inputs:
+      app-version:
+        type: string
+        required: true
+      git-short-hash:
+        type: string
+        required: true
+      build-type:
+        type: string
+        required: true
+      matrix:
+        type: string
+        required: true
+env:
+  BUILD_TYPE: ${{ inputs.build-type }}
+  DEBUG: napi:*
+  KEYCHAIN_NAME: ${{ github.workspace }}/signing_temp
+jobs:
+  web:
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Setup Version
+        uses: ./.github/actions/setup-version
+        with:
+          app-version: ${{ inputs.app-version }}
+      - name: Setup Node.js
+        uses: ./.github/actions/setup-node
+      - name: Setup @sentry/cli
+        uses: ./.github/actions/setup-sentry
+      - name: Build Mobile
+        run: yarn affine bundle -p ${{ matrix.platform }}
+        env:
+          PUBLIC_PATH: /
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: affine
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          SENTRY_RELEASE: ${{ inputs.app-version }}
+          RELEASE_VERSION: ${{ inputs.app-version }}
+      - name: Upload ios artifact
+        uses: actions/upload-artifact@v4
+        with:
+          overwrite: true
+          name: candidate-mobile-${{ matrix.platform }}
+          path: packages/frontend/apps/${{ matrix.platform }}/dist
+          if-no-files-found: error
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(inputs.matrix) }}
+    continue-on-error: ${{ !matrix.required }}
+permissions:
+  contents: read

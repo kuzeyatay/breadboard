@@ -42,7 +42,8 @@ test("every shared chat registry includes website APIs even when other connector
   };
   for (const deferMcpConnections of [false, true]) {
     const registry = await connectedAppRegistryForTurn({ runtime, userId: 7, directory: root, mode: "research", deferMcpConnections });
-    assert.deepEqual(registry.connectionNames, ["api-anything", "mcp-installer", "doory", "video-studio"]);
+    assert.deepEqual(registry.connectionNames, ["api-anything", "mcp-installer", "doory", "video-studio", "spaces-page"]);
+    assert.match(registry.systemContext, /Spaces page/);
     assert.match(registry.systemContext, /mcp_call connection="doory"/);
     assert.match(registry.systemContext, /mcp_call connection="video-studio"/);
     assert.equal(registry.tools.mcp_call, true);

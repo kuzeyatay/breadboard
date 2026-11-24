@@ -1,8 +1,14 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useSurfaceTheme } from "../components/effects/use-surface-theme";
+import KnowledgeIcon from "../components/knowledge-icon";
+import { useEffect, useMemo, useRef, useState, type FormEvent, type MouseEvent } from "react";
 
-import { projectBrainGraphToQuartzTopology } from "@/lib/quartz-brain-graph/topology-adapter.ts";
+import {
+  filterTopologyPayload,
+  projectBrainGraphToQuartzTopology,
+  shortestTopologyPath,
+} from "@/lib/quartz-brain-graph/topology-adapter.ts";
 import type {
   BrainGraphResponse,
   BrainScopeOption,
@@ -32,6 +38,8 @@ const QUARTZ_HOME_GRAPH: D3Config = {
   enableRadial: false,
 };
 
+type PageOption = { id: string; label: string; title: string; garden: string; href?: string; topic?: string };
+
 export default function BrainMapCanvas({
   graph,
   scopeKey,
@@ -49,14 +57,76 @@ export default function BrainMapCanvas({
   onOpen: (href: string) => void;
   onFailure: () => void;
 }) {
+  const surfaceTheme = useSurfaceTheme();
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [expanded, setExpanded] = useState(false);
+  const [topicFilter, setTopicFilter] = useState<number | null>(null);
+  const [pathFrom, setPathFrom] = useState("");
+  const [pathTo, setPathTo] = useState("");
+  const [path, setPath] = useState<string[] | null>(null);
+  const [pathMessage, setPathMessage] = useState<string | null>(null);
+  const [listOpen, setListOpen] = useState(false);
   const latestCallbacksRef = useRef({ onOpen, onFailure });
   const projection = useMemo(() => projectBrainGraphToQuartzTopology(graph), [graph]);
+
+  // Topic chips, in the renderer's color order.
+  const topics = useMemo(() => {
+    const byIndex = new Map<number, { index: number; label: string; count: number }>();
+    for (const node of projection.payload.nodes) {
+      if (!node.topic) continue;
+      const entry = byIndex.get(node.topic.index) ?? { ...node.topic, count: 0 };
+      entry.count += 1;
+      byIndex.set(node.topic.index, entry);
+    }
+    return [...byIndex.values()].sort((left, right) => left.index - right.index);
+  }, [projection]);
+
+  // Every page, named "Title (Garden)" so equal titles in two Gardens stay apart.
+  const pages = useMemo(() => {
+    const gardenTitle = new Map(
+      graph.nodes.filter((node) => node.kind === "garden").map((node) => [node.gardenSlug, node.label]),
+    );
+    const brainById = new Map(graph.nodes.map((node) => [node.id, node]));
+    const seen = new Map<string, number>();
+    return projection.payload.nodes
+      .map((node): PageOption => {
+        const brain = brainById.get(node.id);
+        const garden = gardenTitle.get(brain?.gardenSlug) ?? "Garden";
+        const base = `${node.title} (${garden})`;
+        const repeat = (seen.get(base) ?? 0) + 1;
+        seen.set(base, repeat);
+        return {
+          id: node.id,
+          label: repeat === 1 ? base : `${base} ${repeat}`,
+          title: node.title,
+          garden,
+          href: brain?.href,
+          topic: node.topic?.label,
+        };
+      })
+      .sort((left, right) => left.garden.localeCompare(right.garden) || left.title.localeCompare(right.title));
+  }, [graph, projection]);
+  const pageById = useMemo(() => new Map(pages.map((page) => [page.id, page])), [pages]);
+
+  // The canvas shows the found path, else the chosen topic, else everything.
+  const view = useMemo(() => {
+    if (path) return { ...filterTopologyPayload(projection.payload, new Set(path)), isPagePath: true };
+    if (topicFilter === null) return projection.payload;
+    return filterTopologyPayload(
+      projection.payload,
+      new Set(projection.payload.nodes.filter((node) => node.topic?.index === topicFilter).map((node) => node.id)),
+    );
+  }, [path, projection, topicFilter]);
 
   useEffect(() => {
     latestCallbacksRef.current = { onOpen, onFailure };
   }, [onFailure, onOpen]);
+
+  // A new graph (scope change, refresh) can drop a page the path ran through.
+  useEffect(() => {
+    setPath(null);
+    setPathMessage(null);
+  }, [projection]);
 
   useEffect(() => {
     if (!expanded) return;
@@ -74,7 +144,7 @@ export default function BrainMapCanvas({
 
   useEffect(() => {
     const host = hostRef.current;
-    if (!host || projection.gardenCount === 0) return;
+    if (!surfaceTheme || !host || projection.gardenCount === 0) return;
     let disposed = false;
     let destroy: (() => void) | undefined;
 
@@ -82,9 +152,9 @@ export default function BrainMapCanvas({
       host,
       "profile" as FullSlug,
       QUARTZ_HOME_GRAPH,
-      projection.payload,
+      view,
       {
-        scopeCluster: projection.payload.garden.slug,
+        scopeCluster: view.garden.slug,
         scopeFolderPath: null,
         configuredDepth: -1,
         onNavigate: (nodeId) => {
@@ -105,7 +175,34 @@ export default function BrainMapCanvas({
       disposed = true;
       destroy?.();
     };
-  }, [projection]);
+  }, [projection, view, surfaceTheme]);
+
+  const findPath = (event: FormEvent) => {
+    event.preventDefault();
+    const byLabel = new Map(pages.map((page) => [page.label, page.id]));
+    const from = byLabel.get(pathFrom.trim());
+    const to = byLabel.get(pathTo.trim());
+    if (!from || !to) {
+      setPath(null);
+      setPathMessage("Pick both pages from the list.");
+      return;
+    }
+    const found = shortestTopologyPath(projection.payload.edges.filter(edge =>
+      pageById.has(edge.source) && pageById.has(edge.target)), from, to);
+    setPath(found);
+    setPathMessage(found ? null : "These pages are not connected, even through other pages.");
+  };
+
+  const clearPath = () => {
+    setPath(null);
+    setPathMessage(null);
+  };
+
+  const openLink = (href: string | undefined) => (event: MouseEvent) => {
+    if (!href) return;
+    event.preventDefault();
+    onOpen(href);
+  };
 
   return (
     <section
@@ -116,7 +213,6 @@ export default function BrainMapCanvas({
       <div className="thought-topology-meta">
         <div className="thought-topology-heading">
           <h2>Thought Topology</h2>
-          <p>How the ideas in your gardens are organized and connected.</p>
           <p className="thought-topology-analysis" hidden />
         </div>
         <label className="profile-quartz-topology-scope">
@@ -128,20 +224,90 @@ export default function BrainMapCanvas({
           >
             {scopeOptions.map((option) => (
               <option key={option.id} value={option.organizationId ?? option.id}>
-                {option.label}
+                {option.kind === "all" ? "Knowledge" : option.label}
               </option>
             ))}
           </select>
         </label>
         {graph.warnings.length > 0 && (
-          <div className="profile-quartz-topology-warnings" role="status">
+          <details className="profile-quartz-topology-warnings">
+            <summary>Garden status ({graph.warnings.length})</summary>
             {graph.warnings.map((warning) => (
               <p key={`${warning.source}:${warning.code}:${warning.message}`}>{warning.message}</p>
             ))}
-          </div>
+          </details>
         )}
         {loading && <p className="profile-quartz-topology-refresh">Updating Thought Topology…</p>}
       </div>
+
+      {(topics.length > 0 || pages.length > 1) && <details className="knowledge-map-explore">
+        <summary>Topics and paths{topicFilter !== null ? " · Topic selected" : path ? " · Path selected" : ""}</summary>
+      {topics.length > 0 && (
+        <div className="profile-quartz-topology-topics" role="group" aria-label="Topics">
+          <button
+            type="button"
+            aria-pressed={topicFilter === null}
+            onClick={() => { setTopicFilter(null); clearPath(); }}
+          >
+            All topics
+          </button>
+          {topics.map((topic) => (
+            <button
+              key={topic.index}
+              type="button"
+              aria-pressed={topicFilter === topic.index}
+              onClick={() => { setTopicFilter(topicFilter === topic.index ? null : topic.index); clearPath(); }}
+            >
+              <span
+                className="profile-quartz-topology-swatch"
+                style={{ background: `var(--topology-topic-${topic.index})` }}
+                aria-hidden="true"
+              />
+              {topic.label}
+              <span className="profile-quartz-topology-count">{topic.count}</span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {pages.length > 1 && (
+        <form className="profile-quartz-topology-path" onSubmit={findPath} aria-label="Find a path between two pages">
+          <datalist id="knowledge-pages">
+            {pages.map((page) => <option key={page.id} value={page.label} />)}
+          </datalist>
+          <input
+            list="knowledge-pages"
+            value={pathFrom}
+            onChange={(event) => setPathFrom(event.target.value)}
+            placeholder="From page"
+            aria-label="Path from page"
+          />
+          <input
+            list="knowledge-pages"
+            value={pathTo}
+            onChange={(event) => setPathTo(event.target.value)}
+            placeholder="To page"
+            aria-label="Path to page"
+          />
+          <button type="submit">Find path</button>
+          {(path || pathMessage) && <button type="button" onClick={clearPath}>Show whole map</button>}
+          {pathMessage && <p role="status">{pathMessage}</p>}
+          {path && (
+            <ol aria-label="Path">
+              {path.map((id) => {
+                const page = pageById.get(id);
+                return (
+                  <li key={id}>
+                    <a href={page?.href} onClick={openLink(page?.href)}>{page?.title ?? id}</a>
+                  </li>
+                );
+              })}
+            </ol>
+          )}
+        </form>
+      )}
+
+      </details>}
 
       <div className="graph-outer" data-expanded={expanded ? "true" : undefined}>
         {projection.gardenCount > 0 ? (
@@ -149,7 +315,7 @@ export default function BrainMapCanvas({
             ref={hostRef}
             className="graph-container"
             data-active-mode="thought-topology"
-            aria-label={`Interactive Thought Topology with ${projection.gardenCount} gardens, ${projection.payload.nodes.length} pages, and ${projection.payload.edges.length} weighted relationships`}
+            aria-label={`Interactive Thought Topology with ${projection.gardenCount} gardens, ${view.nodes.length} pages, and ${view.edges.length} weighted relationships. The page list below the map has the same pages.`}
             role="img"
           />
         ) : (
@@ -166,20 +332,55 @@ export default function BrainMapCanvas({
             aria-expanded={expanded}
             onClick={() => setExpanded((current) => !current)}
           >
-            {expanded ? <CloseGraphIcon /> : <ExpandGraphIcon />}
+            {expanded ? <CloseGraphIcon /> : <KnowledgeIcon />}
           </button>
         )}
         <div className="thought-callout" role="status" aria-live="polite" aria-hidden="true" />
       </div>
+
+      {pages.length > 0 && (
+        <details
+          className="profile-quartz-topology-list"
+          onToggle={(event) => setListOpen((event.currentTarget as HTMLDetailsElement).open)}
+        >
+          <summary>Browse all {pages.length} pages as a list</summary>
+          {/* Rendered only while open: a large map lists thousands of pages. */}
+          {listOpen && <PageList pages={pages} openLink={openLink} />}
+        </details>
+      )}
     </section>
   );
 }
 
-function ExpandGraphIcon() {
+function PageList({
+  pages,
+  openLink,
+}: {
+  pages: PageOption[];
+  openLink: (href: string | undefined) => (event: MouseEvent) => void;
+}) {
+  const byGarden = new Map<string, PageOption[]>();
+  for (const page of pages) {
+    const list = byGarden.get(page.garden);
+    if (list) list.push(page);
+    else byGarden.set(page.garden, [page]);
+  }
   return (
-    <svg viewBox="0 0 55 55" fill="currentColor" aria-hidden="true">
-      <path d="M49,0c-3.309,0-6,2.691-6,6c0,1.035.263,2.009.726,2.86l-9.829,9.829C32.542,17.634,30.846,17,29,17s-3.542.634-4.898,1.688l-7.669-7.669C16.785,10.424,17,9.74,17,9c0-2.206-1.794-4-4-4S9,6.794,9,9s1.794,4,4,4c.74,0,1.424-.215,2.019-.567l7.669,7.669C21.634,21.458,21,23.154,21,25s.634,3.542,1.688,4.897L10.024,42.562C8.958,41.595,7.549,41,6,41c-3.309,0-6,2.691-6,6s2.691,6,6,6s6-2.691,6-6c0-1.035-.263-2.009-.726-2.86l12.829-12.829c1.106.86,2.44,1.436,3.898,1.619v10.16c-2.833.478-5,2.942-5,5.91c0,3.309,2.691,6,6,6s6-2.691,6-6c0-2.967-2.167-5.431-5-5.91v-10.16c1.458-.183,2.792-.759,3.898-1.619l7.669,7.669C41.215,39.576,41,40.26,41,41c0,2.206,1.794,4,4,4s4-1.794,4-4s-1.794-4-4-4c-.74,0-1.424.215-2.019.567l-7.669-7.669C36.366,28.542,37,26.846,37,25s-.634-3.542-1.688-4.897l9.665-9.665C46.042,11.405,47.451,12,49,12c3.309,0,6-2.691,6-6S52.309,0,49,0ZM11,9c0-1.103.897-2,2-2s2,.897,2,2s-.897,2-2,2S11,10.103,11,9ZM6,51c-2.206,0-4-1.794-4-4s1.794-4,4-4s4,1.794,4,4S8.206,51,6,51Zm27-2c0,2.206-1.794,4-4,4s-4-1.794-4-4s1.794-4,4-4S33,46.794,33,49Zm-4-18c-3.309,0-6-2.691-6-6s2.691-6,6-6s6,2.691,6,6S32.309,31,29,31Zm18,10c0,1.103-.897,2-2,2s-2-.897-2-2s.897-2,2-2S47,39.897,47,41Zm2-31c-2.206,0-4-1.794-4-4s1.794-4,4-4s4,1.794,4,4S51.206,10,49,10Z" />
-    </svg>
+    <div>
+      {[...byGarden].map(([garden, entries]) => (
+        <section key={garden} aria-label={garden}>
+          <h3>{garden}</h3>
+          <ul>
+            {entries.map((page) => (
+              <li key={page.id}>
+                <a href={page.href} onClick={openLink(page.href)}>{page.title}</a>
+                {page.topic && <span>{page.topic}</span>}
+              </li>
+            ))}
+          </ul>
+        </section>
+      ))}
+    </div>
   );
 }
 

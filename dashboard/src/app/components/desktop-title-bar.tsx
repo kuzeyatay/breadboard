@@ -1,7 +1,8 @@
 "use client";
 
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
-import { ChartNoAxesColumn, Clapperboard, FileText, Hand, Palette } from "lucide-react";
+import KnowledgeIcon from "./knowledge-icon";
+import { ChartNoAxesColumn, Clapperboard, Hand, LayoutGrid, Palette } from "lucide-react";
 import VSCodeIcon from "./vscode-icon";
 import CrumbsIcon from "./crumbs-icon";
 import {
@@ -665,7 +666,9 @@ function TabGlyph({ kind, privateBrowsing = false }: { kind: DesktopTabKind; pri
     case "gestures":
       return <Hand strokeWidth={2} />;
     case "office":
-      return <FileText strokeWidth={2} />;
+      return <LayoutGrid strokeWidth={2} />;
+    case "knowledge":
+      return <KnowledgeIcon size={16} />;
     case "crumbs":
       return <CrumbsIcon strokeWidth={2} />;
     case "design":

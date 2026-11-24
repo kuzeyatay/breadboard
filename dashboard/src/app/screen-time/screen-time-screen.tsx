@@ -5,8 +5,9 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { motion, useReducedMotion } from "motion/react";
 import { ArrowUpRight, BookOpen, ChartNoAxesColumn, Check, ChevronLeft, ChevronRight,
   Clock3, Copy, Globe2, History, Layers2, Monitor, Pause, Play, Search, Settings2, ShieldCheck,
-  Sparkles, Sprout, Timer, X } from "lucide-react";
+  Sparkles, Sprout, X } from "lucide-react";
 import NavigationLink from "@/app/components/navigation-link";
+import SettingsRecall from "@/app/components/settings-recall";
 import { usePageLoading } from "@/app/components/use-page-loading";
 import { AUTH_CHANGED_EVENT } from "@/lib/auth-events";
 import { CATEGORIES, formatDuration, localDate, screenTimeRange, usageCategory,
@@ -27,7 +28,7 @@ function AppMark({ name, category, breadboard = false }: { name: string; categor
   </span>;
 }
 
-export default function ScreenTimeScreen() {
+export default function ScreenTimeScreen({ initialRecallSettingsOpen = false }: { initialRecallSettingsOpen?: boolean }) {
   const [period, setPeriod] = useState<ScreenTimePeriod>("day");
   const [date, setDate] = useState(() => localDate());
   const [view, setView] = useState<View>("apps");
@@ -36,6 +37,7 @@ export default function ScreenTimeScreen() {
   const [busy, setBusy] = useState(true), [error, setError] = useState("");
   const [refresh, setRefresh] = useState(0), [saving, setSaving] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false), [exclusions, setExclusions] = useState("");
+  const [recallSettingsOpen, setRecallSettingsOpen] = useState(initialRecallSettingsOpen);
   const [useForSuggestions, setUseForSuggestions] = useState(true);
   const [detail, setDetail] = useState<Detail | null>(null);
   const [bucket, setBucket] = useState<number | null>(null);
@@ -79,7 +81,7 @@ export default function ScreenTimeScreen() {
     const visible = () => { void load(); };
     const authChanged = () => {
       controller?.abort(); requestVersion.current++; pending = false;
-      setData(null); setDetail(null); setSettingsOpen(false);
+      setData(null); setDetail(null); setSettingsOpen(false); setRecallSettingsOpen(false);
       void load(true);
     };
     window.addEventListener(AUTH_CHANGED_EVENT, authChanged);
@@ -221,12 +223,26 @@ export default function ScreenTimeScreen() {
               <div className={styles.inlineActions}>{leadingTab.url && <NavigationLink href={leadingTab.url} label={leadingTab.name} newTab className={styles.primaryLink}>Return to tab <ArrowUpRight size={14} /></NavigationLink>}
                 <button className={styles.textButton} onClick={() => setDetail({ name: leadingTab.name, title: leadingTab.title, start: leadingTab.start, end: leadingTab.end, url: leadingTab.url })}>Find in Recall <History size={14} /></button></div></>
               : <><h3>No tab activity</h3><p>Used Breadboard tabs will appear here.</p></>}
-            <div className={styles.focusNudge}><Timer size={19} /><div><strong>Focus timer</strong><span>Set a timer for your next task.</span></div></div>
-            <NavigationLink href="/pomodoro" label="Focus timer" className={styles.textButton}>Open focus timer <ArrowUpRight size={14} /></NavigationLink>
           </section>
           <SiteLocksCard />
           <section className={styles.recallCard}><span className={styles.recallIcon}><History size={21} /></span><h3>Recall</h3><p>Find saved screen content from an app, tab or time.</p>
-            <button className={styles.textButton} disabled={!total} onClick={() => setDetail({ name: `${rangeLabel} in Recall`, start: range.start, end: Math.min(range.end, Date.now()) })}>View {period} in Recall <ArrowUpRight size={14} /></button>
+            <div className={styles.inlineActions}>
+              <button className={styles.textButton} disabled={!total} onClick={() => setDetail({ name: `${rangeLabel} in Recall`, start: range.start, end: Math.min(range.end, Date.now()) })}>View {period} in Recall <ArrowUpRight size={14} /></button>
+              <Dialog.Root open={recallSettingsOpen} onOpenChange={setRecallSettingsOpen}>
+                <Dialog.Trigger asChild>
+                  <button type="button" className={styles.textButton}>Recall settings <Settings2 size={14} aria-hidden="true" /></button>
+                </Dialog.Trigger>
+                <Dialog.Portal>
+                  <Dialog.Overlay className={styles.scrim} />
+                  <Dialog.Content className={styles.settingsDialog}>
+                    <Dialog.Close className={styles.close} aria-label="Close Recall settings"><X size={18} aria-hidden="true" /></Dialog.Close>
+                    <Dialog.Title>Recall settings</Dialog.Title>
+                    <Dialog.Description>Control what Recall saves and which agents can access it.</Dialog.Description>
+                    <SettingsRecall />
+                  </Dialog.Content>
+                </Dialog.Portal>
+              </Dialog.Root>
+            </div>
           </section>
           <section className={styles.reflect}><BookOpen size={17} /><div><strong>Activity summary</strong><p>Copy app and tab totals to use in Terminal.</p><button className={styles.textButton} disabled={!total} onClick={() => void copySummary()}>{copied ? <Check size={13} /> : <Copy size={13} />}{copied ? "Summary copied" : "Copy activity summary"}</button>{copied && <NavigationLink href="/new-tab" label="Terminal" className={styles.textButton}>Open Terminal <ArrowUpRight size={13} /></NavigationLink>}</div></section>
         </aside>
@@ -256,11 +272,14 @@ export default function ScreenTimeScreen() {
       {error && <p className={styles.error} role="alert">{error}</p>}
       <button className={styles.primaryButton} disabled={saving} onClick={() => void saveSettings({ excluded: exclusions.split("\n").map(item => item.trim()).filter(Boolean), useForSuggestions })}>{saving ? "Saving…" : "Save preferences"}</button>
     </Dialog.Content></Dialog.Portal></Dialog.Root>
-    <RecallDetail detail={detail} close={() => setDetail(null)} />
+    <RecallDetail detail={detail} close={() => setDetail(null)} onOpenSettings={() => {
+      setDetail(null);
+      setRecallSettingsOpen(true);
+    }} />
   </main>;
 }
 
-function RecallDetail({ detail, close }: { detail: Detail | null; close: () => void }) {
+function RecallDetail({ detail, close, onOpenSettings }: { detail: Detail | null; close: () => void; onOpenSettings: () => void }) {
   const [result, setResult] = useState<ShapedSearch | null>(null), [pending, setPending] = useState(false), [error, setError] = useState("");
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
@@ -278,7 +297,7 @@ function RecallDetail({ detail, close }: { detail: Detail | null; close: () => v
     })();
     return () => controller.abort();
   }, [detail, attempt]);
-  usePageLoading(pending);
+  usePageLoading(Boolean(detail) && pending);
   const hits = result?.hits ?? [];
   return <Dialog.Root open={Boolean(detail)} onOpenChange={open => { if (!open) close(); }}><Dialog.Portal><Dialog.Overlay className={styles.scrim} /><Dialog.Content className={styles.recallDialog}>
     <header className={styles.recallHeader}>
@@ -293,7 +312,7 @@ function RecallDetail({ detail, close }: { detail: Detail | null; close: () => v
       {!pending && error && <div className={styles.recallState} role="alert">
         <span data-tone="warn"><History size={24} /></span><h3>Recall can’t show this right now</h3><p>{error}</p>
         <div><button className={styles.secondaryButton} onClick={() => setAttempt(value => value + 1)}>Try again</button>
-          <NavigationLink href="/settings?tab=recall" label="Recall settings" className={styles.textButton}>Open Recall settings <ArrowUpRight size={14} /></NavigationLink></div>
+          <button type="button" className={styles.textButton} onClick={onOpenSettings}>Open Recall settings <Settings2 size={14} aria-hidden="true" /></button></div>
       </div>}
       {!pending && !error && result && !hits.length && <div className={styles.recallState}>
         <span><History size={24} /></span><h3>Nothing captured in this window</h3><p>Recall only has history for times it was recording. Try a wider time range from the chart.</p>
@@ -305,7 +324,7 @@ function RecallDetail({ detail, close }: { detail: Detail | null; close: () => v
       </>}
     </div>
     <footer className={styles.recallFooter}>
-      <NavigationLink href="/settings?tab=recall" label="Recall settings" className={styles.textButton}>Manage Recall in Settings <ArrowUpRight size={14} /></NavigationLink>
+      <button type="button" className={styles.textButton} onClick={onOpenSettings}>Recall settings <Settings2 size={14} aria-hidden="true" /></button>
     </footer>
   </Dialog.Content></Dialog.Portal></Dialog.Root>;
 }

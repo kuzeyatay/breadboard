@@ -10,6 +10,7 @@
 // (POST /api/guardrails), so what you see here is what a real message gets.
 
 import { useCallback, useEffect, useState } from "react";
+import SettingsCommandRules from "@/app/components/settings-command-rules";
 
 interface CustomPiiPattern {
   name: string;
@@ -269,6 +270,8 @@ export default function SettingsGuardrails() {
           </div>
         ) : null}
       </div>
+
+      <SettingsCommandRules />
     </div>
   );
 }

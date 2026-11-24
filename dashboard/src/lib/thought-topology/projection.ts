@@ -841,6 +841,7 @@ export function buildGardenProjection(input: {
         kind: node.type === "source-document" ? "source" : "markdown",
         knowledgeType: node.type,
         sourceType: node.sourceType,
+        activityTimes: Number.isFinite(Date.parse(node.date)) ? [Date.parse(node.date)] : [],
         contentHash: sha256(
           [projection.semanticText, ...projection.spans.map((span) => span.text)].join("\n"),
         ),

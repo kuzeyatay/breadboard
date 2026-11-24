@@ -21,6 +21,7 @@ test("interactive Google sign-in pages hand off; silent refreshes and consent st
   ]) assert.equal(isGoogleSignInPage(url), true, url);
   for (const url of [
     "https://accounts.google.com/ServiceLogin?passive=true&continue=https%3A%2F%2Fwww.youtube.com%2F",
+    "https://accounts.google.com/ServiceLogin?passive=1209600&osid=1&continue=https%3A%2F%2Fdocs.google.com%2Fforms%2Fd%2Fe%2Fx%2Fviewform",
     "https://accounts.google.com/signin/oauth/id?authuser=0", "https://accounts.google.com/o/oauth2/v2/auth",
     "https://accounts.google.com/ServiceLoginAuth", "https://accounts.google.com/CheckCookie",
     "https://mail.google.com/", "https://accounts.google.com.evil.test/v3/signin/identifier", "http://accounts.google.com/v3/signin/identifier", "not a url",

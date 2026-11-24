@@ -2,7 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { X } from "lucide-react";
+import { Settings, X } from "lucide-react";
+import NavigationLink from "@/app/components/navigation-link";
 import { useDesktopTabs } from "@/app/components/use-desktop-tabs";
 import BrowserDownloadsButton from "@/app/browser/browser-downloads-button";
 import BrowserMenuControls from "@/app/browser/browser-menu-controls";
@@ -23,12 +24,15 @@ export default function TerminalBrowserControls({ ownerKey }: { ownerKey: string
   const current = tabs?.tabs.find(tab => tab.id === tabs.selfId);
   const active = Boolean(current && current.id === tabs?.activeId);
   const [panel, setPanel] = useState<Panel | null>(null);
-  // Browser tools need the desktop bridge, just as they do on a web tab.
-  if (!tabs) return null;
   return <>
     <div className={styles.controls}>
-      <BrowserDownloadsButton active={active} open={current?.downloadsOpen ?? current?.browser?.downloadsOpen ?? false} />
-      <BrowserMenuControls profileLabel={ownerKey} onPanel={setPanel} />
+      {tabs && <>
+        <BrowserDownloadsButton active={active} open={current?.downloadsOpen ?? current?.browser?.downloadsOpen ?? false} />
+        <BrowserMenuControls profileLabel={ownerKey} onPanel={setPanel} />
+      </>}
+      <NavigationLink href="/settings" label="Settings" aria-label="Settings" title="Settings" className="browser-toolbar-button" prefetch={false}>
+        <Settings aria-hidden="true" />
+      </NavigationLink>
     </div>
     {panel && <TerminalLibrary panel={panel} ownerKey={ownerKey} close={() => setPanel(null)} />}
   </>;

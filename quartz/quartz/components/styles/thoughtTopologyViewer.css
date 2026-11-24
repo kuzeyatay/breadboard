@@ -1,15 +1,166 @@
-/* Keep the inspector close control above its content in the 3D viewer. */
-.graph [data-topology-dimension="3d"] ~ .thought-inspector > .thought-inspector-close {
-  z-index: 1;
+:is(.graph, .knowledge-map-explore) {
+  --topology-topic-0: #df4965;
+  --topology-topic-1: #db7525;
+  --topology-topic-2: #b58a07;
+  --topology-topic-3: #249c55;
+  --topology-topic-4: #008f94;
+  --topology-topic-5: #367fd8;
+  --topology-topic-6: #8055ca;
+  --topology-topic-7: #c548a3;
+}
+html:is([saved-theme=dark],[data-theme=dark]) :is(.graph, .knowledge-map-explore) {
+  --topology-topic-0: #FF5A5F;
+  --topology-topic-1: #FF9F1C;
+  --topology-topic-2: #FFE14D;
+  --topology-topic-3: #7CFF6B;
+  --topology-topic-4: #2EE6D6;
+  --topology-topic-5: #4DA3FF;
+  --topology-topic-6: #9B7BFF;
+  --topology-topic-7: #FF6BD6;
+}
+/* Shared by the published Garden, workspace embed and Knowledge tab. */
+.graph :is(.graph-outer,.global-graph-outer):has(> [data-map-ready="true"]) {
+  --map-paper: #fff;
+  --map-ink: #111;
+  --map-border: color-mix(in srgb,var(--map-ink) 20%,var(--map-paper));
+  --map-accent: var(--secondary,var(--botanical,#6bac88));
+  --map-sheet: var(--map-paper);
+  --map-ease: cubic-bezier(.23,1,.32,1);
+  background: var(--map-paper);
+  isolation: isolate;
+}
+html:is([saved-theme=dark],[data-theme=dark]) .graph :is(.graph-outer,.global-graph-outer):has(> [data-map-ready="true"]) {
+  --map-paper:#000; --map-ink:#fff;
+}
+.graph :is(.graph-outer,.global-graph-outer) > [data-map-ready="true"] {background:var(--map-paper);background-image:none;touch-action:none}
+.graph :is(.graph-outer,.global-graph-outer):has(> [data-map-ready="true"]) {border-radius:0;background:var(--map-paper)}
+
+.graph .map-overview {position:absolute;inset:20px auto auto 24px;display:grid;gap:3px;max-width:calc(100% - 160px);color:var(--map-ink);pointer-events:none;text-shadow:0 1px 6px var(--map-paper);line-height:1.2}
+.graph .map-overview strong {font-family:"Alte Haas Map",Helvetica,Arial,sans-serif;font-weight:700;letter-spacing:-.035em;font-size:clamp(19px,2vw,25px)}
+.graph .map-overview span {font:13px/1.35 "Alte Haas Map",Helvetica,Arial,sans-serif}
+.graph .map-source small {font-size:11px;font-variant-numeric:tabular-nums}
+.graph :is(.graph-outer,.global-graph-outer):has(> [data-map-ready]) .thought-topology-filter {
+  position:absolute;inset:12px 53px auto auto;width:auto;align-items:flex-end;z-index:15
+}
+.graph [data-map-ready] ~ .thought-topology-controls {position:static;pointer-events:none}
+.graph [data-map-ready] ~ .thought-topology-controls .thought-topology-filter {pointer-events:auto}
+.graph [data-map-ready] ~ .thought-topology-controls .thought-topology-heading {display:none}
+.graph .thought-topology-filter .thought-topology-filter-toggle, .graph .map-assistant-toggle {
+  min-height:32px;display:inline-flex;align-items:center;gap:6px;padding:5px 11px;font:600 12px/1.3 var(--bodyFont,system-ui);
+  border:1px solid var(--map-border);border-radius:10px;background:var(--map-sheet);color:var(--map-ink);cursor:pointer
+}
+.graph .thought-topology-filter .thought-topology-filter-panel {
+  box-sizing:border-box;position:absolute;inset:calc(100% + 6px) 0 auto auto;width:min(315px,calc(100vw - 80px));
+  max-height:min(72vh,530px);overflow-y:auto;overscroll-behavior:contain;padding:14px;display:grid;gap:12px;
+  border:1px solid var(--map-border);border-radius:13px;background:var(--map-sheet);color:var(--map-ink);
+  box-shadow:0 8px 28px #0002;transform-origin:top right;
+}
+.graph .map-filter-header {display:flex;align-items:center;justify-content:space-between;gap:12px}
+.graph .map-filter-header strong {font:650 16px/1.25 var(--headerFont,system-ui);letter-spacing:-.025em}
+.graph .thought-topology-filter-summary {margin:0;font-variant-numeric:tabular-nums}
+.graph .thought-topology-filter-section {border-top:1px solid var(--map-border);padding-top:9px}
+.graph .thought-topology-filter-panel :is(input,select) {accent-color:var(--map-accent)}
+.graph .map-folder-search,.graph .map-assistant-compose input {box-sizing:border-box;width:100%;min-width:0;margin:3px 0;padding:7px 9px;font:inherit;border:1px solid var(--map-border);border-radius:7px;color:var(--map-ink);background:var(--map-paper)}
+.graph .thought-topology-filter-folders li {position:relative}
+.graph .thought-topology-filter-folders li:has(> .map-only) > label {padding-right:38px}
+.graph .map-only {position:absolute;right:0;top:3px}
+.graph [data-map-ready] ~ .thought-inspector {inset:0 auto 0 0;width:min(355px,88%);height:100%;z-index:21;box-sizing:border-box;overflow:auto;overscroll-behavior:contain;border:0;border-right:1px solid var(--map-border);border-radius:0;background:var(--map-sheet);background-image:none;color:var(--map-ink);box-shadow:6px 0 20px #0001;transform:translateX(-103%);backdrop-filter:none}
+.graph [data-map-ready] ~ .thought-inspector.open {transform:translateX(0);visibility:visible}
+.graph [data-map-ready] ~ .thought-inspector:before {display:none}
+.graph [data-map-ready] ~ .thought-inspector .thought-inspector-close {z-index:1}
+.graph [data-map-ready] ~ .thought-inspector h2 {letter-spacing:-.035em;line-height:1.18}
+.graph .map-assistant {position:absolute;right:12px;bottom:12px;z-index:18;color:var(--map-ink);font:13px/1.45 var(--bodyFont,system-ui)}
+.graph .map-assistant-toggle {
+  min-height:36px;padding:8px 16px;border:1px solid #374151;border-radius:0;
+  background:#030712;color:#f3f4f6;font:500 14px/20px var(--bodyFont,system-ui);box-shadow:none;
+}
+.graph .map-assistant-toggle:hover {border-color:#6b7280;background:#111827}
+.graph .map-assistant {right:20px;bottom:20px}
+
+.graph .map-assistant-panel {box-sizing:border-box;position:absolute;right:0;bottom:calc(100% + 8px);display:flex;flex-direction:column;gap:10px;width:min(340px,calc(100vw - 48px));max-height:min(60vh,440px);padding:14px;border-radius:14px;border:1px solid var(--map-border);background:var(--map-sheet);box-shadow:0 10px 30px #0002;transform-origin:bottom right}
+.graph .map-assistant-messages {min-height:0;overflow:auto;overscroll-behavior:contain}
+.graph .map-assistant-messages:empty {display:none}
+.graph .map-assistant-purpose {margin:0;color:var(--map-ink);font:13px/1.45 var(--bodyFont,system-ui)}
+.graph .map-assistant-messages p {margin:5px 0 10px}
+.graph .map-question {font-weight:650}
+.graph .map-source {display:grid;gap:3px;width:100%;padding:9px 0;text-align:left;color:inherit;background:none;border:0;border-top:1px solid var(--map-border);font:inherit;cursor:pointer}
+.graph .map-source small {color:var(--map-accent)}
+.graph .map-assistant-compose {display:flex;gap:5px;align-items:center}
+.graph .map-assistant-compose button,.graph .map-assistant-prompt {background:var(--map-paper);border:1px solid var(--map-border);border-radius:8px;padding:6px 9px;color:inherit;font:inherit;cursor:pointer}
+.graph .map-assistant-prompt {align-self:flex-start}
+.graph .thought-topology-filter .thought-topology-filter-panel,.graph .map-assistant-panel {
+  opacity:1;transform:translateY(0) scale(1);
+  transition:opacity 150ms var(--map-ease),transform 190ms var(--map-ease),display 190ms allow-discrete
+}
+.graph .thought-topology-filter .thought-topology-filter-panel[hidden],.graph .map-assistant-panel[hidden] {
+  display:none;opacity:0;transform:translateY(-4px) scale(.98)
+}
+@starting-style {
+  .graph .thought-topology-filter .thought-topology-filter-panel:not([hidden]),.graph .map-assistant-panel:not([hidden]) {opacity:0;transform:translateY(-4px) scale(.98)}
+}
+.graph .thought-topology-filter-panel[data-instant] {transition:none}
+.graph :is(.map-assistant,.thought-topology-filter,.thought-inspector) :focus-visible {outline:2px solid var(--map-accent);outline-offset:2px}
+html.quartz-graph-preview .graph [data-map-ready] ~ .thought-inspector.open, html.quartz-graph-preview .graph [data-map-ready] ~ .thought-callout[aria-hidden=false] {display:block !important}
+/* The workspace places its 28px refresh button in the iframe's upper-left corner. */
+html.quartz-graph-preview .graph .map-overview {inset:8px 8px auto 44px;min-height:28px;align-content:center;max-width:none}
+html.quartz-graph-preview .graph .map-overview strong {font-size:13px}
+html.quartz-graph-preview .graph .map-overview span {display:none}
+@media(prefers-reduced-motion:reduce){
+  .graph .thought-topology-filter .thought-topology-filter-panel,.graph .map-assistant-panel,.graph [data-map-ready] ~ .thought-inspector {transition:none}
 }
 
-.graph .thought-topology-filter:has(> .thought-topology-spin) {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 0.4rem;
+.graph .thought-inspector .map-endpoint {background:none;border:0;padding:0;font:inherit;color:inherit;text-align:left;cursor:pointer;display:inline;text-decoration:underline;text-decoration-color:color-mix(in srgb,currentColor 22%,transparent);text-underline-offset:.14em}
+.graph :is(.graph-outer,.global-graph-outer) [data-map-ready] ~ .thought-callout {
+  border:0;background:none;box-shadow:none;backdrop-filter:none;color:var(--map-ink);
+  font-family:"Alte Haas Map",Helvetica,Arial,sans-serif;
+  text-shadow:0 0 2px var(--map-paper),0 0 7px var(--map-paper),0 0 14px var(--map-paper)
 }
+.graph .thought-callout .thought-callout-title {font:700 15px/1.3 "Alte Haas Map",Helvetica,Arial,sans-serif}
+.graph .thought-callout .thought-callout-summary {font:13px/1.45 "Alte Haas Map",Helvetica,Arial,sans-serif}
+.graph .thought-callout .thought-callout-meta {font:11px/1.35 "Alte Haas Map",Helvetica,Arial,sans-serif}
+.graph .thought-inspector .thought-inspector-header {font-family:"Alte Haas Map",Helvetica,Arial,sans-serif}
+.graph .thought-inspector .map-endpoint {text-decoration:none}
+.graph .thought-inspector .map-endpoint:hover {text-decoration:underline}
+.graph .thought-topology-filter .thought-topology-filter-toggle {border-radius:0;background:var(--map-paper)}
+.graph .thought-topology-filter .thought-topology-filter-panel {border-radius:0;background:var(--map-paper)}
 
-.graph .thought-topology-filter > .thought-topology-spin[aria-pressed="true"] {
-  border-color: var(--secondary);
+html:not([data-theme=dark]):not([saved-theme=dark]) .graph :is(.graph-outer,.global-graph-outer):has(> [data-map-ready]) {
+  --map-paper:var(--paper-surface,#faf7ef);
+  --map-sheet:var(--paper-raised,#fffefb);
+  --map-ink:var(--ink-heading,#0f1a16);
+  --map-border:var(--line,#bccfc2);
+  --map-accent:var(--botanical,#4f6f68);
 }
+html:not([data-theme=dark]):not([saved-theme=dark]) .graph > .graph-outer:has(> [data-map-ready]) {
+  border:1px solid var(--map-border);border-radius:10px;box-shadow:0 2px 6px #243c2e0a;
+}
+html:not([data-theme=dark]):not([saved-theme=dark]) .graph .map-assistant-toggle {
+  background:var(--map-sheet);border-color:var(--map-border);color:var(--map-ink);font-family:var(--bodyFont,system-ui);
+}
+html:not([data-theme=dark]):not([saved-theme=dark]) .graph .map-assistant-toggle:hover {background:#eef3ec;border-color:var(--map-accent)}
+html:not([data-theme=dark]):not([saved-theme=dark]) .graph :is(.graph-outer,.global-graph-outer):has(> [data-map-ready]) .thought-topology-filter[data-placement=surface] {
+  inset:.65rem auto auto .65rem;align-items:flex-start
+}
+html:not([data-theme=dark]):not([saved-theme=dark]) .graph .thought-topology-filter > .thought-topology-filter-toggle {
+  min-height:0;height:1.9rem;gap:.35rem;padding:0 .6rem 0 .5rem;font:400 .78rem/1 var(--bodyFont,system-ui);
+  color:var(--dark,#13201b);border:1px solid color-mix(in srgb,var(--lightgray,#a6bdad) 85%,var(--light,#e6f0e6));
+  background:color-mix(in srgb,var(--light,#e6f0e6) 92%,white);border-radius:7px
+}
+html:not([data-theme=dark]):not([saved-theme=dark]) .graph .thought-topology-filter-toggle > svg {width:.85rem;height:.85rem;color:var(--gray,#64786c)}
+html:not([data-theme=dark]):not([saved-theme=dark]) .graph .thought-topology-filter > .thought-topology-filter-toggle:is(:hover,[aria-expanded=true]) {border-color:var(--map-accent)}
+html:not([data-theme=dark]):not([saved-theme=dark]) .graph .thought-topology-filter > .thought-topology-filter-panel {
+  inset:calc(100% + .4rem) auto auto 0;transform-origin:top left
+}
+html:not([data-theme=dark]):not([saved-theme=dark]) .graph :is(.graph-outer,.global-graph-outer):has(.thought-topology-filter) .map-overview {
+  inset:.8rem 3.2rem auto 6.8rem;max-width:none
+}
+/* Share the expand icon's 24px row and leave its full click target clear. */
+html:not(.quartz-graph-preview):not([data-theme=dark]):not([saved-theme=dark]) .graph .graph-outer:has(> .global-graph-icon) .map-overview {
+  inset:.3rem calc(24px + .7rem) auto 6.8rem;
+  display:flex;flex-wrap:wrap-reverse;align-items:center;column-gap:.6rem;min-height:24px;max-width:none
+}
+html:not(.quartz-graph-preview):not([data-theme=dark]):not([saved-theme=dark]) .graph .graph-outer:has(> .global-graph-icon) .map-overview span {
+  margin-inline-start:auto;text-align:right
+}
+html:not([data-theme=dark]):not([saved-theme=dark]) .graph .map-overview span {color:var(--ink-muted,#50615a)}
+html:not(.quartz-graph-preview):not([data-theme=dark]):not([saved-theme=dark]) .home-knowledge-graph > .thought-topology-meta + [data-graph-surface=garden] .map-overview strong {display:none}

@@ -43,3 +43,9 @@ test('unsupported, placeholder, and malformed citations cannot create dead ancho
   assert.equal(gardenDocumentHref('../ec-2', 'sources/book.md'), null);
   assert.equal(gardenDocumentHref('ec-2', '../book.md'), null);
 });
+
+test('artifact: citations open the artifact instead of rendering as bare text', () => {
+  assert.equal(chatMarkdownHref('artifact:art_54f4794f-2ad5-419f-82c3-4adc74b73ec2'),
+    '/api/hermes/artifacts/art_54f4794f-2ad5-419f-82c3-4adc74b73ec2/download');
+  assert.equal(chatMarkdownHref('artifact:../etc'), null);
+});

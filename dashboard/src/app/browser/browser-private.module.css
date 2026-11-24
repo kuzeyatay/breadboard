@@ -5,6 +5,7 @@
   flex-shrink: 0;
   padding: 5px 9px;
   border-radius: 999px;
+  corner-shape: round;
   color: #70449d;
   background: #70449d14;
   font-size: 12px;

@@ -10,12 +10,14 @@ import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import db from "../db.ts";
 import type { GardenFileEntry } from "../garden-files/types.ts";
 import type { GardenFileScope, GardenFileStore } from "../garden-files/store.ts";
+import { spacesKindForPath } from "./types.ts";
 
-const MIRRORED = new Set(["docx", "xlsx", "pptx", "odt", "ods", "odp", "pdf", "html", "htm", "md", "markdown"]);
+const MIRRORED = new Set(["docx", "xlsx", "pptx", "odt", "ods", "odp", "pdf", "html", "htm", "md", "markdown", "affine"]);
 const MAX_BYTES = 64 * 1024 * 1024;
 const DEBOUNCE_MS = 4000;
 
-interface MirrorRow { file_id: string; rel_path: string; version: number }
+interface MirrorRow { file_id: string; rel_path: string; version: number; format: number }
+const MIRROR_FORMAT = 3;
 
 let schemaReady = false;
 function ensureSchema(): void {
@@ -26,6 +28,9 @@ function ensureSchema(): void {
     rel_path TEXT NOT NULL,
     version INTEGER NOT NULL
   )`);
+  // Format 3 links figures by their full content path; notes written before it are rendered again once.
+  const columns = db.prepare("PRAGMA table_info(office_quartz_mirrors)").all() as { name: string }[];
+  if (!columns.some(column => column.name === "format")) db.exec("ALTER TABLE office_quartz_mirrors ADD COLUMN format INTEGER NOT NULL DEFAULT 1");
   schemaReady = true;
 }
 
@@ -39,9 +44,33 @@ export function officeMirrorPath(entry: Pick<GardenFileEntry, "name" | "folder">
 }
 const assetDir = (fileId: string) => `assets/office/${fileId}`;
 
-/** Document bytes to markdown, plus figures referenced as figure-N.ext. */
+async function replaceAsync(text: string, pattern: RegExp, replace: (...match: string[]) => Promise<string>): Promise<string> {
+  const parts = await Promise.all([...text.matchAll(pattern)].map(match => replace(...match)));
+  let i = 0;
+  return text.replace(pattern, () => parts[i++]);
+}
+
+/** Document bytes to markdown, plus figures referenced as figure-N.ext. Designs and videos are named by their Garden path. */
 export async function officeMarkdown(name: string, bytes: Buffer): Promise<{ markdown: string; figures: { name: string; bytes: Buffer }[] }> {
   const ext = extension(name);
+  if (ext === "affine") {
+    // The page editor stores its own markdown beside the AFFiNE snapshot; images are under assets/.
+    const { default: JSZip } = await import("jszip");
+    const zip = await JSZip.loadAsync(bytes);
+    const markdown = await zip.file("breadboard.md")?.async("string") ?? "";
+    const figures: { name: string; bytes: Buffer }[] = [];
+    let index = 0;
+    const linked = await replaceAsync(markdown, /\]\((?:\.\/)?assets\/([^)\s]+)\)/g, async (_match, asset: string) => {
+      const entry = zip.file(`assets/${decodeURIComponent(asset)}`);
+      if (!entry) return "]()";
+      const name = `figure-${++index}.${asset.split(".").pop()?.toLowerCase() || "png"}`;
+      figures.push({ name, bytes: await entry.async("nodebuffer") });
+      return `](${name})`;
+    });
+    return { markdown: linked, figures };
+  }
+  if (spacesKindForPath(name)?.tab === "designs") return { markdown: `![${name.split("/").pop()}](figure-1.${ext})`, figures: [{ name: `figure-1.${ext}`, bytes }] };
+  if (spacesKindForPath(name)?.tab === "videos") return { markdown: `<video controls preload="metadata" src="figure-1.${ext}" style="max-width:100%"></video>`, figures: [{ name: `figure-1.${ext}`, bytes }] };
   if (ext === "md" || ext === "markdown") return { markdown: bytes.toString("utf8").replace(/^---\n[\s\S]*?\n---\n/, ""), figures: [] };
   if (ext === "html" || ext === "htm") {
     const { convert } = await import("html-to-text");
@@ -102,7 +131,8 @@ function noteText(entry: GardenFileEntry, markdown: string): string {
 
 /** A note may never widen who can read a file: in a public Garden only shared files are mirrored. */
 function mirrorable(entry: GardenFileEntry, gardenPublic: boolean): boolean {
-  return entry.kind === "file" && !entry.deletedAt && MIRRORED.has(extension(entry.name)) && entry.size <= MAX_BYTES && (!gardenPublic || entry.visibility === "garden");
+  // sources/ holds editable copies of uploads (a Word document's original); their source note already exists.
+  return entry.kind === "file" && !entry.deletedAt && !/^sources\//i.test(entry.path) && (MIRRORED.has(extension(entry.name)) || Boolean(spacesKindForPath(entry.path)?.spacesFolderOnly)) && entry.size <= MAX_BYTES && (!gardenPublic || entry.visibility === "garden");
 }
 
 export async function syncOfficeMirrors(store: GardenFileStore, scope: GardenFileScope): Promise<void> {
@@ -115,7 +145,7 @@ export async function syncOfficeMirrors(store: GardenFileStore, scope: GardenFil
   if (!cluster) return;
   const owner = { ...scope, userId: scope.ownerId };
   const wanted = new Map(store.list(owner).filter(entry => mirrorable(entry, cluster.visibility === "public")).map(entry => [entry.id, entry]));
-  const existing = db.prepare("SELECT file_id, rel_path, version FROM office_quartz_mirrors WHERE cluster_id = ?").all(scope.clusterId) as MirrorRow[];
+  const existing = db.prepare("SELECT file_id, rel_path, version, format FROM office_quartz_mirrors WHERE cluster_id = ?").all(scope.clusterId) as MirrorRow[];
   const current = new Map(existing.map(row => [row.file_id, row]));
   const removals = existing.filter(row => {
     const entry = wanted.get(row.file_id);
@@ -123,7 +153,7 @@ export async function syncOfficeMirrors(store: GardenFileStore, scope: GardenFil
   });
   const writes = [...wanted.values()].filter(entry => {
     const row = current.get(entry.id);
-    return !row || row.version !== entry.version || officeMirrorPath(entry) !== row.rel_path;
+    return !row || row.version !== entry.version || row.format !== MIRROR_FORMAT || officeMirrorPath(entry) !== row.rel_path;
   });
   if (!removals.length && !writes.length) return;
 
@@ -132,10 +162,14 @@ export async function syncOfficeMirrors(store: GardenFileStore, scope: GardenFil
   for (const entry of writes) {
     try {
       const content = store.content(owner, entry.id);
-      const { markdown, figures } = await officeMarkdown(entry.name, await fs.promises.readFile(content.path));
-      const relPath = officeMirrorPath(entry), fromNote = path.posix.dirname(relPath);
-      const linked = markdown.replace(/\]\((figure-\d+\.[a-z0-9]+)\)/gi, (_match, name: string) =>
-        `](${path.posix.relative(fromNote === "." ? "" : fromNote, `${assetDir(entry.id)}/${name}`)})`);
+      const { markdown, figures } = await officeMarkdown(spacesKindForPath(entry.path)?.spacesFolderOnly ? entry.path : entry.name, await fs.promises.readFile(content.path));
+      const relPath = officeMirrorPath(entry);
+      // Quartz resolves these links from the content root. "../assets" from a folder lost the Garden folder,
+      // and a bare "assets/..." is only scoped to the Garden when Quartz knows the asset, which the Garden
+      // reader (it lists Markdown pages only) does not. The full path resolves the same in both.
+      const toAsset = (name: string) => `${scope.gardenId}/${assetDir(entry.id)}/${name}`;
+      const linked = markdown.replace(/\]\((figure-\d+\.[a-z0-9]+)\)/gi, (_match, name: string) => `](${toAsset(name)})`)
+        .replace(/src="(figure-\d+\.[a-z0-9]+)"/gi, (_match, name: string) => `src="${toAsset(name)}"`);
       rendered.push({ entry, relPath, text: noteText(entry, linked), figures });
     } catch (error) {
       console.warn(`[office] Could not mirror ${entry.path} into Quartz:`, error instanceof Error ? error.message : error);
@@ -158,8 +192,8 @@ export async function syncOfficeMirrors(store: GardenFileStore, scope: GardenFil
       if (item.figures.length) fs.mkdirSync(assets, { recursive: true });
       for (const figure of item.figures) fs.writeFileSync(path.join(assets, figure.name), figure.bytes);
       fs.writeFileSync(target, item.text, "utf8");
-      db.prepare("INSERT INTO office_quartz_mirrors (file_id, cluster_id, rel_path, version) VALUES (?, ?, ?, ?) ON CONFLICT(file_id) DO UPDATE SET rel_path = excluded.rel_path, version = excluded.version")
-        .run(item.entry.id, scope.clusterId, item.relPath, item.entry.version);
+      db.prepare("INSERT INTO office_quartz_mirrors (file_id, cluster_id, rel_path, version, format) VALUES (?, ?, ?, ?, ?) ON CONFLICT(file_id) DO UPDATE SET rel_path = excluded.rel_path, version = excluded.version, format = excluded.format")
+        .run(item.entry.id, scope.clusterId, item.relPath, item.entry.version, MIRROR_FORMAT);
     }
     refreshClusterIndex(contentPath, scope.gardenId, { migrateSources: false });
   }, { paths });

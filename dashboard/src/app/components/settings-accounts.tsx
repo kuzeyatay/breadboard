@@ -205,9 +205,9 @@ export default function SettingsAccounts() {
   const [subscriptionLogin, setSubscriptionLogin] = useState<{
     provider: string;
     label: string;
-    url: string;
+    url: string | null;
     state: string;
-    flow: "redirect" | "device";
+    flow: "redirect" | "device" | "local";
     userCode?: string;
     replacing: string | null;
     before: string[];
@@ -398,6 +398,11 @@ export default function SettingsAccounts() {
             { cache: "no-store" },
           );
           const payload = await response.json().catch(() => ({}));
+          if (!response.ok && subscriptionLogin.flow === "local") {
+            setSubscriptionLogin(null);
+            setError(payload.error ?? "Claude sign-in ended before the account connected.");
+            return;
+          }
           if (!payload.complete) return;
 
           const { label, provider, replacing, before } = subscriptionLogin;
@@ -435,7 +440,7 @@ export default function SettingsAccounts() {
             (fresh?.accounts ?? []).some(
               (entry) => entry.provider === provider && entry.file !== added.file,
             );
-          if (added && joinsSibling) {
+          if (added && joinsSibling && provider !== "claude") {
             await fetch("/api/cliproxy/accounts", {
               method: "PATCH",
               headers: { "Content-Type": "application/json" },
@@ -446,7 +451,9 @@ export default function SettingsAccounts() {
 
           await syncSubscriptionModels();
           setNotice(
-            landed ? `${label} connected.` : `${label} re-authorised on the same account.`,
+            landed ? `${label} connected.` : provider === "claude"
+              ? "That Anthropic account is already connected."
+              : `${label} re-authorised on the same account.`,
           );
         } catch {
           // Transient: keep polling until the sign-in lands or is cancelled.
@@ -494,12 +501,12 @@ export default function SettingsAccounts() {
         label,
         url: payload.url,
         state: payload.state,
-        flow: payload.flow === "device" ? "device" : "redirect",
+        flow: payload.flow === "local" ? "local" : payload.flow === "device" ? "device" : "redirect",
         ...(payload.userCode ? { userCode: payload.userCode } : {}),
         replacing,
         before: (subscriptions?.accounts ?? []).map((entry) => entry.file),
       });
-      window.open(payload.url, "_blank", "noopener,noreferrer");
+      if (payload.url) window.open(payload.url, "_blank", "noopener,noreferrer");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "The sign-in could not be started.");
     } finally {
@@ -526,8 +533,11 @@ export default function SettingsAccounts() {
         const payload = await response.json().catch(() => ({}));
         throw new Error(payload.error ?? "That account could not be made the active one.");
       }
-      await refreshSubscriptions(true);
-      setNotice(`${label} is now the active account.`);
+      const fresh = await refreshSubscriptions(true);
+      const chosen = fresh?.accounts.find(entry => entry.file === file);
+      setNotice(chosen?.preferred && !chosen.active
+        ? `${label} will serve again when its usage limit resets.`
+        : `${label} is now the active account.`);
     } catch (caught) {
       setError(
         caught instanceof Error ? caught.message : "That account could not be made the active one.",
@@ -963,7 +973,8 @@ export default function SettingsAccounts() {
                   const activating = busy === `activate:${subscription.file}`;
                   const confirming =
                     confirmingSignOut === `cliproxy:${subscription.file}`;
-                  const canSwitch = !subscription.active || activeCount > 1;
+                  const canSwitch = subscription.preferred === undefined
+                    ? !subscription.active || activeCount > 1 : !subscription.preferred;
                   return (
                     <li
                       key={subscription.file}
@@ -971,6 +982,10 @@ export default function SettingsAccounts() {
                     >
                       <p className="min-w-0 truncate text-xs text-[var(--ink-muted)]">
                         {subscription.account}
+                        {subscription.preferred && accounts.length > 1 ? " · Preferred" : ""}
+                        {subscription.resetAt && subscription.resetAt > Date.now()
+                          ? ` · Usage limit reached · retry in ${formatRest((subscription.resetAt - Date.now()) / 1000)}`
+                          : null}
                       </p>
                       <div className="flex shrink-0 items-center gap-2">
                         <ConnectionDot state={subscription.active ? "active" : "standby"} />
@@ -1059,7 +1074,7 @@ export default function SettingsAccounts() {
                   onClick={() =>
                     void startSubscriptionLogin(provider.id, provider.vendorLabel, null)
                   }
-                  disabled={!proxyRunning || busy !== null || pendingSignIn}
+                  disabled={!(provider.id === "claude" ? subscriptions?.claudeInstalled : proxyRunning) || busy !== null || pendingSignIn}
                   className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3 py-1.5 text-xs text-[var(--ink)] transition hover:bg-[var(--paper-strong)] disabled:cursor-not-allowed disabled:opacity-55"
                 >
                   {busy === "login" ? "Starting…" : "Connect"}
@@ -1069,9 +1084,9 @@ export default function SettingsAccounts() {
           ))}
       </ul>
 
-      {!proxyRunning && providers.some((provider) => !provider.connected) ? (
+      {!proxyRunning && providers.some((provider) => provider.id !== "claude" && !provider.connected) ? (
         <p className="text-[11px] leading-5 text-[var(--ink-muted)]">
-          Account sign-in is unavailable. Restart Breadboard to try again.
+          The subscription proxy is unavailable. Restart Breadboard to reconnect it.
         </p>
       ) : null}
 
@@ -1111,7 +1126,11 @@ export default function SettingsAccounts() {
           <p className="text-xs font-medium text-[var(--ink-heading)]">
             Waiting for {subscriptionLogin.label}
           </p>
-          {subscriptionLogin.flow === "device" && subscriptionLogin.userCode ? (
+          {subscriptionLogin.flow === "local" ? (
+            <p className="mt-1 text-xs text-[var(--ink-muted)]">
+              Finish signing in with the account you want to add in the browser Claude Code opens on this PC.
+            </p>
+          ) : subscriptionLogin.flow === "device" && subscriptionLogin.userCode ? (
             <p className="mt-1 text-[11px] leading-5 text-[var(--ink-muted)]">
               Enter this code on the page that opened:{" "}
               <span className="font-mono text-sm text-[var(--ink-heading)]">
@@ -1127,14 +1146,14 @@ export default function SettingsAccounts() {
             </p>
           )}
           <div className="mt-2 flex flex-wrap items-center gap-2">
-            <a
+            {subscriptionLogin.url && <a
               href={subscriptionLogin.url}
               target="_blank"
               rel="noopener noreferrer"
               className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3 py-1.5 text-xs text-[var(--ink)] transition hover:bg-[var(--paper-strong)]"
             >
               Reopen the sign-in page
-            </a>
+            </a>}
             <button
               type="button"
               onClick={() => setSubscriptionLogin(null)}

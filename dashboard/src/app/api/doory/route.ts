@@ -7,6 +7,8 @@ import { importArtifactImage } from "@/lib/hermes/artifact-image-service.ts";
 import { authorizeGardenAccess } from "@/lib/hermes/session-service.ts";
 import { closeArtifactContext, openArtifactContext, type ArtifactContext } from "@/lib/socials-manager/artifacts.ts";
 import { ensureDoory, exportDesignPng, focusDesign, importIntoDoory } from "@/lib/doory/server.ts";
+import { linkDesign, linkedDesign, ownedGardenScope, saveToSpaces } from "@/lib/spaces/garden-save.ts";
+import { gardenFileExtension } from "@/lib/garden-files/types.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -52,6 +54,31 @@ export async function POST(request: Request) {
       const { artifact } = imageArtifact(userId, body);
       const file = artifactFile({ artifact, version: artifact.current_version, purpose: "preview" });
       return NextResponse.json(await importIntoDoory(fs.readFileSync(file.path), artifact.title));
+    }
+    // A Spaces design is a Garden image: open it as a layered design, save the design back as its next version.
+    if (body.action === "import-garden") {
+      const { store, scope } = ownedGardenScope(userId, String(body.gardenId ?? ""));
+      const file = store.get(scope, String(body.fileId ?? ""));
+      const linked = linkedDesign(file.id, file.version);
+      if (linked) return NextResponse.json({ designId: linked });
+      const content = store.content(scope, file.id);
+      const { designId: created } = await importIntoDoory(fs.readFileSync(content.path), file.name.replace(/\.[^.]+$/, ""));
+      linkDesign(file.id, created, file.version);
+      return NextResponse.json({ designId: created });
+    }
+    if (body.action === "save-garden") {
+      const id = designId(body.designId);
+      const gardenId = String(body.gardenId ?? ""), fileId = String(body.fileId ?? "");
+      const { store, scope } = ownedGardenScope(userId, gardenId);
+      const ext = gardenFileExtension(store.get(scope, fileId).name);
+      let image = await exportDesignPng(id);
+      if (ext !== "png") {
+        const sharp = (await import("sharp")).default;
+        image = await sharp(image).toFormat(ext === "jpg" ? "jpeg" : ext as "jpeg" | "webp").toBuffer();
+      }
+      const saved = await saveToSpaces(userId, { gardenId, fileId, extension: ext }, new Blob([new Uint8Array(image)]).stream());
+      linkDesign(saved.id, id, saved.version);
+      return NextResponse.json({ file: saved });
     }
     if (body.action === "save") {
       const id = designId(body.designId);

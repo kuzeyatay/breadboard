@@ -5,7 +5,7 @@
 // tests drive it against local services.
 import { createHash, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
-import { annotationPageUrl, annotationTargetKey, normalizeAnnotationTarget, passageLink } from "../browser-annotations.ts";
+import { aiFlagSite, annotationPageUrl, annotationTargetKey, normalizeAnnotationTarget, passageLink } from "../browser-annotations.ts";
 import type { AnnotationMessage, AnnotationResponse, AnnotationThread, BrowserAnnotationTarget } from "../browser-annotations.ts";
 import { OAuthError, dpopFetch, finishAuthorization, isDid, normalizeHandle, refreshTokens, resolveHandle, resolveIdentity, revokeTokens, startAuthorization } from "./atproto-oauth.ts";
 import type { Fetcher } from "./atproto-oauth.ts";
@@ -20,7 +20,7 @@ export class CrumbsError extends Error {
   constructor(status: number, message: string) { super(message); this.status = status; }
 }
 
-const NS = { highlight: "com.breadboard.highlight", report: "com.breadboard.report", follow: "com.breadboard.follow", handle: "com.breadboard.handle", key: "com.breadboard.key", note: "com.breadboard.note", rating: "com.breadboard.rating" } as const;
+const NS = { highlight: "com.breadboard.highlight", report: "com.breadboard.report", follow: "com.breadboard.follow", handle: "com.breadboard.handle", key: "com.breadboard.key", note: "com.breadboard.note", rating: "com.breadboard.rating", aiflag: "com.breadboard.aiflag" } as const;
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 const targetId = (target: BrowserAnnotationTarget) => digest(annotationTargetKey(target));
 const env = (name: string) => process.env[name]?.replace(/\/+$/, "");
@@ -29,6 +29,8 @@ const appview = () => env("CRUMBS_APPVIEW_URL") ?? "https://public.api.bsky.app"
 export interface CrumbsPerson { did: string; handle: string | null; displayName: string | null; avatar: string | null }
 export interface CrumbsFeedItem { id: string; author: CrumbsPerson; url: string; title: string; target: BrowserAnnotationTarget; comment: string; source: string | null; createdAt: string; threadCount: number; own: boolean; audience: string; state?: string; reason?: string | null; note?: { uri: string; body: string; source: string | null }; noteCount?: number; /** The crumb that started the thread, when this one is a reply. */ parent?: CrumbsFeedItem }
 export interface CrumbsNote { uri: string; handle: string | null; displayName: string | null; avatar: string | null; body: string; source: string | null; createdAt: string; helpful: number; unhelpful: number; shown: boolean; myRating: boolean | null; own: boolean }
+/** How many people flagged a site as AI-generated. `level` is the indexer's verdict for the address outline. */
+export interface AiFlagState { site: string | null; count: number; mine: boolean; level: "yellow" | "red" | null; signedIn: boolean }
 export interface CrumbsOrg { id: string; name: string; role: "admin" | "member"; ready: boolean }
 export interface CrumbsRoom { id: string; name: string; own: boolean; fixed: boolean }
 export interface CrumbsChatMessage { id: string; author: string; handle: string | null; avatar: string | null; did: string; body: string; createdAt: string; own: boolean; agent?: boolean; parent?: string; unverified?: boolean; /** Set when the message is a crumb: what it is about. */ crumb?: ChatCrumb }
@@ -457,6 +459,29 @@ export function createCrumbs({ db, fetcher = fetch as Fetcher, complete, ensureS
     await indexer("/notify", { uri: `at://${me.did}/${NS.follow}/${rkey}` });
     cache.delete("ranking-follows:" + servers().indexer + ":" + me.did);
     return follows(userId);
+  }
+
+  // ---- AI flags ------------------------------------------------------------
+  // One `com.breadboard.aiflag` record per person per site (the record key is the site),
+  // counted by the indexer. Reading needs no account.
+
+  async function aiFlags(userId: number, pageUrl: unknown): Promise<AiFlagState> {
+    const site = aiFlagSite(pageUrl);
+    const me = store.getAccount(db, userId);
+    const signedIn = Boolean(me && !me.needsSignIn);
+    if (!site) return { site: null, count: 0, mine: false, level: null, signedIn };
+    const data = await indexer<Omit<AiFlagState, "signedIn">>(`/aiflags?url=${encodeURIComponent(`https://${site}/`)}${me ? `&viewer=${encodeURIComponent(me.did)}` : ""}`);
+    return { ...data, signedIn };
+  }
+  async function aiFlag(userId: number, pageUrl: unknown, on: unknown): Promise<AiFlagState> {
+    const site = aiFlagSite(pageUrl);
+    if (!site) throw new CrumbsError(400, "Only websites can be flagged.");
+    if (typeof on !== "boolean") throw new CrumbsError(400, "Choose whether to flag this website.");
+    const me = account(userId);
+    if (on) await putRecord(userId, NS.aiflag, site, { site, createdAt: new Date().toISOString() });
+    else await deleteRecord(userId, NS.aiflag, site);
+    await indexer("/notify", { uri: `at://${me.did}/${NS.aiflag}/${site}` });
+    return aiFlags(userId, pageUrl);
   }
 
   const feedItem = (item: IndexerItem, me: string | null, audience: string): CrumbsFeedItem => ({ id: item.uri, author: { did: item.did, handle: item.handle, displayName: item.displayName, avatar: item.avatar },
@@ -1004,7 +1029,7 @@ export function createCrumbs({ db, fetcher = fetch as Fetcher, complete, ensureS
       `Page: ${url}\n\nPage text (for context):\n${page.slice(0, 8000)}\n\nComments by passage:\n${lines.join("\n").slice(0, 16_000)}`) };
   }
 
-  return { status, startSignIn, finishSignIn, signOut, typeahead, readPublic, writePublic, feed, follows, follow, deleteMine, claimHandle,
+  return { status, startSignIn, finishSignIn, signOut, typeahead, aiFlags, aiFlag, readPublic, writePublic, feed, follows, follow, deleteMine, claimHandle,
     setFeedPreference(userId: number, value: unknown) {
       if (typeof value !== "boolean") throw new CrumbsError(400, "Choose a feed preference.");
       setFeedEnabled(db, userId, value);

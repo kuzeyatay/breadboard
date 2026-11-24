@@ -13,6 +13,7 @@ import {
   inspectRuntimeJobForStatus,
   lookupRuntimeJobByIdempotencyKey,
   readRuntimeJobOutput,
+  readServiceProblems,
   readSupervisedServiceSnapshot,
   replayRuntimeJobEvents,
   replayRuntimeJobEventsForStatus,
@@ -431,6 +432,40 @@ test("commit admission denial remains structured and is never retried", async ()
       },
     );
     assert.equal(harness.requests.length, 2);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("an unavailable service lease names the service and why it could not start", async () => {
+  const harness = await controlHarness(async (request) =>
+    request.url === "/v1/status"
+      ? { body: { services: [{ id: "acestep", displayName: "Music generation (ACE-Step)", state: "failed",
+          lastError: "Service launch prerequisites were unavailable" }] } }
+      : { status: 503, body: { code: "RUNTIME_UNAVAILABLE", message: "Runtime service control is unavailable." } });
+  try {
+    await assert.rejects(acquireServiceLease("acestep", "music-generation", harness.env), (error) => {
+      assert.match(error.message, /^Music generation \(ACE-Step\) could not start: .*drive that isn't connected/u);
+      assert.equal(error.code, "RUNTIME_UNAVAILABLE");
+      return true;
+    });
+  } finally {
+    await harness.close();
+  }
+});
+
+test("service problems list only failed services, in plain words", async () => {
+  const harness = await controlHarness(async () => ({ body: { services: [
+    { id: "voicebox", displayName: "Local speech (Voicebox)", state: "failed", lastError: "Service process tree supervision failed" },
+    { id: "hermes", displayName: "Agent runtime (Hermes)", state: "ready", lastError: null },
+    { id: "vlm-ocr", state: "resource-blocked", lastError: "Something new" },
+  ] } }));
+  try {
+    const problems = await readServiceProblems(harness.env);
+    assert.deepEqual(problems.map(({ id }) => id), ["voicebox", "vlm-ocr"]);
+    assert.match(problems[0].reason, /stopped unexpectedly/u);
+    assert.equal(problems[1].name, "vlm-ocr");
+    assert.equal(problems[1].reason, "Something new.");
   } finally {
     await harness.close();
   }

@@ -1349,6 +1349,8 @@ interface CreateOptions {
   title?: string;
   /** Display provenance for chats created in the browser drawer. */
   browser?: boolean;
+  /** Bread inside VS Code: chats read "Code: <title>" in the Terminal and are answered as coding chats. */
+  code?: boolean;
   /**
    * Create the next conversation off the record: kept out of history and out
    * of memory, both ways, for as long as it exists. Read at creation time, so
@@ -1435,6 +1437,12 @@ export interface UseAgentSessionResult {
     delegatedAgentReason?: string;
   };
   appendExternalAgentTurn: (input: ExternalAgentTurnInput) => Promise<void>;
+  /**
+   * The next agent launch was chosen from what the person typed rather than a
+   * slash command. Its turn shows `text` as typed, and if the agent cannot
+   * start, the preview is withdrawn and `fallback` runs instead of a failure.
+   */
+  routeNextLaunchNaturally: (text: string, fallback: (reason: string) => void) => void;
   finishExternalAgentTurn: (input: ExternalAgentTurnResult) => Promise<void>;
   send: (
     text: string,
@@ -1606,6 +1614,15 @@ export function useAgentSession(
     viewEpoch: number;
     promise: ReturnType<typeof ensureSession>;
   } | null>(null);
+  // A natural-language route waits here until its launcher previews a turn,
+  // then follows that turn by id until it starts or fails.
+  const pendingNaturalRouteRef = useRef<{ text: string; fallback: (reason: string) => void; expires: number } | null>(null);
+  const naturalRouteTurnsRef = useRef(new Map<string, { text: string; fallback: (reason: string) => void }>());
+  const routeNextLaunchNaturally = useCallback((text: string, fallback: (reason: string) => void) => {
+    // ponytail: one pending route at a time; a launcher that never previews
+    // (a bare token that only selects its agent) lets it lapse after a minute.
+    pendingNaturalRouteRef.current = { text, fallback, expires: Date.now() + 60_000 };
+  }, []);
   const pendingDelegatedExternalTurnRef = useRef<{
     clientMessageId: string;
     attachToExistingTurn: boolean;
@@ -3499,6 +3516,12 @@ export function useAgentSession(
       const clientMessageId =
         delegatedRequest?.clientMessageId ?? input.clientMessageId;
       const delegated = Boolean(delegatedRequest);
+      const naturalRoute = pendingNaturalRouteRef.current;
+      pendingNaturalRouteRef.current = null;
+      if (naturalRoute && !delegated && naturalRoute.expires > Date.now()) {
+        naturalRouteTurnsRef.current.set(clientMessageId, naturalRoute);
+        input = { ...input, userContent: naturalRoute.text };
+      }
       bindExternalAgentToCurrentConversation(clientMessageId);
       // User-started launches get a pending assistant row while their run API
       // starts. Delegations already have their owning assistant row, so they
@@ -3600,6 +3623,23 @@ export function useAgentSession(
 
   const appendExternalAgentTurn = useCallback(
     async (input: ExternalAgentTurnInput) => {
+      const naturalRoute = naturalRouteTurnsRef.current.get(input.clientMessageId);
+      if (naturalRoute) {
+        naturalRouteTurnsRef.current.delete(input.clientMessageId);
+        if (input.outcome === "failed" && !input.run) {
+          // The agent the request was routed to could not start. Withdraw its
+          // preview and let the ordinary assistant take the request instead.
+          setMessages((current) => current.filter((message) => message.clientMessageId !== input.clientMessageId));
+          externalThinkingTurnIdsRef.current.delete(input.clientMessageId);
+          if (!isActiveAgentRunState(runStateRef.current)) {
+            setConnection("idle");
+            setActivities([]);
+          }
+          naturalRoute.fallback(input.assistantContent ?? "");
+          return;
+        }
+        input = { ...input, userContent: naturalRoute.text };
+      }
       const showedThinking = externalThinkingTurnIdsRef.current.has(input.clientMessageId);
       const attachToExistingTurn =
         input.attachToExistingTurn === true ||
@@ -5555,6 +5595,7 @@ export function useAgentSession(
     beginDelegatedExternalAgentTurn,
     cancelDelegatedExternalAgentTurn,
     previewExternalAgentTurn,
+    routeNextLaunchNaturally,
     externalAgentTurnPersistence,
     appendExternalAgentTurn,
     finishExternalAgentTurn,

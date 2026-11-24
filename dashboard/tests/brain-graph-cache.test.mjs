@@ -43,7 +43,6 @@ function response(revision) {
     nodes: [],
     edges: [],
     counts: {},
-    truncated: false,
     warnings: [],
     scopeOptions: [],
     capabilities: {},
@@ -81,18 +80,14 @@ test("the fingerprint covers every scoped Garden's artifact and cache file", () 
   assert.notEqual(after, brainGraphSourceFingerprint(ctx, { kind: "all" }, statTable(files)));
 });
 
-test("scope and mode keep separate entries", () => {
+test("scope and user keep separate entries", () => {
   assert.notEqual(
-    brainGraphCacheKey({ userId: 1 }, { kind: "all" }, "full"),
-    brainGraphCacheKey({ userId: 1 }, { kind: "all" }, "overview"),
+    brainGraphCacheKey({ userId: 1 }, { kind: "organization", organizationId: 4 }),
+    brainGraphCacheKey({ userId: 1 }, { kind: "organization", organizationId: 5 }),
   );
   assert.notEqual(
-    brainGraphCacheKey({ userId: 1 }, { kind: "organization", organizationId: 4 }, "full"),
-    brainGraphCacheKey({ userId: 1 }, { kind: "organization", organizationId: 5 }, "full"),
-  );
-  assert.notEqual(
-    brainGraphCacheKey({ userId: 1 }, { kind: "all" }, "full"),
-    brainGraphCacheKey({ userId: 2 }, { kind: "all" }, "full"),
+    brainGraphCacheKey({ userId: 1 }, { kind: "all" }),
+    brainGraphCacheKey({ userId: 2 }, { kind: "all" }),
   );
 });
 
@@ -110,22 +105,22 @@ test("an unchanged topology is served from cache and one build is shared", async
   };
 
   const [first, second] = await Promise.all([
-    cache.build(ctx, { kind: "all" }, "full", builder),
-    cache.build(ctx, { kind: "all" }, "full", builder),
+    cache.build(ctx, { kind: "all" }, builder),
+    cache.build(ctx, { kind: "all" }, builder),
   ]);
   assert.equal(builds, 1, "concurrent requests share the in-flight build");
   assert.equal(first.revision, "rev_1");
   assert.equal(second, first);
 
   now += 30_000;
-  const third = await cache.build(ctx, { kind: "all" }, "full", builder);
+  const third = await cache.build(ctx, { kind: "all" }, builder);
   assert.equal(builds, 1, "a 30 s poll with unchanged files does not rebuild");
   assert.equal(third, first);
-  assert.equal(cache.peek(ctx, { kind: "all" }, "full"), first);
+  assert.equal(cache.peek(ctx, { kind: "all" }), first);
 
   files["telecom-1/.breadboard/thought-topology.json"].mtimeMs = 1001;
-  assert.equal(cache.peek(ctx, { kind: "all" }, "full"), null);
-  const fourth = await cache.build(ctx, { kind: "all" }, "full", builder);
+  assert.equal(cache.peek(ctx, { kind: "all" }), null);
+  const fourth = await cache.build(ctx, { kind: "all" }, builder);
   assert.equal(builds, 2, "a republished topology rebuilds");
   assert.equal(fourth.revision, "rev_2");
 });
@@ -137,12 +132,12 @@ test("database-backed sources are never older than the max age", async () => {
   let builds = 0;
   const builder = async () => response(`rev_${(builds += 1)}`);
 
-  await cache.build(ctx, { kind: "all" }, "overview", builder);
+  await cache.build(ctx, { kind: "all" }, builder);
   now = 59_000;
-  await cache.build(ctx, { kind: "all" }, "overview", builder);
+  await cache.build(ctx, { kind: "all" }, builder);
   assert.equal(builds, 1);
   now = 61_000;
-  await cache.build(ctx, { kind: "all" }, "overview", builder);
+  await cache.build(ctx, { kind: "all" }, builder);
   assert.equal(builds, 2);
 });
 
@@ -150,12 +145,12 @@ test("a failed build leaves nothing cached and releases the in-flight slot", asy
   const cache = new BrainGraphCache({ now: () => 0, stat: () => null });
   const ctx = context([garden("telecom-1")]);
   await assert.rejects(
-    cache.build(ctx, { kind: "all" }, "full", async () => {
+    cache.build(ctx, { kind: "all" }, async () => {
       throw new Error("boom");
     }),
     /boom/,
   );
-  assert.equal(cache.peek(ctx, { kind: "all" }, "full"), null);
-  const recovered = await cache.build(ctx, { kind: "all" }, "full", async () => response("ok"));
+  assert.equal(cache.peek(ctx, { kind: "all" }), null);
+  const recovered = await cache.build(ctx, { kind: "all" }, async () => response("ok"));
   assert.equal(recovered.revision, "ok");
 });

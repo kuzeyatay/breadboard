@@ -2501,6 +2501,7 @@ function checkResourcesRoot(resources, binRoot, label) {
     "runtime-v2-managed-python-service.mjs",
     "runtime-v2-managed-setup-worker.mjs",
     "runtime-v2-managed-setup-executor.mjs",
+    "claude-profiles.mjs",
     "runtime-v2-terminal-command-worker.mjs",
     "runtime-v2-graft-index-worker.mjs",
     "runtime-v2-agent-edits-worker.mjs",

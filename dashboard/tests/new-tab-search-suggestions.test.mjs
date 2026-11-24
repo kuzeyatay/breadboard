@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
-import { inlineCompletion, normalizeSearchHistory, newTabSearchSuggestions, visitedHost, webSearchUrl, webDestinationUrl } from "../src/lib/new-tab-search-suggestions.ts";
+import { inlineCompletion, normalizeSearchHistory, newTabSearchSuggestions, webActivityCompletion, webSearchUrl, webDestinationUrl } from "../src/lib/new-tab-search-suggestions.ts";
 import { readSearchHistory, updateSearchHistory } from "../src/lib/new-tab-search-history.ts";
 
 test("history preserves search destinations and filenames, while bounding and cleaning entries", () => {
@@ -70,16 +70,38 @@ test("Terminal restores search terms using the standalone browser's search clean
 });
 
 test("inline completion picks the more important scope from past activity", () => {
-  const visits = ["https://www.github.com/a", "https://github.com/b", "https://github.com/c"].map(visitedHost);
   assert.deepEqual(inlineCompletion("Gi", [
     { scope: "breadboard", values: ["git notes"] },
-    { scope: "web", values: visits },
-  ]), { value: "Github.com", rest: "thub.com", scope: "web" }, "a site visited three times beats one old note search");
+    { scope: "web", values: ["github.com", "github.com", "github.com"] },
+  ]), { value: "Github.com", rest: "thub.com", scope: "web", reason: "What you typed matches one of your recent web searches." }, "a site visited three times beats one old note search");
   assert.equal(inlineCompletion("fou", [
     { scope: "breadboard", values: ["Fourier series", "fourier series"] },
     { scope: "web", values: ["x", "y", "fourth of july"] },
   ]).scope, "breadboard");
   assert.equal(inlineCompletion("", [{ scope: "web", values: ["a"] }]), null);
   assert.equal(inlineCompletion("dhl", [{ scope: "web", values: ["dhl", "amazon"] }]), null, "no completion when nothing longer matches");
-  assert.equal(visitedHost("file:///C:/x.pdf"), null);
+});
+
+test("web activity completes searches, sites and page titles or paths with their original destinations", () => {
+  const url = "http://www.example.org:8080/guide/Maps?edition=2#trails";
+  const visits = [
+    { url, title: "Trail maps" },
+    { url: "https://older.example/guide", title: "Trail maps" },
+    { url: "http://www.example.org:8080/news", title: "News" },
+  ];
+  assert.deepEqual(webActivityCompletion("Tr", [], visits), { value: "Trail maps", rest: "ail maps", scope: "web", href: url,
+    reason: "This matches the title of a page you visited on www.example.org:8080." });
+  assert.deepEqual(webActivityCompletion("trail r", ["trail routes"], visits), { value: "trail routes", rest: "outes", scope: "web",
+    reason: "What you typed matches one of your recent web searches." });
+  assert.equal(webActivityCompletion("ex", ["extra maps"], visits).href, "http://www.example.org:8080/");
+  for (const prefix of ["example.org:8080/gu", "www.example.org:8080/gu", "http://www.example.org:8080/gu"]) {
+    assert.equal(webActivityCompletion(prefix, [], visits).href, url);
+    assert.equal(webActivityCompletion(prefix, [], visits).rest, "ide/Maps");
+    assert.match(webActivityCompletion(prefix, [], visits).reason, /page address/);
+  }
+  assert.equal(webActivityCompletion("maps", [], visits), null);
+  assert.equal(webActivityCompletion("", [], visits), null);
+  for (const address of ["file:///C:/maps.pdf", "bad-url", "https://user:pass@example.org/"]) {
+    assert.equal(webActivityCompletion("Tr", [], [{ url: address, title: "Trail maps" }]), null);
+  }
 });

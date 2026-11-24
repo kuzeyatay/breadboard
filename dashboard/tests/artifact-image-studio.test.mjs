@@ -27,27 +27,25 @@ test("artifact pages edit images on the Design page and create them in the studi
   assert.match(inline, /<ArtifactImageStudio/);
 });
 
-test("Design opens chat images in Doory with Bread on the left and saves back as a child artifact", () => {
+test("Design opens chat images in Doory inside Spaces, with Bread in the corner, and saves back as a child artifact", () => {
   const open = source("../src/app/design/open-in-design.ts");
   const client = source("../src/app/design/design-client.tsx");
   const route = source("../src/app/api/doory/route.ts");
   const mcp = source("../src/app/api/hermes/tools/mcp/route.ts");
   const registry = source("../src/lib/hermes/unified-tool-registry.ts");
   const launcher = source("../src/app/new-tab/combined-home-launcher.tsx");
-  assert.match(open, /\/design\?/);
-  // A dedicated design assistant (like the PDF one), not the browser drawer terminal.
-  const assistant = source("../src/app/design/design-assistant.tsx");
-  assert.match(client, /<DesignAssistant /);
-  assert.doesNotMatch(client, /DashboardAgentTerminal/);
-  assert.match(assistant, /useAgentSession\("dashboard_terminal"/);
-  assert.match(assistant, /pageSlug: DESIGN_CHATS/);
-  assert.match(assistant, /Design assistant/);
+  assert.match(open, /\/spaces\/edit\?/);
+  assert.match(open, /app: "design"/);
+  // No assistant of its own: the Spaces shell carries the one bottom-right assistant.
+  assert.match(client, /<SpacesShell /);
+  assert.doesNotMatch(client, /DesignAssistant|DashboardAgentTerminal/);
   assert.match(client, /action: "import"/);
+  assert.match(client, /action: "import-garden"/);
   assert.match(client, /Save to chat/);
   assert.match(route, /parentArtifactId: artifact\.id/);
   assert.match(mcp, /slug === DOORY_CONNECTION/);
   assert.match(registry, /DOORY_CONNECTION/);
-  assert.ok(launcher.indexOf('href="/design"') > launcher.indexOf('href="/crumbs"'), "Design sits next to Crumbs");
+  assert.doesNotMatch(launcher, /href="\/design"/);
   // The framed editor wears Breadboard's theme and font, without Doory's name, bunny or account menu.
   const bridge = source("../../doory/breadboard/bridge.js");
   assert.match(client, /source: "breadboard-theme"/);

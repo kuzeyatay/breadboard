@@ -8,13 +8,18 @@ import {
   recordAuditEvent,
   runtimeExternalSessionId,
 } from "@/lib/hermes/runtime-store.ts";
-import { getActiveRuntimeRun } from "@/lib/hermes/run-store.ts";
+import { getActiveRuntimeRun, parseRuntimeRunDispatch } from "@/lib/hermes/run-store.ts";
 import {
   authorizeTerminalCommand,
   continueAuthorizedTerminalCommand,
   runAuthorizedTerminalCommand,
 } from "@/lib/hermes/terminal-execution.ts";
 import { createHash } from "node:crypto";
+import {
+  matchingTerminalCommandRule,
+  rememberPendingTerminalCommand,
+  takePendingTerminalCommand,
+} from "@/lib/hermes/terminal-command-rules.ts";
 import { getConversationById } from "@/lib/conversations/store.ts";
 
 export const dynamic = "force-dynamic";
@@ -98,6 +103,17 @@ export async function POST(request: Request) {
     // native permission request resolves. It is not part of either model tool
     // schema, so the model can choose the command but cannot self-approve it.
     const permissionGranted = body.permissionGranted === true;
+    // The approved retry ends this command's wait, including YOLO approvals
+    // that never pass through the permission route.
+    if (permissionGranted) takePendingTerminalCommand(session.id);
+    // A standing "always allow" prefix the user saved from an earlier card.
+    const standingRule = permissionGranted
+      ? null
+      : matchingTerminalCommandRule(session.user_id, command);
+    // YOLO, resolved server-side for this run, approves every command here so
+    // no card appears even if Hermes's own session bypass was lost (runtime
+    // restart, a delegated worker thread without the approval session key).
+    const yoloApproved = parseRuntimeRunDispatch(run).teamApproval === true;
     // The model sizes its own deadline in seconds; the execution layer clamps
     // that request into the operator's ceiling, so an absurd number costs
     // nothing and a missing one keeps the standing default.
@@ -110,7 +126,7 @@ export async function POST(request: Request) {
       workspaceRoot: session.active_directory ?? undefined,
       authorizedRoots: decision?.authorizedRoots ?? [],
       authorizedDeleteTargets: decision?.authorizedDeleteTargets ?? [],
-      ...(permissionGranted ? { approvedCommand: command } : {}),
+      ...(permissionGranted || standingRule || yoloApproved ? { approvedCommand: command } : {}),
     };
     const authorization = authorizeTerminalCommand(command, terminalScope);
     recordAuditEvent({
@@ -125,11 +141,14 @@ export async function POST(request: Request) {
         runId: run.id,
         category: authorization.category,
         reason: authorization.reason,
+        ...(standingRule ? { standingRule: standingRule.prefix.join(" ") } : {}),
+        ...(yoloApproved && !permissionGranted ? { yolo: true } : {}),
         commandFamily: command.split(/\s+/, 1)[0]?.slice(0, 80) ?? "",
         commandHash: createHash("sha256").update(command).digest("hex"),
       },
     });
     if (!authorization.allowed && authorization.approvalRequired) {
+      rememberPendingTerminalCommand(session.id, command);
       throw new ApiError(
         428,
         "terminal_permission_required",

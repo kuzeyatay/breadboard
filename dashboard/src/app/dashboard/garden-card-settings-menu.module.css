@@ -6,6 +6,7 @@
   place-items: center;
   border: 0;
   border-radius: 50%;
+  corner-shape: round;
   background: var(--paper-surface);
   color: var(--ink-heading);
 }

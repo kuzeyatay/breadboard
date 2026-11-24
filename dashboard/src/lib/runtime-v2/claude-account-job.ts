@@ -11,7 +11,7 @@ import {
 } from "../supervisor-control.ts";
 import { RuntimeAuthorityUnavailableError } from "./authority-error.ts";
 
-export type ClaudeAccountOperation = "status" | "logout" | "refresh-usage";
+export type ClaudeAccountOperation = "status" | "profiles" | "activate" | "logout" | "refresh-usage";
 
 export interface ClaudeAccountJobResult {
   ok: boolean;
@@ -126,9 +126,35 @@ async function delay(ms: number, signal: AbortSignal): Promise<void> {
 }
 
 /** Run one fixed Claude-owned account command under authenticated Runtime authority. */
+export async function beginClaudeAccountLogin(userId: number) {
+  if (!isRuntimeV2ServiceControlConfigured()) throw new RuntimeAuthorityUnavailableError("Claude sign-in requires the Breadboard Runtime.");
+  const snapshot = await submitRuntimeJob(authority(userId), {
+    jobType: "claude-account", idempotencyKey: `claude-account-login-${randomUUID()}`,
+    requestPayload: { protocolVersion: 1, operation: "claude-code", action: "login" },
+  });
+  assertSnapshot(snapshot);
+  return snapshot.jobId;
+}
+
+export async function pollClaudeAccountLogin(userId: number, jobId: string, cancel = false) {
+  const owner = authority(userId);
+  const job = await inspectRuntimeJob(owner, jobId);
+  assertSnapshot(job);
+  if (!TERMINAL.has(job.state)) {
+    if (cancel) await cancelRuntimeJob(owner, jobId);
+    return false;
+  }
+  if (cancel) return false;
+  if (job.state !== "succeeded") throw new ClaudeAccountJobError(409, "Claude sign-in ended before the account connected.");
+  const result = parseResult(job, (await readRuntimeJobOutput(owner, jobId, "result")).content);
+  if (!result.ok) throw new ClaudeAccountJobError(409, result.message);
+  return true;
+}
+
 export async function runClaudeAccountJob(input: {
   userId: number;
   operation: ClaudeAccountOperation;
+  profile?: string;
   signal?: AbortSignal;
 }): Promise<ClaudeAccountJobResult> {
   if (!isRuntimeV2ServiceControlConfigured()) {
@@ -153,11 +179,13 @@ export async function runClaudeAccountJob(input: {
     }
     let snapshot = await submitRuntimeJob(jobAuthority, {
       jobType: "claude-account",
-      idempotencyKey: `claude-account-${input.operation}-${randomUUID()}`,
+      // Keep read-only listings under the Runtime's short-lived status retention policy.
+      idempotencyKey: `claude-account-${input.operation === "profiles" ? "status" : input.operation}-${randomUUID()}`,
       requestPayload: {
         protocolVersion: 1,
         operation: "claude-code",
         action: input.operation,
+        ...(input.profile ? { profile: input.profile } : {}),
       },
     });
     assertSnapshot(snapshot);

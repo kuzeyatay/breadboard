@@ -53,6 +53,9 @@ interface RuntimeEndpoint {
 
 export type RecallRuntimeDesiredState = "running" | "stopped";
 
+const STORAGE_ISSUES = ["low-disk", "checking-history", "history-needs-repair", "storage-unavailable"] as const;
+export type RecallStorageIssue = typeof STORAGE_ISSUES[number];
+
 export interface RecallRuntimeStatus {
   protocolVersion: 1;
   ok: true;
@@ -60,6 +63,7 @@ export interface RecallRuntimeStatus {
   desiredState: RecallRuntimeDesiredState;
   serviceState: SupervisedServiceLifecycleState;
   ownedByRequester: boolean;
+  storageIssue?: RecallStorageIssue;
   logTail: string[];
 }
 
@@ -273,6 +277,7 @@ export async function readRecallRuntimeStatus(
       "serviceState",
       "ownedByRequester",
       "logTail",
+      ...(Object.hasOwn(value, "storageIssue") ? ["storageIssue"] : []),
     ]) ||
     value.protocolVersion !== 1 ||
     value.ok !== true ||
@@ -282,7 +287,8 @@ export async function readRecallRuntimeStatus(
     !SERVICE_STATES.has(
       value.serviceState as SupervisedServiceLifecycleState,
     ) ||
-    typeof value.ownedByRequester !== "boolean"
+    typeof value.ownedByRequester !== "boolean" ||
+    (Object.hasOwn(value, "storageIssue") && !STORAGE_ISSUES.some(issue => issue === value.storageIssue))
   ) {
     throw new RecallError("engine_unavailable", {
       detail: "managed Recall Runtime returned an invalid status",
@@ -304,6 +310,7 @@ export async function readRecallRuntimeStatus(
     desiredState: value.desiredState,
     serviceState: value.serviceState as SupervisedServiceLifecycleState,
     ownedByRequester: value.ownedByRequester,
+    ...(value.storageIssue ? { storageIssue: value.storageIssue as RecallStorageIssue } : {}),
     logTail,
   };
 }

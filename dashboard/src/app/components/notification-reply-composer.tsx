@@ -1,6 +1,7 @@
 'use client';
 
 import { lazy, Suspense, useCallback, useLayoutEffect, useRef } from 'react';
+import ChatDraftFormatting from './chat/chat-draft-formatting';
 import styles from './notification-reply-composer.module.css';
 
 // Keep the input and send action usable while the decorative ring loads.
@@ -68,6 +69,7 @@ export default function NotificationReplyComposer({ id, value, onChange, onSubmi
       if (!input || input.disabled || event.target !== event.currentTarget) return;
       event.preventDefault(); input.focus({ preventScroll: true });
     }}>
+    {!sending && <ChatDraftFormatting inputRef={inputRef} value={value} />}
     <textarea ref={inputRef} id={id} value={value} rows={1} wrap="soft" maxLength={maxLength}
       disabled={sending} aria-label={label} aria-describedby={describedBy} placeholder={placeholder}
       className={styles.input}

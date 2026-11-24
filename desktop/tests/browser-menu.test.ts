@@ -12,7 +12,7 @@ function flatten(items: MenuItemConstructorOptions[]): MenuItemConstructorOption
 test("every browser menu action is wired and the menu reports the actual page zoom", () => {
   const calls: BrowserMenuAction[] = [];
   const items = flatten(browserMenuTemplate({ profileLabel: "One & Two", hasPage: true, zoomPercent: 150, fullscreen: true }, action => calls.push(action)));
-  assert.equal(items[0]!.label, "Settings");
+  assert.equal(items.find(item => item.id === "settings")!.label, "Browser settings");
   assert.ok(items.some(item => item.label === "Zoom · 150%"));
   assert.equal(items.find(item => item.id === "fullscreen")!.checked, true);
   const actions = items.filter(item => item.id);
@@ -23,7 +23,7 @@ test("every browser menu action is wired and the menu reports the actual page zo
   }
   assert.deepEqual(new Set(calls), new Set(actions.map(item => item.id)));
   assert.equal(new Set(calls).size, actions.length);
-  assert.deepEqual(items.slice(2, 6).map(item => item.id), ["new-tab", "new-window", "new-private-tab", "new-private-window"]);
+  assert.deepEqual(items.slice(0, 4).map(item => item.id), ["new-tab", "new-window", "new-private-tab", "new-private-window"]);
 });
 
 test("page-only commands are unavailable on browser home and zoom stays within its bounds", () => {
@@ -56,6 +56,7 @@ test("browser shortcuts and IPC reject malformed commands", () => {
   assert.equal(browserMenuShortcut({ ...key, key: "p", control: false, alt: true, isAutoRepeat: true }), null);
   assert.deepEqual(tabShortcutFor({ ...key, key: "+", shift: true }), { type: "zoom", direction: "in" });
   assert.equal(isTabsCommand({ type: "browser-menu", x: 100, y: 60, profileLabel: "Profile" }), true);
+  assert.equal(isTabsCommand({ type: "browser-open-settings" }), true);
   for (const invalid of [{ type: "browser-menu", x: -1, y: 60, profileLabel: "Profile" }, { type: "browser-menu", x: 100, y: NaN, profileLabel: "Profile" }, { type: "browser-find", text: "x".repeat(1001) }, { type: "browser-find", text: "text", forward: "true" }]) {
     assert.equal(isTabsCommand(invalid), false);
   }

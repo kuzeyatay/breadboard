@@ -113,6 +113,24 @@ test("running reconcile sends only typed normalized privacy configuration", asyn
   assert.equal("apiKey" in request, false);
 });
 
+test("status accepts known storage pauses without exposing extra diagnostic fields", async () => {
+  const originalFetch = globalThis.fetch;
+  let storageIssue = "low-disk";
+  globalThis.fetch = async () => jsonResponse({
+    protocolVersion: 1, ok: true, serviceId: "recall", desiredState: "running",
+    serviceState: "available-but-stopped", ownedByRequester: true, logTail: [], storageIssue,
+  });
+  try {
+    const status = await readRecallRuntimeStatus(7, managedEnv);
+    assert.equal(status.storageIssue, "low-disk");
+    assert.equal(projectRecallProcessState(status, true).running, false);
+    storageIssue = "unrecognized";
+    await assert.rejects(readRecallRuntimeStatus(7, managedEnv), { code: "engine_unavailable" });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("stop reconcile has no configuration, command, path, or secret material", async () => {
   let request = null;
   const realFetch = globalThis.fetch;

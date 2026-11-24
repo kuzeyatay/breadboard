@@ -17,14 +17,18 @@ import {
   runtimeMcpConfig,
 } from "./mcp-connections.ts";
 import { MCP_INSTALLER_CONNECTION, MCP_INSTALLER_CONTEXT } from "./mcp-installer-context.ts";
+import type { ConnectionCandidate } from "./connection-routing.ts";
 import { DOORY_CONNECTION, dooryContext } from "../doory/context.ts";
 import { VIDEO_STUDIO_CONNECTION, videoStudioContext } from "../timeline-studio/context.ts";
+import { SPACES_PAGE_CONNECTION, spacesPageContext } from "../spaces/page-context.ts";
 
 export interface ConnectedAppTurnRegistry {
   connectionNames: string[];
   tools: Record<string, boolean>;
   systemContext: string;
   toolCount: number;
+  /** Each connection with the tools it offers this turn, for request routing (connection-routing.ts). */
+  catalog: ConnectionCandidate[];
 }
 
 /** Prompt characters spent on full connected-app action entries per turn. */
@@ -35,6 +39,7 @@ const EMPTY_CONNECTED_APP_REGISTRY: ConnectedAppTurnRegistry = {
   tools: {},
   systemContext: "",
   toolCount: 0,
+  catalog: [],
 };
 
 /**
@@ -82,9 +87,11 @@ export async function connectedAppRegistryForTurn(input: {
   // The MCP installer is always on the table: "add an MCP for X" can come up in any chat.
   tools.mcp_call = true;
   // So is the Design editor: Bread drives it whenever an image or design is being made or changed.
-  const connectionNames: string[] = [...websiteApis.connectionNames, MCP_INSTALLER_CONNECTION, DOORY_CONNECTION, VIDEO_STUDIO_CONNECTION];
-  const contextLines: string[] = [websiteApis.systemContext, MCP_INSTALLER_CONTEXT, dooryContext(input.userId), videoStudioContext(input.userId)];
+  const connectionNames: string[] = [...websiteApis.connectionNames, MCP_INSTALLER_CONNECTION, DOORY_CONNECTION, VIDEO_STUDIO_CONNECTION, SPACES_PAGE_CONNECTION];
+  const contextLines: string[] = [websiteApis.systemContext, MCP_INSTALLER_CONTEXT, dooryContext(input.userId), videoStudioContext(input.userId), spacesPageContext(input.userId)];
   let toolCount = websiteApis.toolCount;
+  const catalog: ConnectionCandidate[] = [];
+  const displayName = (slug: string) => installedConnections.find((connection) => connection.slug === slug)?.displayName || slug;
 
   try {
     const discovery = await input.runtime.listCapabilities(
@@ -101,6 +108,7 @@ export async function connectedAppRegistryForTurn(input: {
       // discoverable by the model, but only a request for that server waits
       // for its connection. The call route still enforces user/run scope.
       const deferred = installedConnections.filter(connection => !connectedMcp.includes(connection.slug));
+      catalog.push(...deferred.map((connection) => ({ slug: connection.slug, name: connection.displayName || connection.slug, tools: [] })));
       connectionNames.push(...deferred.map(connection => connection.slug));
       for (const connection of deferred) {
         contextLines.push(`Optional MCP connection ${JSON.stringify(connection.slug)} is available on demand. If it is relevant to the user's request, call mcp_call with connection=${JSON.stringify(connection.slug)}, tool="__breadboard_list_tools", args={} to discover its exact tools and argument schemas. Do not connect merely to answer conversation. A connection failure does not prevent using other Breadboard tools.`);
@@ -129,6 +137,7 @@ export async function connectedAppRegistryForTurn(input: {
     let visibleCount = 0;
     for (const connection of connectedMcp) {
       const allowed = toolsByConnection.get(connection) ?? [];
+      catalog.push({ slug: connection, name: displayName(connection), tools: allowed });
       toolCount += allowed.length;
       const visible = allowed.slice(0, Math.max(0, 100 - visibleCount));
       visibleCount += visible.length;
@@ -164,6 +173,13 @@ export async function connectedAppRegistryForTurn(input: {
         false,
       );
       const actions = nangoActionSummariesForConnections(connectedApps);
+      for (const app of connectedApps) {
+        catalog.push({
+          slug: app,
+          name: `${app} connected app, via connection ${COMPOSIO_RUNTIME_NAME}`,
+          tools: actions.filter((action) => !action.fixedConnectionSlug || action.fixedConnectionSlug === app).map((action) => action.name),
+        });
+      }
       if (actions.length) {
         connectionNames.push(COMPOSIO_RUNTIME_NAME);
         tools.mcp_call = true;
@@ -218,5 +234,6 @@ export async function connectedAppRegistryForTurn(input: {
       "Use a connected action only when it is relevant to the user's request. Read actions may run under the current task policy. Every write or destructive connected-app action pauses for explicit user approval before Breadboard forwards it.",
     ].join("\n"),
     toolCount,
+    catalog,
   };
 }

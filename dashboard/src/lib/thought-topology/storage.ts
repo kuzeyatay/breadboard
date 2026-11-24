@@ -37,9 +37,21 @@ function atomicJson(filePath: string, value: unknown): void {
 
 export function readThoughtTopology(gardenDir: string): ThoughtTopology | null {
   const value = readJson<ThoughtTopology>(path.join(gardenDir, TOPOLOGY_ARTIFACT_REL_PATH));
-  return value?.schemaVersion === THOUGHT_TOPOLOGY_SCHEMA_VERSION && Array.isArray(value.nodes) && Array.isArray(value.edges)
-    ? value
-    : null;
+  if (value?.schemaVersion !== THOUGHT_TOPOLOGY_SCHEMA_VERSION || !Array.isArray(value.nodes) || !Array.isArray(value.edges)) return null;
+  // Published maps from before activity tracking have one recoverable event:
+  // the source file's last edit. Reading a map never counts as an edit.
+  const since = Date.now() - 7 * 86400000;
+  for (const node of value.nodes) {
+    if (node.activityTimes || node.kind === "chat" || !node.relPath) continue;
+    const file = path.resolve(gardenDir,node.relPath);
+    const relative = path.relative(gardenDir,file);
+    if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) continue;
+    try {
+      const at = fs.statSync(file).mtimeMs;
+      node.activityTimes = at >= since ? [at] : [];
+    } catch { node.activityTimes = []; }
+  }
+  return value;
 }
 
 export function readThoughtTopologyCache(gardenDir: string): ThoughtTopologyCache | null {

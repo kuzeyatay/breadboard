@@ -39,7 +39,7 @@
 .comparison { font-size: 13px; color: var(--muted); margin: 7px 0 0; }
 .comparison strong { font-weight: 500; color: var(--foreground); margin-left: 4px; }
 .liveState { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 11px; margin-top: 3px; border: 1px solid var(--border); border-radius: 99px; padding: 5px 10px; }
-.liveState i { width: 5px; height: 5px; background: var(--muted); border-radius: 50%; }
+.liveState i { width: 5px; height: 5px; background: var(--muted); border-radius: 50%; corner-shape: round; }
 .liveState[data-live="true"] i { background: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 11%, transparent); }
 .chartHeader { margin-top: 32px; margin-bottom: 10px; color: var(--muted); font-size: 11px; }
 .chartHeader > span:first-child { color: var(--foreground); font-size: 13px; font-weight: 500; }
@@ -107,10 +107,6 @@
 .primaryLink, .textButton { display: inline-flex; align-items: center; justify-content: flex-start; gap: 6px; border: 0; text-decoration: none; font-size: 12px !important; font-weight: 550 !important; color: var(--accent); background: transparent; padding: 3px 0; }
 .primaryLink { background: var(--accent); color: var(--background); border-radius: 8px; padding: 8px 11px; }
 .textButton:hover { text-decoration: underline; text-underline-offset: 3px; }
-.focusNudge { display: flex; align-items: flex-start; gap: 10px; border-top: 1px solid color-mix(in srgb, var(--accent) 15%, transparent); margin-top: 19px; padding-top: 18px; margin-bottom: 10px; }
-.focusNudge > svg { flex-shrink: 0; color: var(--accent); margin-top: 2px; }
-.focusNudge strong { display: block; font-size: 13px; font-weight: 550; margin-bottom: 4px; }
-.focusNudge span { color: var(--muted); font-size: 12px; line-height: 1.5; display: block; }
 .recallCard { padding: 4px 7px 2px; }
 .recallIcon { display: inline-grid; place-items: center; width: 38px; height: 38px; border-radius: 12px; color: #8b81ab; background: color-mix(in srgb, #a798c4 12%, var(--surface)); margin-bottom: 10px; }
 .recallCard h3 { font-size: 15px; font-weight: 550; margin: 0 0 7px; letter-spacing: -.15px; }
@@ -124,8 +120,8 @@
 .timelineRow { display: flex; align-items: center; width: calc(100% - 44px); gap: 15px; margin: 0 22px; border: 0; border-top: 1px solid var(--border); padding: 13px 0; text-align: left; background: transparent; color: var(--foreground); }
 .timelineTime { font-size: 11px; font-variant-numeric: tabular-nums; color: var(--muted); width: 45px; flex-shrink: 0; }
 .timelineTime small { display: block; font-size: 9px; margin-bottom: 3px; }
-.timelineDot { display: grid; place-items: center; height: 26px; width: 26px; border-radius: 50%; background: color-mix(in srgb, var(--item-color) 10%, transparent); flex-shrink: 0; }
-.timelineDot i { height: 7px; width: 7px; border-radius: 50%; background: var(--item-color); }
+.timelineDot { display: grid; place-items: center; height: 26px; width: 26px; border-radius: 50%; corner-shape: round; background: color-mix(in srgb, var(--item-color) 10%, transparent); flex-shrink: 0; }
+.timelineDot i { height: 7px; width: 7px; border-radius: 50%; corner-shape: round; background: var(--item-color); }
 .timelineName { display: flex; flex-direction: column; min-width: 0; flex: 1; gap: 3px; }
 .timelineName strong { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .timelineName span { font-size: 11px; color: var(--muted); }
@@ -144,7 +140,7 @@
 .settingsDialog { top: 50%; left: 50%; transform: translate(-50%, -50%); border-radius: 22px; width: min(480px, calc(100vw - 32px)); max-height: calc(100dvh - 64px); padding: 30px; }
 .settingsDialog h2, .recallDialog h2 { font-family: var(--font-schibsted), system-ui, sans-serif; font-size: 23px; line-height: 1.25; font-weight: 550; letter-spacing: -.6px; margin: 18px 0 10px; overflow-wrap: anywhere; }
 .settingsDialog > p, .recallDialog > p { color: var(--muted); font-size: 14px; line-height: 1.6; margin-bottom: 18px; }
-.close { position: absolute; display: grid; place-items: center; top: 18px; right: 18px; width: 30px; height: 30px; border: 0; background: color-mix(in srgb, var(--muted) 9%, transparent); border-radius: 50%; color: var(--muted); }
+.close { position: absolute; display: grid; place-items: center; top: 18px; right: 18px; width: 30px; height: 30px; border: 0; background: color-mix(in srgb, var(--muted) 9%, transparent); border-radius: 50%; corner-shape: round; color: var(--muted); }
 .settingInfo { display: flex; align-items: flex-start; gap: 9px; padding: 13px; background: color-mix(in srgb, var(--accent) 6%, transparent); border-radius: 10px; margin: 18px 0; }
 .settingInfo svg { flex-shrink: 0; color: var(--accent); margin-top: 2px; }
 .settingInfo p { font-size: 12px; line-height: 1.5; color: var(--muted); margin: 0; }

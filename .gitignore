@@ -341,3 +341,6 @@ remotion-runtime/projects/*/renders/
 remotion-runtime/projects/*/public/
 remotion-runtime/projects/*/metadata/
 remotion-runtime/projects/*/index.tsx
+
+# Upstream AFFiNE ships a local Claude settings file
+affine/**/.claude/

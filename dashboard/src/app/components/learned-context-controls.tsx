@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { Info } from "lucide-react";
+import ViewportPopover from "./viewport-popover";
 import type { SuggestionLesson } from "@/lib/personal-context/suggestions";
 import { RECOMMENDATION_REFRESH_EVENT } from "@/lib/recommendations/types";
 import { AUTH_CHANGED_EVENT } from "@/lib/auth-events";
@@ -24,7 +25,7 @@ export function LessonControls({ lesson, className = "relative inline-block" }: 
     [value, setValue] = useState(""),
     [error, setError] = useState("");
   const button = useRef<HTMLButtonElement>(null);
-  const close = () => { setOpen(false); setEditing(false); button.current?.focus(); };
+  const close = () => { setOpen(false); setEditing(false); };
   async function run(action: string) {
     try {
       await lessonAction(lesson, action, value);
@@ -37,7 +38,7 @@ export function LessonControls({ lesson, className = "relative inline-block" }: 
   }
   const action = "rounded-lg px-2 py-1 text-[var(--ink)] transition hover:bg-[var(--paper-strong)]";
   return (
-    <div className={className} onKeyDown={(e) => { if (open && e.key === "Escape") { e.stopPropagation(); close(); } }}>
+    <div className={className}>
       <button
         ref={button}
         type="button"
@@ -51,63 +52,64 @@ export function LessonControls({ lesson, className = "relative inline-block" }: 
         <Info aria-hidden className="h-3.5 w-3.5" />
       </button>
       {open ? (
-        <>
-          <button type="button" className="fixed inset-0 z-30 cursor-default" aria-label="Close" onClick={close} />
-          <div
-            role="dialog"
-            aria-label="Why this?"
-            className="neu-popover absolute right-0 top-full z-40 mt-1 w-72 max-w-[calc(100vw-2rem)] space-y-2 rounded-2xl border border-[var(--line)] bg-[var(--paper-raised)] p-3 text-left text-xs text-[var(--ink-muted)]"
-          >
-            <div className="text-sm text-[var(--ink)]">Why this?</div>
-            <p>{lesson.why}</p>
-            {lesson.sources.length ? (
-              <ul className="space-y-0.5">
-                {[...new Set(lesson.sources)].map((ref) => (
-                  <li key={ref} className="truncate">{/^(https?:\/\/|\/(?!\/))/.test(ref) ? <a href={ref} className="underline">{ref}</a> : ref}</li>
-                ))}
-              </ul>
-            ) : null}
-            <div className="-mx-2 flex flex-wrap gap-1 border-t border-[var(--line)] pt-2">
-              {lesson.eventId ? (
-                <button type="button" className={action} onClick={() => void run("apply")}>
-                  Update event
-                </button>
-              ) : (
-                <button type="button" className={action} onClick={() => setEditing(true)}>
-                  Correct
-                </button>
-              )}
-              <button type="button" className={action} onClick={() => void run("dismiss")}>
-                Dismiss
+        <ViewportPopover
+          anchorRef={button}
+          ariaLabel="Why this?"
+          role="dialog"
+          portal={false}
+          topLayer
+          onClose={close}
+          className="neu-popover fixed w-72 space-y-2 overflow-y-auto overscroll-contain rounded-2xl border border-[var(--line)] bg-[var(--paper-raised)] p-3 text-left text-xs text-[var(--ink-muted)]"
+        >
+          <div className="text-sm text-[var(--ink)]">Why this?</div>
+          <p>{lesson.why}</p>
+          {lesson.sources.length ? (
+            <ul className="space-y-0.5">
+              {[...new Set(lesson.sources)].map((ref) => (
+                <li key={ref} className="truncate">{/^(https?:\/\/|\/(?!\/))/.test(ref) ? <a href={ref} className="underline">{ref}</a> : ref}</li>
+              ))}
+            </ul>
+          ) : null}
+          <div className="-mx-2 flex flex-wrap gap-1 border-t border-[var(--line)] pt-2">
+            {lesson.eventId ? (
+              <button type="button" className={action} onClick={() => void run("apply")}>
+                Update event
               </button>
-              {!lesson.eventId && (
-                <button type="button" className={action} onClick={() => void run("forget")}>
-                  Forget
-                </button>
-              )}
-            </div>
-            {editing && (
-              <form
-                className="flex gap-1.5"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  void run("correct");
-                }}
-              >
-                <input
-                  autoFocus
-                  maxLength={300}
-                  aria-label="Correction"
-                  value={value}
-                  onChange={(e) => setValue(e.target.value)}
-                  className="min-w-0 flex-1 rounded-lg border border-[var(--line)] bg-[var(--paper-bg)] px-2 py-1 text-[var(--ink)]"
-                />
-                <button className={action} disabled={!value.trim()}>Save</button>
-              </form>
+            ) : (
+              <button type="button" className={action} onClick={() => setEditing(true)}>
+                Correct
+              </button>
             )}
-            {error && <p role="alert">{error}</p>}
+            <button type="button" className={action} onClick={() => void run("dismiss")}>
+              Dismiss
+            </button>
+            {!lesson.eventId && (
+              <button type="button" className={action} onClick={() => void run("forget")}>
+                Forget
+              </button>
+            )}
           </div>
-        </>
+          {editing && (
+            <form
+              className="flex gap-1.5"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void run("correct");
+              }}
+            >
+              <input
+                autoFocus
+                maxLength={300}
+                aria-label="Correction"
+                value={value}
+                onChange={(e) => setValue(e.target.value)}
+                className="min-w-0 flex-1 rounded-lg border border-[var(--line)] bg-[var(--paper-bg)] px-2 py-1 text-[var(--ink)]"
+              />
+              <button className={action} disabled={!value.trim()}>Save</button>
+            </form>
+          )}
+          {error && <p role="alert">{error}</p>}
+        </ViewportPopover>
       ) : null}
     </div>
   );

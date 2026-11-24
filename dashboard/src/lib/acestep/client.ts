@@ -129,7 +129,7 @@ export type ProviderResult = {
   state: "running";
 } | {
   state: "failed";
-  code?: "provider_out_of_memory";
+  code?: "provider_out_of_memory" | "provider_receipt_lost";
 } | {
   state: "succeeded";
   file: string;
@@ -141,6 +141,12 @@ export function parseTaskResult(data: unknown, taskId: string, baseUrl: string):
   const task = record(data[0]);
   if (task.task_id !== taskId)
     throw new Error("provider_receipt_mismatch");
+  // ACE-Step keeps tasks in process memory. An id it never saw (its process
+  // restarted since submission) comes back as a bare placeholder with no
+  // progress_text; a real queued or running task always carries one. Polling
+  // the placeholder would wait out the full 20 minute deadline for nothing.
+  if (task.status === 0 && task.result === "[]" && !("progress_text" in task))
+    return { state: "failed", code: "provider_receipt_lost" as const };
   if (task.status === 0)
     return { state: "running" };
   if (task.status === 2)

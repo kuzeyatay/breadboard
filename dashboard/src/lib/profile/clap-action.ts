@@ -9,7 +9,7 @@ export const CLAP_PAGES = {
   profile: { label: 'Settings', href: '/settings' },
   timer: { label: 'Work timer', href: '/pomodoro' },
   workflows: { label: 'Workflows', href: '/workflows' },
-  knowledge: { label: 'Knowledge', href: '/settings?tab=knowledge' },
+  knowledge: { label: 'Knowledge', href: '/knowledge' },
 } as const;
 
 export type ClapAction =

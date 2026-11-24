@@ -3,23 +3,26 @@ import { fileError, fileJson, gardenFileContext, gardenFiles, readFileJson } fro
 import { GardenFileError } from "@/lib/garden-files/store.ts";
 import { blankOfficeFile } from "@/lib/office/blank.ts";
 import { scheduleOfficeMirrors } from "@/lib/office/quartz-mirror.ts";
-import { OFFICE_FOLDER, officeKind, officeKindForName, type OfficeFile, type OfficeWorkspace } from "@/lib/office/types.ts";
+import { OFFICE_FOLDER, officeKind, spacesKindForPath, type OfficeFile, type OfficeWorkspace } from "@/lib/office/types.ts";
 import { requireUserId } from "@/lib/server-auth";
 
 export const dynamic = "force-dynamic";
 
-/** Office documents are ordinary Garden files: this lists them across every Garden the user owns. */
-export async function GET() {
+/** Spaces files are ordinary Garden files: this lists them across every Garden the user owns. */
+export async function GET(request: Request) {
   try {
     const userId = await requireUserId();
-    const gardens = db.prepare("SELECT id, slug, name, user_id FROM clusters WHERE user_id = ? ORDER BY name COLLATE NOCASE").all(userId) as { id: number; slug: string; name: string; user_id: number }[];
+    // A Garden workspace's Spaces section asks for its own files only.
+    const only = new URL(request.url).searchParams.get("garden");
+    const gardens = (db.prepare("SELECT id, slug, name, user_id FROM clusters WHERE user_id = ? ORDER BY name COLLATE NOCASE").all(userId) as { id: number; slug: string; name: string; user_id: number }[])
+      .filter(garden => !only || garden.slug === only);
     const store = gardenFiles(), files: OfficeFile[] = [];
     for (const garden of gardens) {
       // ponytail: full per-garden listing then filter; add an extension index to garden_files if libraries grow huge.
       const scope = { gardenId: garden.slug, clusterId: garden.id, ownerId: garden.user_id, userId };
       scheduleOfficeMirrors(store, scope);
       for (const entry of store.list(scope)) {
-        const info = entry.kind === "file" ? officeKindForName(entry.name) : null;
+        const info = entry.kind === "file" ? spacesKindForPath(entry.path) : null;
         if (info) files.push({ id: entry.id, gardenId: garden.slug, gardenName: garden.name, name: entry.name, path: entry.path, size: entry.size, revision: entry.revision, updatedAt: entry.updatedAt, tab: info.tab });
       }
     }
@@ -29,16 +32,17 @@ export async function GET() {
   } catch (error) { return fileError(error); }
 }
 
-/** Create a blank document in a Garden's Office folder. */
+/** Create a blank document, page, whiteboard or design in a Garden's Spaces folder. Videos start in Video Studio instead. */
 export async function POST(request: Request) {
   try {
     const body = await readFileJson(request);
     const info = officeKind(body.kind);
-    if (!info) throw new GardenFileError(400, "office_kind_invalid", "Choose a document type.");
+    if (!info || info.kind === "mp4") throw new GardenFileError(400, "office_kind_invalid", "Choose a document type.");
     if (typeof body.gardenId !== "string" || !body.gardenId) throw new GardenFileError(400, "office_garden_missing", "Choose a workspace for the document.");
-    const title = (typeof body.title === "string" ? body.title : "").replace(/[\\/:*?"<>|\u0000-\u001f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 120) || `Untitled ${info.label}`;
+    const whiteboard = info.kind === "affine" && body.whiteboard === true;
+    const title = (typeof body.title === "string" ? body.title : "").replace(/[\\/:*?"<>|\u0000-\u001f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 120) || `Untitled ${whiteboard ? "whiteboard" : info.noun}`;
     const { store, scope } = await gardenFileContext(body.gardenId, true);
-    const bytes = await blankOfficeFile(info.kind, title);
+    const bytes = await blankOfficeFile(info.kind, title, { whiteboard });
     const stage = await store.stage(new Blob([bytes as BlobPart]).stream(), request.signal);
     try {
       return fileJson({ file: store.import(scope, `${OFFICE_FOLDER}/${title}.${info.kind}`, stage) }, 201);

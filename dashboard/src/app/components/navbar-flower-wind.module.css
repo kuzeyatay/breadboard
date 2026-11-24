@@ -68,6 +68,7 @@
   width: var(--star-size);
   height: var(--star-size);
   border-radius: 999px;
+  corner-shape: round;
   background: var(--star-color);
   box-shadow: 0 0 5px color-mix(in srgb, var(--star-color) 42%, transparent);
   opacity: 0.52;
@@ -80,6 +81,7 @@
   width: var(--comet-length);
   height: 1px;
   border-radius: 999px;
+  corner-shape: round;
   background: linear-gradient(90deg, transparent, #9fb5c4 68%, #e6ebe5);
   opacity: 0;
   transform: rotate(var(--comet-angle));

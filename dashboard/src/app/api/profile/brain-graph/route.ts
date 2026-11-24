@@ -43,11 +43,7 @@ export async function GET(request: Request) {
     const context = buildBrainGraphAccessContext(userId);
     const { searchParams } = new URL(request.url);
     const scope = parseBrainScope(searchParams, context);
-    const mode = searchParams.get("mode") === "full" ? "full" : "overview";
-    const graph = await buildBrainGraph(context, scope, {
-      mode,
-      signal: request.signal,
-    });
+    const graph = await buildBrainGraph(context, scope, { signal: request.signal });
     // The profile page polls for change every 30 s. Answering with the
     // revision alone spares it a multi-megabyte body it would only compare
     // and discard; the build behind it is served from cache while unchanged.

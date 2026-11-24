@@ -379,3 +379,18 @@ test("a globe presentation keeps sibling research progress visible until synthes
     assert.deepEqual([...supersededDelegationAssistantIndices(messages)], [1]);
   }
 });
+
+test("a task-recovery answer replaces the answer it re-did instead of stacking", async () => {
+  const { delegatedResponsePresentation } = await import("../src/lib/hermes/delegated-response.ts");
+  const turn = (recovery) => [
+    { role: "user", content: "brief me", clientMessageId: "schedule-6-1" },
+    { role: "assistant", content: "First answer.", clientMessageId: "schedule-6-1" },
+    { role: "user", content: "brief me", clientMessageId: "recovery:run-1", internalAgentContinuation: true },
+    { role: "assistant", clientMessageId: "recovery:run-1", internalAgentContinuation: true, ...recovery },
+  ];
+  assert.deepEqual([...supersededDelegationAssistantIndices(turn({ content: "Better answer." }))], [1]);
+  assert.equal(delegatedResponsePresentation(turn({ content: "Better answer." }), 3).stateLabel, undefined);
+  // Not yet answered, or failed: the earlier answer stays on screen.
+  assert.deepEqual([...supersededDelegationAssistantIndices(turn({ content: "" }))], []);
+  assert.deepEqual([...supersededDelegationAssistantIndices(turn({ content: "x", failed: true }))], []);
+});

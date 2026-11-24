@@ -52,8 +52,7 @@ test("the palette keeps accessible keyboard behavior and leaves MCP setup to Set
   }
   assert.doesNotMatch(palette, /\{ id: "mcp", label: "MCP" \}/);
   assert.doesNotMatch(palette, /placeholder="Search MCP servers"/);
-  assert.match(settings, /value: "mcp"[\s\S]{0,80}label: "MCP"/);
-  assert.match(settings, /<SettingsMcp \/>/);
+  assert.match(settings, /id="settings-panel-connections"[\s\S]{0,700}<SettingsMcp \/>/);
   // App connections are Settings → Connections now, not a palette tab.
   assert.doesNotMatch(palette, /\{ id: "connection", label: "Connections" \}/);
   assert.doesNotMatch(palette, /\/api\/hermes\/composio/);

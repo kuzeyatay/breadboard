@@ -740,7 +740,8 @@ export default function ArtifactPanel({
 
   return (
     <section
-      className={`${styles.archive} relative flex min-h-0 flex-col bg-[var(--paper-surface)] text-[var(--ink)] ${compact ? "h-full" : "max-h-[62vh]"}`}
+      className={`${styles.archive} relative flex min-h-0 flex-col text-[var(--ink)] ${hideHeader ? "bg-transparent" : "bg-[var(--paper-surface)]"} ${compact ? "h-full" : "max-h-[62vh]"}`}
+      data-in-sidebar={hideHeader || undefined}
       aria-label="Artifacts"
     >
       {!hideHeader ? (
@@ -755,7 +756,8 @@ export default function ArtifactPanel({
         </div>
       ) : null}
 
-      <div className={styles.searchBar}>
+      {/* In a Garden sidebar the field matches the Documents and Spaces search above it. */}
+      <div className={hideHeader ? "flex shrink-0 items-center gap-2 border-b border-gray-800 px-3 py-2" : styles.searchBar}>
         <div className="relative min-w-0 flex-1">
           <svg
             aria-hidden="true"
@@ -763,7 +765,7 @@ export default function ArtifactPanel({
             fill="none"
             stroke="currentColor"
             strokeWidth={1.7}
-            className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--ink-muted)]"
+            className={hideHeader ? "pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-600" : "pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--ink-muted)]"}
           >
             <circle cx="10.5" cy="10.5" r="5.75" />
             <path strokeLinecap="round" d="m15 15 4.25 4.25" />
@@ -776,7 +778,7 @@ export default function ArtifactPanel({
             aria-label="Search artifacts"
             autoComplete="off"
             spellCheck={false}
-            className={styles.search}
+            className={hideHeader ? "neu-control h-8 w-full rounded-md border border-gray-800 bg-gray-950 pl-8 pr-8 text-xs text-gray-200 outline-none transition-colors placeholder:text-gray-700 focus:border-gray-600" : styles.search}
           />
           {searchQuery ? (
             <button
@@ -784,7 +786,7 @@ export default function ArtifactPanel({
               onClick={() => setSearchQuery("")}
               aria-label="Clear artifact search"
               title="Clear search"
-              className="neu-button-icon absolute right-1.5 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-lg text-[var(--ink-muted)] hover:text-[var(--ink)]"
+              className={hideHeader ? "absolute right-1.5 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-gray-600 transition-colors hover:bg-gray-800 hover:text-white" : "neu-button-icon absolute right-1.5 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-lg text-[var(--ink-muted)] hover:text-[var(--ink)]"}
             >
               <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} className="h-3.5 w-3.5">
                 <path strokeLinecap="round" d="m7 7 10 10M17 7 7 17" />

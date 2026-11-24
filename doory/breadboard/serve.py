@@ -44,6 +44,14 @@ def configure(port: int, data: Path) -> None:
     data.mkdir(parents=True, exist_ok=True)
     (data / "media").mkdir(exist_ok=True)
     (data / "static").mkdir(exist_ok=True)
+    # A second launch must not replace the running editor's ticket before finding its port taken:
+    # the page would then sign in with a ticket the running editor never issued and get 403.
+    import socket
+    with socket.socket() as probe:
+        try:
+            probe.bind(("127.0.0.1", port))
+        except OSError:
+            sys.exit(f"Port {port} is already in use; the running Design editor keeps its ticket.")
     ticket = secrets.token_urlsafe(32)
     (data / "ticket").write_text(ticket, encoding="utf-8")
     os.environ.update({

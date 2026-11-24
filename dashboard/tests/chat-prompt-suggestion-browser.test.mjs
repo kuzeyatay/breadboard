@@ -27,6 +27,8 @@ test('ghost suggestions accept, dismiss, preserve keyboard navigation and reject
       import {usePromptSuggestion} from '@/app/components/use-prompt-suggestion';
       import {useSentenceCompletion} from '@/app/components/use-sentence-completion';
       import PromptSuggestionOverlay from '@/app/components/prompt-suggestion-overlay';
+      import SuggestionInfo from '@/app/components/suggestion-info';
+      import {splitMentions, mentionQueryAt} from '@/lib/bots/mentions';
       import {composerSegments} from '@/lib/composer-links';
       import {splitLeadingCommandTokens} from '@/app/components/hermes/command-text';
       function App() {
@@ -37,6 +39,7 @@ test('ghost suggestions accept, dismiss, preserve keyboard navigation and reject
         const sentenceCompletion=useSentenceCompletion({messages,conversationKey:state.chat,value,enabled:false,onChange});
         const internalTextareaRef=useRef(null),commandBackdropRef=useRef(null),assignTextareaRef=internalTextareaRef;
         const slashCommandMenuRef=useRef(null),commandHubRef=useRef(null),addMenuRef=useRef(null);
+        const botMentionMenuRef=useRef(null),setMentionQuery=()=>{};
         slashCommandMenuRef.current={handleKeyDown:event=>{if(state.menu&&event.key==='Tab'){event.preventDefault();window.menuAccepted=true;return true;}return false;}};
         const pendingWorkflowPrompt=null,setPendingWorkflow=()=>{},showSlashCommands=false;
         const menuSearch=null,setMenuSearch=()=>{},closeMenuSearch=()=>{};
@@ -98,7 +101,11 @@ test('ghost suggestions accept, dismiss, preserve keyboard navigation and reject
   await expect(ghost).toHaveAttribute('data-suggestion-phase','erase');
   await expect(ghost).toContainText('Ask anything');
   await expect(textarea).toHaveAttribute('placeholder','');
-  await expect(page.locator('.sr-only')).toContainText('Suggested message: Show me a worked example');
+  await expect(textarea).toHaveAccessibleDescription(/Suggested message: Show me a worked example/);
+  await textarea.press('Alt+i');
+  await expect(page.getByRole('dialog', {name:'Why this suggestion?'})).toContainText('recent messages in this chat');
+  await textarea.press('Escape');
+  await expect(ghost).toBeVisible();
   await expect(textarea).toHaveValue('');
   assert.deepEqual(await page.evaluate(()=>window.sent),[]);
   assert.equal(requests,1);

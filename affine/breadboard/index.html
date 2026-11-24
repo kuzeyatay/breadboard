@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Page</title>
+    <style>
+      html, body { height: 100%; margin: 0; overflow: hidden; background: var(--affine-background-primary-color, #fff); }
+      * { box-sizing: border-box; }
+      #app { height: 100%; }
+      affine-editor-container { display: block; height: 100%; }
+      .affine-page-viewport { height: 100%; }
+      doc-title { margin-top: 48px; }
+      .bb-bar { position: fixed; top: 10px; right: 14px; z-index: 30; display: flex; align-items: center; gap: 8px;
+        font: 12.5px/1 var(--affine-font-family, system-ui, sans-serif); color: var(--affine-text-secondary-color, #888); }
+      .bb-modes { display: inline-flex; padding: 3px; gap: 2px; border-radius: 9px; background: var(--affine-background-secondary-color, #f4f4f5);
+        border: 1px solid var(--affine-border-color, #e3e3e3); }
+      .bb-modes button { border: 0; border-radius: 6px; padding: 5px 11px; font: inherit; color: inherit; background: transparent; cursor: pointer; }
+      .bb-modes button[aria-pressed="true"] { background: var(--affine-background-primary-color, #fff); color: var(--affine-text-primary-color, #111); font-weight: 600;
+        box-shadow: 0 1px 3px rgb(0 0 0 / .1); }
+      .bb-status { min-width: 52px; text-align: right; }
+      .bb-failure { margin: 30vh auto 0; max-width: 420px; text-align: center; font: 14px/1.5 system-ui, sans-serif; color: #b42318; }
+    </style>
+  </head>
+  <body>
+    <div class="bb-bar" hidden>
+      <span class="bb-status" role="status" aria-live="polite"></span>
+      <div class="bb-modes" role="group" aria-label="View">
+        <button type="button" data-mode="page" aria-pressed="true">Page</button>
+        <button type="button" data-mode="edgeless" aria-pressed="false">Whiteboard</button>
+      </div>
+    </div>
+    <div id="app"></div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

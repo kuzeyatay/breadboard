@@ -17,12 +17,13 @@ export function isPageAuthorship(value: unknown): value is PageAuthorship {
 /**
  * The stored `authorship` frontmatter value. Pages written before it existed
  * fall back to their origin: only notes made in the Garden editor are human;
- * Learn lessons, ingested sources and indexes are model output.
+ * an uploaded source is unsure (who wrote it is unknown); Learn lessons and indexes are model output.
  */
 export function pageAuthorship(frontmatter: Record<string, unknown> | null | undefined): PageAuthorship {
   const stored = frontmatter?.authorship;
   if (isPageAuthorship(stored)) return stored;
-  return frontmatter?.source === "user-note" ? "human-written" : "ai-written";
+  if (frontmatter?.source === "user-note") return "human-written";
+  return frontmatter?.knowledge_type === "source-document" || frontmatter?.type === "source-document" ? "unsure" : "ai-written";
 }
 
 /** Who touched it last decides the "edited" side; untouched origins stay as written. */

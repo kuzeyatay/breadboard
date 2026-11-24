@@ -158,6 +158,8 @@ export interface TabView {
     organizationOpen?: boolean;
     organizationWidth?: number;
     annotationTarget?: import("./browser-annotations").BrowserAnnotationTarget;
+    /** Enough people flagged this website as AI-generated: outline the address yellow or red. */
+    aiFlagLevel?: "yellow" | "red";
     downloadsOpen?: boolean;
     extensionsOpen?: boolean;
     hls?: { streams: BrowserHlsStream[]; available: boolean };
@@ -547,6 +549,7 @@ type TabsAction =
   | { type: "browser-navigate"; input: string }
   | { type: "browser-stop" }
   | { type: "browser-menu"; x: number; y: number; profileLabel: string }
+  | { type: "browser-open-settings" }
   | { type: "browser-find"; text: string; forward?: boolean; findNext?: boolean }
   | { type: "browser-find-close" }
   | { type: "browser-downloads-popover"; x: number; y: number }
@@ -570,6 +573,10 @@ type TabsAction =
   | { type: "browser-hls-download"; id: string }
   | { type: "browser-terminal"; open: boolean; width?: number }
   | { type: "browser-organization"; open: boolean; width?: number }
+  /** The trusted page reports how many people flagged its website as AI-generated; the address outline follows. */
+  | { type: "browser-ai-flags"; site: string | null; level: "yellow" | "red" | null }
+  /** Ask before flagging a website as AI-generated. Resolves true when the person confirms. */
+  | { type: "browser-ai-flag-confirm"; site: string }
   | { type: "browser-organization-selection" }
   | { type: "browser-organization-target"; target: import("./browser-annotations").BrowserAnnotationTarget }
   | { type: "browser-organization-markers"; items: Array<{ id: string; target: import("./browser-annotations").BrowserAnnotationTarget; count?: number; preview?: string }> }
@@ -691,6 +698,8 @@ export function isTabsCommand(value: unknown): value is TabsCommand {
     case "browser-menu":
       return typeof command.profileLabel === "string" && command.profileLabel.length <= 320 &&
         [command.x, command.y].every(value => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 20_000);
+    case "browser-open-settings":
+      return true;
     case "browser-find":
       return typeof command.text === "string" && command.text.length <= 1_000 &&
         (command.forward === undefined || typeof command.forward === "boolean") &&
@@ -724,6 +733,8 @@ export function isTabsCommand(value: unknown): value is TabsCommand {
         typeof command.conversationId === "string" && /^conv_[A-Za-z0-9_-]{1,120}$/.test(command.conversationId);
     case "browser-organization": return typeof command.open === "boolean" && (command.width === undefined || (typeof command.width === "number" && Number.isFinite(command.width)));
     case "browser-organization-enabled": return typeof command.enabled === "boolean";
+    case "browser-ai-flags": return (command.site === null || (typeof command.site === "string" && /^[a-z0-9.-]{1,253}$/.test(command.site))) && (command.level === null || command.level === "yellow" || command.level === "red");
+    case "browser-ai-flag-confirm": return typeof command.site === "string" && /^[a-z0-9.-]{1,253}$/.test(command.site);
     case "browser-organization-selection": return true;
     case "browser-organization-target": return normalizeAnnotationTarget(command.target) !== null;
     case "browser-organization-markers": return Array.isArray(command.items) && command.items.length <= 200 && command.items.every((item: unknown) => {

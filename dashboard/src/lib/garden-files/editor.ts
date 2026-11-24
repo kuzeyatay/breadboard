@@ -74,7 +74,7 @@ export async function saveGardenFileEditor(store: GardenFileStore, scope: Garden
 
 export async function saveGardenNativeBytes(store: GardenFileStore, scope: GardenFileScope, id: string, revision: number, body: ReadableStream<Uint8Array>, signal?: AbortSignal, copy = false) {
   const file = store.get(scope, id);
-  if (!file.canEdit || !["docx", "pdf"].includes(file.capabilities.editor ?? "")) throw new GardenFileError(403, "file_editor_unsupported", "This file cannot be saved by that editor.");
+  if (!file.canEdit || !["docx", "pdf", "affine"].includes(file.capabilities.editor ?? "")) throw new GardenFileError(403, "file_editor_unsupported", "This file cannot be saved by that editor.");
   if (!copy && file.revision !== revision) throw new GardenFileError(409, "file_revision_conflict", "This file changed elsewhere. Your changes are still here; save a copy to keep both.");
   const stage = await store.stage(body, signal);
   try {
@@ -83,6 +83,9 @@ export async function saveGardenNativeBytes(store: GardenFileStore, scope: Garde
     if (file.capabilities.editor === "docx") {
       const { archive } = inspectGardenArchive(bytes);
       if (!archive.getEntry("word/document.xml") || !archive.getEntry("[Content_Types].xml")) throw new GardenFileError(422, "file_document_invalid", "The editor did not return a valid Word document.");
+    } else if (file.capabilities.editor === "affine") {
+      const { archive } = inspectGardenArchive(bytes);
+      if (!archive.getEntry("info.json") || !archive.getEntry("page.snapshot.json")) throw new GardenFileError(422, "file_page_invalid", "The editor did not return a valid page.");
     } else if (!bytes.subarray(0, 1024).includes(Buffer.from("%PDF-"))) throw new GardenFileError(422, "file_pdf_invalid", "The editor did not return a valid PDF.");
     return copy ? store.import(scope, file.path, stage) : store.save(scope, id, revision, stage);
   } finally { store.discard(stage); }

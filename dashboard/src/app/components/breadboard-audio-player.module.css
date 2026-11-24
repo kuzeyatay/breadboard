@@ -60,6 +60,7 @@
 .scrubber::-webkit-slider-runnable-track {
   height: 0.2rem;
   border-radius: 999px;
+  corner-shape: round;
   background: linear-gradient(
     to right,
     var(--botanical) 0 var(--bb-media-progress),
@@ -71,6 +72,7 @@
 .scrubber::-moz-range-track {
   height: 0.2rem;
   border-radius: 999px;
+  corner-shape: round;
   background: color-mix(in srgb, var(--line-strong) 72%, var(--paper-bg));
   box-shadow: var(--bb-run-recess);
 }
@@ -78,6 +80,7 @@
 .scrubber::-moz-range-progress {
   height: 0.2rem;
   border-radius: 999px;
+  corner-shape: round;
   background: var(--botanical);
 }
 
@@ -88,6 +91,7 @@
   appearance: none;
   border: 2px solid var(--paper-raised);
   border-radius: 50%;
+  corner-shape: round;
   background: var(--botanical);
   box-shadow: 0 0 0 1px var(--line-strong), 1px 1px 3px color-mix(in srgb, var(--ink) 22%, transparent);
 }
@@ -97,6 +101,7 @@
   height: 0.45rem;
   border: 2px solid var(--paper-raised);
   border-radius: 50%;
+  corner-shape: round;
   background: var(--botanical);
   box-shadow: 0 0 0 1px var(--line-strong), 1px 1px 3px color-mix(in srgb, var(--ink) 22%, transparent);
 }

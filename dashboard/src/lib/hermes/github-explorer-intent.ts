@@ -17,6 +17,7 @@
 // <repo>" stays a drawing, and before messaging, which is an errand.
 
 import type { HermesSurface } from "./config.ts";
+import { requestProse } from "./request-language.ts";
 
 /** The first-party skill directory name, which is also its slash command. */
 export const GITHUB_EXPLORER_SKILL = "github-explorer";
@@ -111,7 +112,8 @@ export interface GithubExplorerIntentInput {
 export function shouldAutoSelectGithubExplorer(
   input: GithubExplorerIntentInput,
 ): boolean {
-  const text = input.text.trim();
+  // Pasted code, quotes and documents are material, not the request.
+  const text = requestProse(input.text).trim();
   // Both conversational surfaces, neither unauthenticated one: the dossier
   // cites live web sources, which only these turns can fetch. An explicit
   // command already says what the turn is, so never argue with one.

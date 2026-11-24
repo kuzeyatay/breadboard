@@ -63,7 +63,7 @@ export function saveTab(
     if (tab.url && !safeWebUrl(tab.url)) return null;
     return { kind: "browser", url: tab.url, title: tab.title, anchored: tab.anchored,
       ...(tab.highlighted === true ? { highlighted: true } : {}),
-      ...(tab.keepLoaded === true ? { keepLoaded: true } : {}), ...(tab.groupId ? { groupId: tab.groupId } : {}) };
+      ...(typeof tab.keepLoaded === "boolean" ? { keepLoaded: tab.keepLoaded } : {}), ...(tab.groupId ? { groupId: tab.groupId } : {}) };
   }
   if (!safeWebUrl(tab.url)) return null;
   const url = new URL(tab.url);
@@ -77,7 +77,7 @@ export function saveTab(
     title: tab.title,
     anchored: tab.anchored,
     ...(tab.highlighted === true ? { highlighted: true } : {}),
-    ...(tab.keepLoaded === true ? { keepLoaded: true } : {}),
+    ...(typeof tab.keepLoaded === "boolean" ? { keepLoaded: tab.keepLoaded } : {}),
     ...(tab.groupId ? { groupId: tab.groupId } : {}),
   };
 }
@@ -158,7 +158,7 @@ function withoutLoginPlaceholder(tab: SavedTab): SavedTab {
   return { kind: tab.kind, url: restored ? restored.pathname + restored.search + restored.hash : tab.url,
     title: login ? "" : tab.title, anchored: tab.anchored,
     ...(tab.highlighted === true ? { highlighted: true } : {}),
-    ...(tab.keepLoaded === true ? { keepLoaded: true } : {}) };
+    ...(typeof tab.keepLoaded === "boolean" ? { keepLoaded: tab.keepLoaded } : {}) };
 }
 
 function accountSessionDirectory(configDir: string, userId: string): string {

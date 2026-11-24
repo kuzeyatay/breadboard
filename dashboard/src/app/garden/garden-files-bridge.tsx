@@ -8,6 +8,7 @@ import { gardenFileApi, gardenFileSize, type GardenFileEntry } from "@/lib/garde
 import { gardenFileUploadQueue } from "@/lib/garden-files/upload-queue";
 import { fileRequest } from "@/lib/garden-files/client";
 import { droppedGardenFiles } from "@/lib/garden-files/drop";
+import { inSpacesFolder, spacesKindForPath } from "@/lib/office/types";
 import styles from "./garden-files.module.css";
 
 const Viewer = dynamic(() => import("./garden-file-viewer"), { ssr: false });
@@ -78,16 +79,22 @@ function FilesFolder({ target, files, canEdit, onOpen, onFolder, onClose, onAdd,
 }
 
 /** Keeps Quartz's existing tree; only the selected file replaces the reading pane. */
-export default function GardenFilesBridge({ iframeRef, quartzOrigin, initialCluster, onSelectCluster, onSelectDocument }: { iframeRef: RefObject<HTMLIFrameElement | null>; quartzOrigin: string; initialCluster?: string; onSelectCluster?: (cluster: string) => void; onSelectDocument?: (value: null) => void }) {
+export default function GardenFilesBridge({ iframeRef, quartzOrigin, initialCluster, onSelectCluster, onSelectDocument, onSelectFile }: { iframeRef: RefObject<HTMLIFrameElement | null>; quartzOrigin: string; initialCluster?: string; onSelectCluster?: (cluster: string) => void; onSelectDocument?: (value: null) => void; onSelectFile?: (fileId: string | null) => void }) {
   const [file, setFile] = useState<GardenFileEntry | null>(null), [folder, setFolder] = useState<Target | null>(null), [bounds, setBounds] = useState<Bounds | null>(null);
   const [snapshots, setSnapshots] = useState<Record<string, { files: GardenFileEntry[]; canEdit: boolean }>>({});
   const [trash, setTrash] = useState<GardenFileEntry[]>([]), [error, setError] = useState(""), [mounted, setMounted] = useState(false);
   const [picker, setPicker] = useState<Target | null>(null), [showUploads, setShowUploads] = useState(() => gardenFileUploadQueue.snapshot().some(entry => ["queued", "uploading", "failed"].includes(entry.state)));
+  // Whether this bridge has Quartz's file view open. Only then may it close it: the source viewer
+  // (garden-source-view) opens the same view for PDFs and recordings, and an unconditional "closed" on a page
+  // change or first history sync left Quartz showing its text and reader layout under that viewer.
+  const ownsView = useRef(false);
   const dirty = useRef(false), pickFiles = useRef<HTMLInputElement>(null), pickFolder = useRef<HTMLInputElement>(null), requests = useRef(new Map<string, AbortController>());
   const clusters = useRef(new Set(initialCluster ? [initialCluster] : [])), generation = useRef(0), navigationReady = useRef(false);
   const currentFile = useRef(file); currentFile.current = file;
   const uploads = useSyncExternalStore(gardenFileUploadQueue.subscribe, gardenFileUploadQueue.snapshot, () => emptyUploads);
   useEffect(() => { if (file) { onSelectCluster?.(file.gardenId); onSelectDocument?.(null); } }, [file?.id, onSelectCluster, onSelectDocument]);
+  // The Assistant keeps each open file's chats apart from the page beneath it.
+  useEffect(() => { onSelectFile?.(file?.id ?? null); }, [file?.id, onSelectFile]);
   const failedUploads = uploads.filter(entry => entry.state === "failed").length;
   useEffect(() => { if (failedUploads) setShowUploads(true); }, [failedUploads]);
   const uploading = uploads.some(entry => entry.state === "queued" || entry.state === "uploading");
@@ -112,7 +119,8 @@ export default function GardenFilesBridge({ iframeRef, quartzOrigin, initialClus
   const mayLeave = useCallback(() => !dirty.current || window.confirm("Discard your unsaved changes?"), []);
   const close = useCallback(() => {
     if (!mayLeave()) { post({ type: "second-brain:file-view", open: true }); return; }
-    generation.current++; dirty.current = false; setFile(null); setFolder(null); setPicker(null); post({ type: "second-brain:file-view", open: false });
+    generation.current++; dirty.current = false; setFile(null); setFolder(null); setPicker(null);
+    if (ownsView.current) { ownsView.current = false; post({ type: "second-brain:file-view", open: false }); }
     const url = new URL(window.location.href); url.searchParams.delete("file"); url.searchParams.delete("fileGarden"); window.history.replaceState(window.history.state, "", url);
   }, [mayLeave, post]);
   const [startEditing, setStartEditing] = useState(false);
@@ -125,10 +133,11 @@ export default function GardenFilesBridge({ iframeRef, quartzOrigin, initialClus
       // Office opens documents straight into their editor with ?edit=1.
       const params = new URLSearchParams(location.search), edit = params.get("edit") === "1";
       if (params.has("edit")) { const url = new URL(location.href); url.searchParams.delete("edit"); window.history.replaceState(window.history.state, "", url); }
-      dirty.current = false; setStartEditing(edit); setFile(body.file); setFolder(null); setPicker(null);
+      // Files made in Spaces (its folders: documents, pages, PDFs, designs, videos) open straight into their editor; other Garden files open to read.
+      dirty.current = false; setStartEditing(edit || (inSpacesFolder(body.file.folder) && spacesKindForPath(body.file.path) !== null)); setFile(body.file); setFolder(null); setPicker(null);
       await refresh(cluster);
       if (generation.current !== ticket) return;
-      post({ type: "second-brain:file-view", open: true, fileId: id });
+      ownsView.current = true; post({ type: "second-brain:file-view", open: true, fileId: id });
       if (history) { const url = new URL(window.location.href); url.searchParams.set("file", id); url.searchParams.set("fileGarden", cluster); window.history.pushState(window.history.state, "", url); }
       // Office hands a document to Bread by opening it with ?ask=: attach it to this Garden's chat with the instruction ready to send.
       const ask = new URLSearchParams(location.search).get("ask");
@@ -142,7 +151,7 @@ export default function GardenFilesBridge({ iframeRef, quartzOrigin, initialClus
     if (!mayLeave()) return;
     const ticket = ++generation.current; dirty.current = false; setFile(null); setFolder(target); setPicker(null); setError("");
     const url = new URL(location.href); url.searchParams.delete("file"); url.searchParams.delete("fileGarden"); history.replaceState(history.state, "", url);
-    void refresh(target.cluster).then(() => { if (generation.current === ticket) post({ type: "second-brain:file-view", open: true }); });
+    void refresh(target.cluster).then(() => { if (generation.current === ticket) { ownsView.current = true; post({ type: "second-brain:file-view", open: true }); } });
     if (target.trash) void fileRequest<{ files: GardenFileEntry[] }>(`${gardenFileApi(target.cluster)}?trash=1`).then(body => setTrash(body.files)).catch(cause => setError(cause.message));
   }, [mayLeave, post, refresh]);
   const add = useCallback((target: Target, items: { file: File; path: string }[]) => {
@@ -182,7 +191,8 @@ export default function GardenFilesBridge({ iframeRef, quartzOrigin, initialClus
       }
       if (data.type === "second-brain:file-bounds" && [data.left,data.top,data.width,data.height].every(Number.isFinite)) {
         const rect = iframeRef.current?.getBoundingClientRect();
-        if (rect) setBounds({ left: rect.left + data.left, top: rect.top + data.top, width: Math.min(data.width, rect.width), height: Math.min(data.height, rect.height - data.top) });
+        // Files and their editors take everything right of Quartz's file tree, not just its reading column.
+        if (rect) setBounds({ left: rect.left + data.left, top: rect.top + data.top, width: Math.max(Math.min(data.width, rect.width), rect.width - data.left - 16), height: rect.height - data.top }); // down to the frame's bottom: no strip of the page shows under it
       }
       if (data.type === "second-brain:file-error" && typeof data.error === "string") setError(data.error);
       if (data.type === "second-brain:leave-file" && typeof data.url === "string" && mayLeave()) {
@@ -213,11 +223,11 @@ export default function GardenFilesBridge({ iframeRef, quartzOrigin, initialClus
     setFile(entry.deletedAt ? null : entry);
     if (entry.deletedAt) {
       const url = new URL(location.href); url.searchParams.delete("file"); url.searchParams.delete("fileGarden"); history.replaceState(history.state, "", url);
-      post({ type: "second-brain:file-view", open: false });
+      if (ownsView.current) { ownsView.current = false; post({ type: "second-brain:file-view", open: false }); }
     }
     else {
       const url = new URL(location.href); url.searchParams.set("file", entry.id); url.searchParams.set("fileGarden", entry.gardenId); history.replaceState(history.state, "", url);
-      post({ type: "second-brain:file-view", open: true, fileId: entry.id });
+      ownsView.current = true; post({ type: "second-brain:file-view", open: true, fileId: entry.id });
     }
   }, [post]);
   const pending = uploads.filter(entry => entry.state === "queued" || entry.state === "uploading"), failed = uploads.filter(entry => entry.state === "failed");

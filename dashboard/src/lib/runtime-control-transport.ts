@@ -120,6 +120,12 @@ export function createRuntimeControlTransports(
     pipelining: 0,
     keepAliveTimeout: RUNTIME_CONTROL_KEEP_ALIVE_MS,
     keepAliveMaxTimeout: RUNTIME_CONTROL_KEEP_ALIVE_MS,
+    // Every caller bounds its request with its own AbortSignal (a service
+    // lease waits out the manifest's startup budget, which can exceed undici's
+    // 300 s default). Undici's timers would cut a legitimate cold start short
+    // with UND_ERR_HEADERS_TIMEOUT, so the caller's deadline is the only one.
+    headersTimeout: 0,
+    bodyTimeout: 0,
   };
   return {
     job: boundedFetch(

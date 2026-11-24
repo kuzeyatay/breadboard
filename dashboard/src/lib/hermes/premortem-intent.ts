@@ -1,4 +1,5 @@
 import type { HermesSurface } from "./config.ts";
+import { requestProse } from "./request-language.ts";
 
 const EXPLICIT_PREMORTEM =
   /\b(?:pre[-\s]?mortem|prospective hindsight|gary klein)\b/i;
@@ -39,7 +40,8 @@ export function premortemCommandText(input: {
   authenticated: boolean;
   priorMessages?: ReadonlyArray<{ role: string; content: string }>;
 }): { text: string; automatic: boolean } {
-  const text = input.text.trim();
+  // Pasted code, quotes and documents are material, not the request.
+  const text = requestProse(input.text).trim();
   const available =
     input.authenticated &&
     (input.surface === "dashboard_terminal" ||

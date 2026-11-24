@@ -10,7 +10,7 @@ declare module "reading-time/lib/reading-time.js" {
 
 // dom custom event
 interface CustomEventMap {
-  prenav: CustomEvent<{}>
+  prenav: CustomEvent<{ url?: string }>
   nav: CustomEvent<{ url: FullSlug }>
   themechange: CustomEvent<{ theme: "light" | "dark" }>
   readermodechange: CustomEvent<{ mode: "on" | "off" }>
