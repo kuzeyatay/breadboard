@@ -22,5 +22,5 @@
 /* Squircle corners everywhere, matching the Breadboard shell (globals.css).
    Zero specificity, so any explicit corner-shape wins; full-round circles and
    pills keep `corner-shape: round` beside their border-radius. */
-:where(*, *::before, *::after) { corner-shape: squircle; }
+:where(*), :where(*)::before, :where(*)::after { corner-shape: squircle; }
 :where([style*="border-radius: 50%"], [style*="border-radius: 100%"], [style*="border-radius: 999px"], [style*="border-radius: 9999px"], [class~="rounded-full"], [class~="rounded-circle"], [class~="rounded-pill"]) { corner-shape: round; }

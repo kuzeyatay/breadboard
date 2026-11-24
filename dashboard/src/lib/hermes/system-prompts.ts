@@ -94,14 +94,20 @@ export function composeHermesSystemPrompt(input: {
   }
   const capabilityContext = [
     "# server_capability_decision",
-    `Mode: ${decision.mode}`,
+    `Task classification: ${decision.mode}`,
     `Implementation required: ${decision.implementationRequired ? "yes" : "no"}`,
     `Authorized roots: ${decision.authorizedRoots.join(", ") || "none"}`,
     `Authorized path patterns: ${decision.authorizedPathPatterns.join(", ") || "none"}`,
     `Exact delete targets: ${decision.authorizedDeleteTargets?.join(", ") || "none"}`,
     `Allowed operations: ${decision.allowedOperations.join(", ") || "knowledge_work"}`,
+    ...(decision.allowedTools.includes("workspace_write") ? [
+      "This chat can read, create and edit files in its workspace on every turn. Use workspace_read, workspace_write and workspace_patch for that work.",
+      ...(decision.allowedTools.includes("terminal_execute_command") ? [
+        "For a local project outside the workspace, use terminal_execute_command. Its path and command approval controls apply.",
+      ] : []),
+    ] : []),
     `Allowed command patterns: ${decision.allowedCommandPatterns.join(", ") || "none"}`,
-    `Expires at: ${decision.expiresAt ?? "end of knowledge turn"}`,
+    `Expires at: ${decision.expiresAt ?? "end of turn"}`,
     "This record describes authority; it does not grant anything beyond the tool controls.",
   ].join("\n");
   const loopState = loopStateSection(input.conversationPublicId, input.surface);

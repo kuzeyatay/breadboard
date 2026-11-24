@@ -46,6 +46,8 @@ function prepare(request, options = {}) {
     confirmedPermissionIds: options.confirmed,
     interactiveApprovals: options.interactiveApprovals,
     resolvedResources: options.resolvedResources,
+    goalMode: options.goalMode,
+    yoloMode: options.yoloMode,
   });
 }
 
@@ -140,7 +142,10 @@ test("download discovery preserves permission checks for an explicit destination
       item.kind === "filesystem" && item.path));
     assert.deepEqual(prepared.grant.authorizedRoots, []);
   }
-  assert.equal(prepare("Inspect the files in this folder.").blocked, true);
+  const discovery = prepare("Inspect the files in this folder.");
+  assert.equal(discovery.blocked, false);
+  assert.equal(discovery.grant.allowedTools.terminal_execute_command, true);
+  assert.deepEqual(discovery.grant.authorizedRoots, []);
 });
 
 test("a verified file follow-up runs after its delete grant is approved", () => {
@@ -546,4 +551,93 @@ test("the reset baseline grants nothing at all", async () => {
   // Only the session's own workspace remains addressable.
   assert.deepEqual(baseline.authorizedRoots, ["/ws"]);
   assert.equal(baseline.expiresAt, null);
+});
+
+/* ------------------------------------------------------------------ */
+/* Goal and YOLO turns are planned to act, not only to inspect          */
+/* ------------------------------------------------------------------ */
+
+const BRIEFING_GOAL =
+  "Read the briefing in /home/me/Documents/Retake_Package and accomplish the given task using Mendix, verifying the finished deliverable.";
+
+const PACKAGE = [{ kind: "path", value: "/home/me/Documents/Retake_Package", absolute: true }];
+
+function writeRoot() {
+  return root({ permissions: { read: true, create: true, modify: true, move: true, execute: true } });
+}
+
+test("a briefing-shaped request is read-only on an ordinary turn", () => {
+  const turn = prepare(BRIEFING_GOAL, { grants: [writeRoot()], resolvedResources: PACKAGE });
+  assert.equal(turn.grant.grantedCapabilities.includes("coding"), false);
+  assert.equal(turn.grant.grantedCapabilities.includes("command_execution"), false);
+});
+
+test("a goal continuation turn gets coding, commands, app control and connections", () => {
+  const turn = prepareTurn({
+    request: "Continue working toward the active thread goal.",
+    goalObjective: BRIEFING_GOAL,
+    resolvedResources: PACKAGE,
+    surface: "dashboard_terminal",
+    userId: 1,
+    grants: [writeRoot()],
+    workspaceRoot: WORKSPACE,
+  });
+  const granted = new Set(turn.grant.grantedCapabilities);
+  for (const capability of ["coding", "command_execution", "application_action", "mcp", "skill"]) {
+    assert.ok(granted.has(capability), `goal turn should grant ${capability}`);
+  }
+  assert.equal(turn.decision.mode, "scoped_implementation");
+  assert.equal(turn.blocked, false);
+});
+
+test("a goal whose folder has no write grant asks for it instead of running review-only", () => {
+  const turn = prepare(BRIEFING_GOAL, { grants: [root()], goalMode: true, resolvedResources: PACKAGE });
+  assert.equal(turn.blocked, true);
+  assert.ok(turn.pendingPermissions.some((permission) => permission.kind === "filesystem"));
+});
+
+test("a goal without a folder gains no filesystem class, so it never stalls on one", () => {
+  const turn = prepare("Keep researching solid-state battery suppliers until you have ten verified ones.", { goalMode: true });
+  assert.equal(turn.blocked, false);
+  assert.equal(turn.plan.requiredCapabilities.includes("coding"), false);
+  assert.ok(turn.grant.grantedCapabilities.includes("command_execution"));
+});
+
+test("YOLO plans the briefing to act, so its preflight has something to approve", () => {
+  const turn = prepare(BRIEFING_GOAL, { grants: [writeRoot()], yoloMode: true, resolvedResources: PACKAGE });
+  assert.ok(turn.grant.grantedCapabilities.includes("coding"));
+  assert.ok(turn.grant.grantedCapabilities.includes("application_action"));
+});
+
+test("goal and YOLO never widen an isolated session", () => {
+  const turn = prepare(BRIEFING_GOAL, { grants: [writeRoot()], goalMode: true, yoloMode: true, isolated: true, resolvedResources: PACKAGE });
+  assert.equal(turn.grant.grantedCapabilities.includes("coding"), false);
+  assert.equal(turn.grant.grantedCapabilities.includes("command_execution"), false);
+});
+
+test("YOLO with no folder named still gets write reach across the machine, with no card", async () => {
+  const { yoloReachGrants } = await import("../src/lib/hermes/yolo-reach.ts");
+  const driveRoot = path.parse(process.cwd()).root;
+  const turn = prepare("ok apply the doctor assignment fix in mendix and test it", {
+    grants: yoloReachGrants(1, [driveRoot]),
+    yoloMode: true,
+  });
+  assert.equal(turn.blocked, false);
+  assert.deepEqual(turn.pendingPermissions, []);
+  assert.ok(turn.grant.grantedCapabilities.includes("coding"));
+  assert.ok(turn.grant.grantedCapabilities.includes("command_execution"));
+  const writeRules = turn.grant.permissionRules.filter((rule) => rule.permission === "write" && rule.action === "allow");
+  assert.ok(writeRules.some((rule) => rule.pattern === `${driveRoot.split(path.sep).join("/").replace(/\/+$/, "")}/**`),
+    `expected a whole-drive write rule, got ${JSON.stringify(writeRules)}`);
+});
+
+test("without YOLO the same unnamed request does not gain write reach", () => {
+  const turn = prepare("ok apply the doctor assignment fix in mendix and test it");
+  assert.equal(turn.grant.grantedCapabilities.includes("coding"), false);
+});
+
+test("drive roots are reach, never swept for produced artifacts", async () => {
+  const { isFilesystemRoot } = await import("../src/lib/hermes/yolo-reach.ts");
+  assert.equal(isFilesystemRoot(path.parse(process.cwd()).root), true);
+  assert.equal(isFilesystemRoot(process.cwd()), false);
 });

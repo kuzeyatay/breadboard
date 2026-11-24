@@ -15,6 +15,7 @@
   background: var(--color-surface);
   border: 1px solid var(--color-border-strong);
   border-radius: 999px;
+  corner-shape: round;
 }
 
 .search:focus-within {
@@ -153,6 +154,7 @@
   padding: 3px;
   background: var(--color-bg-muted);
   border-radius: 999px;
+  corner-shape: round;
 }
 
 .segmented button {
@@ -163,6 +165,7 @@
   background: none;
   border: 0;
   border-radius: 999px;
+  corner-shape: round;
 }
 
 .segmented button[aria-pressed='true'] {
@@ -221,6 +224,7 @@
   background: none;
   border: 0;
   border-radius: 999px;
+  corner-shape: round;
   opacity: 0;
 }
 
@@ -301,6 +305,7 @@
   font-weight: 700;
   background: var(--color-bg-muted);
   border-radius: 999px;
+  corner-shape: round;
 }
 
 .ad {

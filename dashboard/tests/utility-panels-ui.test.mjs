@@ -103,7 +103,11 @@ test('utility panels open without waiting or rerendering Terminal, and use small
   await appearance.click();
   const picker=page.getByRole('dialog',{name:'Appearance',exact:true});
   await expect(picker).toBeVisible();
-  assert.deepEqual(await style(picker),notificationStyle,'both panels use the same geometry, material and header');
+  // Notifications are deliberately the slimmer panel (400px vs 480px); every
+  // other part of the geometry, the material and the header stay shared.
+  assert.equal(notificationStyle.width,'400px','notifications use the slimmer panel');
+  assert.equal((await style(picker)).width,'480px','other utility panels keep the standard width');
+  assert.deepEqual({...await style(picker),width:null},{...notificationStyle,width:null},'both panels use the same radius, material and header');
   const previews=picker.locator('.browser-wallpaper-thumbnail > img');
   await expect(previews).toHaveCount(6);
   await expect.poll(()=>previews.evaluateAll(images=>images.every(image=>image.complete&&image.naturalWidth===400))).toBe(true);

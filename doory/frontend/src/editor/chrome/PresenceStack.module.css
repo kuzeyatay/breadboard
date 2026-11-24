@@ -14,6 +14,7 @@
   padding: 0;
   border: 2px solid var(--ed-surface);
   border-radius: 50%;
+  corner-shape: round;
   background: var(--ed-surface);
   cursor: pointer;
   transition:
@@ -46,6 +47,7 @@
   place-items: center;
   overflow: hidden;
   border-radius: 50%;
+  corner-shape: round;
   font-family: var(--font-sans);
   font-weight: 700;
   line-height: 1;

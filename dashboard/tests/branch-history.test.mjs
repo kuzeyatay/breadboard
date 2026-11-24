@@ -110,7 +110,7 @@ test("the sessions endpoint restores only the projected active branch", () => {
   assert.match(sessionsRoute, /from "@\/lib\/hermes\/session-presentation\.ts"/);
   assert.match(
     sessionPresentation,
-    /const conversationMessages = projectConversationBranchMessages\(\s*listConversationMessages\(conversation\.id\),?\s*\);[\s\S]{0,100}conversationMessages\.map/,
+    /const conversationMessages = projectConversationBranchMessages\(\s*listConversationTranscript\(conversation\.id\),?\s*\);[\s\S]{0,100}conversationMessages\.map/,
   );
 });
 

@@ -1,4 +1,5 @@
 import type { SketchBox, SketchOutlines } from "./hermes/sketch-outline";
+import { SQUIRCLE_BEZIER_HANDLE } from "./squircle-corner.ts";
 
 const inset = 1.75;
 const round = (n: number) => Math.round(n * 100) / 100;
@@ -11,7 +12,9 @@ function outline(box: SketchBox, seed: number, wobble: number): string {
   const right = Math.max(left, box.width - inset);
   const bottom = Math.max(top, box.height - inset);
   const r = Math.max(0, Math.min(box.radius, (right - left) / 2, (bottom - top) / 2));
-  const k = r * 0.55228475;
+  // One cubic per corner: the circle's handle, or the squircle's when the dock
+  // renders `corner-shape: squircle`, so the line stays on the dock's edge.
+  const k = r * (box.squircle ? SQUIRCLE_BEZIER_HANDLE : 0.55228475);
   let path = `M ${round(left + r)} ${top}`;
   function curve(...values: number[]) { path += ` C ${values.map(round).join(" ")}`; }
   function edge(x: number, y: number, dx: number, dy: number, length: number, phase: number) {

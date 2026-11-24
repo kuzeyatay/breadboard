@@ -4,6 +4,7 @@ import {
 } from "../chat-token-usage.ts";
 import { assistantHandoffContent, type AssistantHandoffMessage } from "./assistant-visible-content.ts";
 import type { MaxResearchProgress } from "../max-research/progress.ts";
+import { isDelegationPrompt } from "./delegated-response.ts";
 
 const SUPER_AGENT_TOOL_LABELS: Readonly<Record<string, string>> = {
   agent_launch: "Choosing an agent",
@@ -11,6 +12,7 @@ const SUPER_AGENT_TOOL_LABELS: Readonly<Record<string, string>> = {
   multisim: "Working on circuit",
   workflow_run: "Running automation",
   workflow_create: "Creating automation",
+  workflow_update: "Editing automation",
   mcp_call: "Using connected service",
   capability_search: "Searching capabilities",
   capability_gap: "Finding a capability",
@@ -109,6 +111,7 @@ interface DelegationPresentationMessage extends AssistantHandoffMessage {
   clientMessageId?: string;
   progressNotes?: string[];
   internalAgentContinuation?: boolean;
+  goalContinuation?: boolean;
   delegatedAgentRun?: boolean;
   delegatedAgentPreamble?: string;
   godsEyeRun?: unknown;
@@ -152,14 +155,13 @@ export function supersededDelegationAssistantIndices(
   let visibleAssistantIndex = -1;
   for (let index = 0; index < messages.length; index += 1) {
     const message = messages[index]!;
-    if (message.role === "user" && message.internalAgentContinuation !== true) {
+    if (message.role === "user" && !isDelegationPrompt(message)) {
       visibleAssistantIndex = -1;
       continue;
     }
     if (!visibleAssistantCandidate(message)) continue;
     if (
-      messages[index - 1]?.role === "user" &&
-      messages[index - 1]?.internalAgentContinuation === true &&
+      isDelegationPrompt(messages[index - 1]) &&
       visibleAssistantIndex >= 0
     ) {
       const visibleAssistant = messages[visibleAssistantIndex]!;
@@ -200,8 +202,7 @@ export function delegatedContinuationPreamble(
 ): string {
   if (
     messages[assistantIndex]?.role !== "assistant" ||
-    messages[assistantIndex - 1]?.role !== "user" ||
-    messages[assistantIndex - 1]?.internalAgentContinuation !== true
+    !isDelegationPrompt(messages[assistantIndex - 1])
   ) {
     return "";
   }
@@ -209,7 +210,7 @@ export function delegatedContinuationPreamble(
   const superseded = supersededDelegationAssistantIndices(messages);
   for (let index = assistantIndex - 2; index >= 0; index -= 1) {
     const message = messages[index]!;
-    if (message.role === "user" && message.internalAgentContinuation !== true) {
+    if (message.role === "user" && !isDelegationPrompt(message)) {
       break;
     }
     if (!visibleAssistantCandidate(message)) continue;
@@ -280,8 +281,7 @@ function delegatedContinuationPriorPhases(
 ): DelegatedContinuationPhaseMessage[] {
   if (
     messages[assistantIndex]?.role !== "assistant" ||
-    messages[assistantIndex - 1]?.role !== "user" ||
-    messages[assistantIndex - 1]?.internalAgentContinuation !== true
+    !isDelegationPrompt(messages[assistantIndex - 1])
   ) {
     return [];
   }
@@ -292,7 +292,7 @@ function delegatedContinuationPriorPhases(
   for (let index = assistantIndex - 2; index >= 0; index -= 1) {
     const message = messages[index]!;
     if (message.role === "user") {
-      if (message.internalAgentContinuation === true) continue;
+      if (isDelegationPrompt(message)) continue;
       break;
     }
     if (!superseded.has(index) && message.delegatedAgentRun !== true) break;
@@ -397,6 +397,7 @@ interface DelegatedWorkerMessage {
   delegatedAgentPreamble?: string;
   godsEyeRun?: unknown;
   internalAgentContinuation?: boolean;
+  goalContinuation?: boolean;
   externalAgentOutcome?: string;
   externalAgentName?: string;
   externalAgentResult?: string;
@@ -456,7 +457,7 @@ export function delegatedWorkersForMessage<T extends DelegatedWorkerMessage>(
   for (let index = assistantIndex + 1; index < messages.length; index += 1) {
     const message = messages[index]!;
     if (message.role === "user") {
-      if (message.internalAgentContinuation === true) continue;
+      if (isDelegationPrompt(message)) continue;
       break;
     }
     if (message.delegatedAgentRun === true) {

@@ -14,7 +14,7 @@ import { BROWSER_REVEAL_TERMINAL_EVENT, type BrowserInlineNestedThread } from "@
 // wrappers stay thin.
 
 import { voiceHostMessages } from "@/lib/speech/voice-host-messages";
-import { delegatedResponsePresentation } from "@/lib/hermes/delegated-response";
+import { delegatedResponsePresentation, isDelegationPrompt } from "@/lib/hermes/delegated-response";
 import {
   useCallback,
   useEffect,
@@ -1311,7 +1311,7 @@ export default function AgentRuntimePanel({
         supersededDelegationAssistants.has(index) ||
         (storedMessage.delegatedAgentRun === true &&
           !storedMessage.godsEyeRun &&
-          messages[index + 1]?.internalAgentContinuation === true)
+          isDelegationPrompt(messages[index + 1]))
       ) {
         return;
       }
@@ -2521,7 +2521,7 @@ export default function AgentRuntimePanel({
                 );
                 const isAgentContinuationResponse = Boolean(
                   message.role === "assistant" &&
-                    messages[index - 1]?.internalAgentContinuation === true,
+                    isDelegationPrompt(messages[index - 1]),
                 );
                 const continuationPreamble =
                   delegatedContinuationPreamble(messages, index);

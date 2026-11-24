@@ -34,7 +34,7 @@ export default function SettingsMessagingNotifications({ channel, connected }: {
     return () => { mounted.current = false; clearInterval(timer); };
   }, [refresh]);
 
-  async function save(enabled: boolean, recipient: string) {
+  async function save(enabled: boolean, recipient: string, includeChatCompletions?: boolean) {
     if (saving.current) return;
     saving.current = true;
     generation.current++;
@@ -44,7 +44,7 @@ export default function SettingsMessagingNotifications({ channel, connected }: {
       const response = await fetch("/api/messaging-notifications", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ channel, enabled, recipient }),
+        body: JSON.stringify({ channel, enabled, recipient, includeChatCompletions }),
       });
       const payload = await response.json();
       if (!response.ok || !payload.settings) throw new Error(payload.error || "Couldn’t save notification settings.");
@@ -108,6 +108,13 @@ export default function SettingsMessagingNotifications({ channel, connected }: {
         </p>
       ) : <p className="text-xs text-[var(--ink-muted)]">Loading notification settings…</p>}
 
+      {channel === "telegram" && settings?.enabled && (
+        <label className="flex items-center gap-2 text-sm text-[var(--ink-heading)]">
+          <input type="checkbox" checked={settings.includeChatCompletions ?? true} disabled={busy}
+            onChange={event => void save(settings.enabled, recipient, event.target.checked)} />
+          Notify me when a chat finishes
+        </label>
+      )}
       {settings?.enabled ? <p className="text-xs text-[var(--ink-muted)]">
         {connected ? "New notifications are sent while Breadboard is running. Older notifications won’t be resent." : "Delivery is paused until you connect below. Keep Breadboard running to receive notifications."}
       </p> : null}

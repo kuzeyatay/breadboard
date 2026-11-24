@@ -13,6 +13,7 @@
 import type { HermesSurface, HermesMode } from "./config.ts";
 import type { ApprovedFilesystemRoot } from "./filesystem-paths.ts";
 import {
+  elevateForGoal,
   elevateForSuperAgent,
   planTask,
   type TaskCapability,
@@ -29,6 +30,16 @@ export interface PrepareTurnInput {
   request: string;
   /** Worker output is evidence for synthesis, never a fresh filesystem request. */
   internalAgentContinuation?: boolean;
+  /** Current objective of a server-validated automatic goal turn. */
+  goalObjective?: string;
+  /**
+   * This turn pursues a persistent goal: a continuation, a turn in a
+   * conversation whose goal is active, or the turn that starts one. A goal is an
+   * end state to reach, so its plan is widened to act, not only to inspect.
+   */
+  goalMode?: boolean;
+  /** YOLO is on: the turn is planned to act, and the YOLO preflight approves it. */
+  yoloMode?: boolean;
   priorRequests?: string[];
   resolvedResources?: TaskPlan["requiredResources"];
   surface: HermesSurface;
@@ -66,20 +77,26 @@ export interface PreparedTurn {
 export function prepareTurn(input: PrepareTurnInput): PreparedTurn {
   const isolated = input.isolated === true || input.userId === null;
   const planned = planTask({
-    request: input.internalAgentContinuation
+    request: input.goalObjective ?? (input.internalAgentContinuation
       ? "Summarize the completed worker results for the user."
-      : input.request,
+      : input.request),
     priorRequests: input.internalAgentContinuation ? [] : input.priorRequests,
-    resolvedResources: input.internalAgentContinuation ? [] : input.resolvedResources,
+    resolvedResources: input.internalAgentContinuation && !input.goalObjective ? [] : input.resolvedResources,
     authenticated: input.userId !== null,
     isolated,
   });
   // Super agent widens the plan, never the broker's rules: an isolated session
   // gets nothing extra, and the elevated classes are brokered like any other.
-  const plan =
+  const superPlan =
     input.superAgent === true && !isolated
       ? elevateForSuperAgent(planned)
       : planned;
+  const goalTurn = input.goalMode === true || input.goalObjective !== undefined;
+  const plan =
+    isolated || !(goalTurn || input.yoloMode === true)
+      ? superPlan
+      // YOLO is the wider of the two, so a YOLO goal turn takes YOLO's reach.
+      : elevateForGoal(superPlan, input.yoloMode === true ? "yolo" : "goal");
   const grant = brokerCapabilities({
     plan,
     surface: input.surface,
@@ -175,7 +192,13 @@ export function decisionForGrant(
     allowedTools: Object.entries(grant.allowedTools)
       .filter(([, enabled]) => enabled)
       .map(([tool]) => tool),
-    allowedOperations: [],
+    allowedOperations: [
+      "knowledge_work",
+      ...(grant.allowedTools.workspace_read ? ["workspace_read" as const] : []),
+      ...(grant.allowedTools.workspace_write ? ["workspace_write" as const] : []),
+      ...(capabilities.has("filesystem_read") ? ["source_read" as const] : []),
+      ...(capabilities.has("coding") ? ["code_write" as const] : []),
+    ],
     allowedCommandPatterns: grant.permissionRules
       .filter((rule) => rule.action === "allow" && rule.permission === "bash")
       .map((rule) => rule.pattern),

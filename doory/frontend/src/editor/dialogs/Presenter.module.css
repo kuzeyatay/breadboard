@@ -125,6 +125,7 @@
   padding: 0 var(--space-4);
   border: 1px solid color-mix(in srgb, var(--color-on-stage) 30%, transparent);
   border-radius: var(--radius-full);
+  corner-shape: round;
   background: transparent;
   color: var(--color-on-stage);
   font: 600 var(--text-sm) / 1 var(--font-sans);
@@ -257,6 +258,7 @@
   padding: 0;
   border: 0;
   border-radius: var(--radius-full);
+  corner-shape: round;
   background: transparent;
   color: var(--color-on-stage);
   cursor: pointer;
@@ -394,6 +396,7 @@
   height: 22px;
   margin: -11px 0 0 -11px;
   border-radius: 50%;
+  corner-shape: round;
   background: radial-gradient(circle, var(--color-brand) 0 34%, color-mix(in srgb, var(--color-brand) 45%, transparent) 36% 62%, transparent 70%);
   box-shadow: 0 0 16px 6px color-mix(in srgb, var(--color-brand) 55%, transparent);
   opacity: 0;

@@ -52,6 +52,7 @@
   padding: 0;
   border: 3px solid #fff;
   border-radius: 50%;
+  corner-shape: round;
   box-shadow: 0 0 0 1px rgb(0 0 0 / 0.4), 0 2px 5px rgb(0 0 0 / 0.3);
   cursor: grab;
   touch-action: none;

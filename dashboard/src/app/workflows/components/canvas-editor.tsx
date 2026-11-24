@@ -5,7 +5,7 @@
 // palette, connect-to-add-edge, selection, delete/duplicate, inline rename,
 // and debounced persistence.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import ReactFlow, {
   Background,
   BackgroundVariant,
@@ -22,18 +22,21 @@ import ReactFlow, {
 import "reactflow/dist/style.css";
 import { BLOCK_DIMENSIONS } from "@/lib/sim/workflow-renderer";
 import BreadboardLoader from "@/app/components/breadboard-loader";
+import SpacesShell, { type SpacesGarden } from "@/app/spaces/spaces-shell";
 import { BlockPalette, PALETTE_DRAG_MIME } from "./block-palette";
 import { ConfigPanel } from "./config-panel";
 import { RunDrawer } from "./run-drawer";
 import { WorkflowEdge } from "./workflow-edge";
 import { WorkflowNode, type WorkflowNodeData } from "./workflow-node";
-import { useWorkflowPersistence } from "../hooks/use-workflow-persistence";
+import { lastSentVersion, useWorkflowPersistence, workflowVersionKey } from "../hooks/use-workflow-persistence";
 import type { WorkflowStateJson } from "../lib/types";
 import { useWorkflowStore } from "../stores/workflow-store";
 
 const nodeTypes: NodeTypes = { workflowBlock: WorkflowNode };
 const edgeTypes: EdgeTypes = { workflowEdge: WorkflowEdge };
 const CANVAS_REFIT_DELAY_MS = 120;
+/** How often the open canvas looks for a version Bread saved from the assistant. */
+const REMOTE_CHECK_MS = 2500;
 
 function useSaveStatusLabel(status: ReturnType<typeof useWorkflowPersistence>): string {
   switch (status) {
@@ -246,18 +249,27 @@ function CanvasSurface({ workflowId }: { workflowId: string }) {
   );
 }
 
+/**
+ * A workflow opens like any Spaces file: under the Spaces header (Spaces /
+ * Workflows / its name, renamed in place) with Bread in the corner, the same
+ * assistant the Garden reader uses, holding this workflow's own chats.
+ */
 export function CanvasEditor({
   workflowId,
   initialName,
   initialDescription,
   initialState,
-  onBack,
+  showFlowers,
+  garden,
+  notice,
 }: {
   workflowId: string;
   initialName: string;
   initialDescription: string;
   initialState: WorkflowStateJson | null;
-  onBack: () => void;
+  showFlowers: boolean;
+  garden: SpacesGarden | null;
+  notice?: ReactNode;
 }) {
   const hydrate = useWorkflowStore((state) => state.hydrate);
   const reset = useWorkflowStore((state) => state.reset);
@@ -280,52 +292,95 @@ export function CanvasEditor({
     setNameDraft(name);
   }, [name]);
 
-  if (!hydrated || currentId !== workflowId) {
-    return (
-      <div className="flex flex-1 items-center justify-center">
-        <BreadboardLoader className="h-5 w-5 text-[var(--botanical)]" />
-      </div>
-    );
-  }
+  // Bread can change this workflow from the assistant beside it. Pick up a saved
+  // version that differs from the canvas, but only while the canvas has nothing
+  // of its own waiting to save; otherwise the next autosave would quietly undo
+  // Bread's change, or Bread's change would undo the user's.
+  const saveStatusRef = useRef(saveStatus);
+  saveStatusRef.current = saveStatus;
+  useEffect(() => {
+    let stopped = false;
+    let inFlight = false;
+    // The version on the server the canvas is in step with: what it opened, then
+    // whatever it saved or reloaded since.
+    let synced = workflowVersionKey(initialName, initialState ?? null);
+    const busySaving = () => saveStatusRef.current === "pending" || saveStatusRef.current === "saving";
+    const check = async () => {
+      if (inFlight || document.visibilityState !== "visible") return;
+      const store = useWorkflowStore.getState();
+      if (!store.hydrated || store.workflowId !== workflowId) return;
+      if (busySaving()) return;
+      inFlight = true;
+      try {
+        const response = await fetch(`/api/workflows/${encodeURIComponent(workflowId)}`, { cache: "no-store" });
+        if (!response.ok || stopped) return;
+        const remote = (await response.json()) as { name?: string; description?: string; state?: WorkflowStateJson | null };
+        const latest = useWorkflowStore.getState();
+        if (busySaving() || latest.workflowId !== workflowId) return;
+        const version = workflowVersionKey(remote.name, remote.state ?? null);
+        if (version === synced) return;
+        if (version === lastSentVersion.get(workflowId)) {
+          synced = version;
+          return;
+        }
+        synced = version;
+        latest.hydrate({
+          id: workflowId,
+          name: remote.name ?? latest.name,
+          description: remote.description ?? latest.description,
+          state: remote.state ?? null,
+        });
+      } catch {
+        // Offline for a moment: the next check tries again.
+      } finally {
+        inFlight = false;
+      }
+    };
+    const timer = window.setInterval(() => void check(), REMOTE_CHECK_MS);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
+    // initialName/initialState are the opening version only; a reload must not restart the watch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workflowId]);
+
+  const ready = hydrated && currentId === workflowId;
 
   return (
-    <div className="sim-canvas flex min-h-0 flex-1 flex-col">
-      <div className="flex shrink-0 items-center justify-between gap-3 border-b border-[var(--line)] bg-[var(--paper-surface)] px-4 py-2">
-        <div className="flex min-w-0 items-center gap-2">
-          <button
-            type="button"
-            onClick={onBack}
-            className="flex shrink-0 items-center gap-1 text-xs text-[var(--ink-muted)] transition-colors hover:text-[var(--ink)]"
-          >
-            <BackIcon /> All workflows
-          </button>
-          <span className="text-[var(--ink-faint)]">/</span>
-          <input
-            value={nameDraft}
-            onChange={(event) => setNameDraft(event.target.value)}
-            onBlur={() => setName(nameDraft.trim() || "Untitled workflow")}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") (event.target as HTMLInputElement).blur();
-            }}
-            className="min-w-0 max-w-xs rounded-lg border border-transparent bg-transparent px-1.5 py-1 text-sm font-semibold text-[var(--ink-heading)] outline-none focus:border-[var(--line)] focus:bg-[var(--paper-raised)]"
-          />
+    <SpacesShell
+      showFlowers={showFlowers}
+      garden={garden}
+      pageKey={`workflow:${workflowId}`}
+      trail={["Workflows"]}
+      title={
+        <input
+          value={nameDraft}
+          aria-label="Workflow name"
+          onChange={(event) => setNameDraft(event.target.value)}
+          onBlur={() => setName(nameDraft.trim() || "Untitled workflow")}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") (event.target as HTMLInputElement).blur();
+          }}
+          disabled={!ready}
+          className="min-w-0 max-w-xs rounded-lg border border-transparent bg-transparent px-1.5 py-1 text-sm text-[var(--ink-muted)] outline-none focus:border-[var(--line)] focus:bg-[var(--paper-raised)] focus:text-[var(--ink-heading)]"
+        />
+      }
+      actions={<span className="text-[11px] text-[var(--ink-faint)]">{saveLabel}</span>}
+    >
+      {notice}
+      {ready ? (
+        <div className="sim-canvas flex min-h-0 flex-1">
+          <BlockPalette />
+          <ReactFlowProvider>
+            <CanvasSurface workflowId={workflowId} />
+          </ReactFlowProvider>
         </div>
-        <span className="shrink-0 text-[11px] text-[var(--ink-faint)]">{saveLabel}</span>
-      </div>
-      <div className="flex min-h-0 flex-1">
-        <BlockPalette />
-        <ReactFlowProvider>
-          <CanvasSurface workflowId={workflowId} />
-        </ReactFlowProvider>
-      </div>
-    </div>
-  );
-}
-
-function BackIcon() {
-  return (
-    <svg aria-hidden className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 19.5 3 12m0 0 7.5-7.5M3 12h18" />
-    </svg>
+      ) : (
+        <div className="flex flex-1 items-center justify-center">
+          <BreadboardLoader className="h-5 w-5 text-[var(--botanical)]" />
+        </div>
+      )}
+    </SpacesShell>
   );
 }

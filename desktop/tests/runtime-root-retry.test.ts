@@ -94,7 +94,7 @@ test("a failed Runtime root is retried before service-snapshot validation", () =
   assert.match(source, /export const RUNTIME_ROOT_RETRY_ID = "desktop-runtime";/);
   assert.match(
     source,
-    /serviceId === RUNTIME_ROOT_RETRY_ID[\s\S]{0,220}return this\.retryRuntimeRoot\(\);[\s\S]{0,220}const snapshot = runtime\?\.snapshot\(\);/,
+    /serviceId === RUNTIME_ROOT_RETRY_ID[\s\S]{0,220}return this\.retryRuntimeRoot\(\);[\s\S]{0,700}const snapshot = await runtime\.status\(\)\.catch\(\(\) => runtime\.snapshot\(\)\);/,
   );
   assert.match(
     source,

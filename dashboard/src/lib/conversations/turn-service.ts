@@ -59,7 +59,9 @@ import {
 import {
   decideAutonomy,
   riskClassForPermission,
+  tierAllows,
 } from "../hermes/autonomy.ts";
+import { yoloReachGrants } from "../hermes/yolo-reach.ts";
 import { composeHermesSystemPrompt } from "../hermes/system-prompts.ts";
 import { suppliedEvidenceText } from "../hermes/evidence-calibration.ts";
 import { ApiError } from "../hermes/route-core.ts";
@@ -257,9 +259,11 @@ import {
   GOAL_MODE_SKILL,
   readGoalModeState,
   clearGoalContinuationDeferral,
+  parseGoalCommand,
+  applyGoalCommand,
   type GoalModeState,
 } from "../goal-mode.ts";
-import { goalCommandText } from "../hermes/goal-intent.ts";
+import { goalCommandText, shouldAutoSelectGoal } from "../hermes/goal-intent.ts";
 import { goalContinuationCurrent } from "../goal-continuation.ts";
 import { restrictSwarmWorkerDecision, workerToolAllowed, type SwarmWorkerScope } from "../swarm/worker-policy.ts";
 import { swarmWorkerCurrent } from "../swarm/worker-adapter.ts";
@@ -638,15 +642,16 @@ export async function startConversationTurn(
     );
   }
 
+  const workerHandback = input.internalAgentContinuation === true && !input.goalContinuation;
   const workflowContinuation = !input.branchHistory ? resolveUnifiedWorkflowContinuation({
     userId: input.conversation.user_id, conversationId: input.conversation.id,
     clientMessageId: input.clientMessageId, continuationText: input.text,
-    internalAgentContinuation: input.internalAgentContinuation,
+    internalAgentContinuation: workerHandback,
   }) : null;
   const hyperframesDelivery = !input.branchHistory && !workflowContinuation ? await deliverCompletedHyperframes({
     userId: input.conversation.user_id, conversationId: input.conversation.id,
     clientMessageId: input.clientMessageId, continuationText: input.text,
-    internalAgentContinuation: input.internalAgentContinuation,
+    internalAgentContinuation: workerHandback,
   }) : null;
   if (hyperframesDelivery) {
     return { accepted: false, clarified: true,
@@ -656,7 +661,7 @@ export async function startConversationTurn(
     conversationId: input.conversation.id,
     clientMessageId: input.clientMessageId,
     continuationText: input.text,
-    internalAgentContinuation: input.internalAgentContinuation,
+    internalAgentContinuation: workerHandback,
   }) : null;
   if (researchDelivery) {
     return { accepted: false, clarified: true,
@@ -744,19 +749,44 @@ export async function startConversationTurn(
     memory.recentMessages.filter(
       (message) => message.client_message_id !== input.clientMessageId,
     );
+  // An explicit `/goal <objective>` sets the goal here, on the server, before
+  // the model runs — as Codex's `/goal` does from its client. Leaving it to the
+  // model's create_goal call meant a turn that skipped the call left no goal
+  // and no card. Typing a new `/goal` is the person's own replacement of any
+  // unfinished one; `/goal pause|resume|clear` are the person's controls.
+  const explicitGoal =
+    input.surface === "quartz_ai" || input.chatCoordination || input.goalContinuation ||
+    input.internalAgentContinuation
+      ? null
+      : parseGoalCommand(input.text);
+  if (explicitGoal) {
+    applyGoalCommand(input.conversation.public_id, explicitGoal);
+    recordAuditEvent({
+      eventType: "goal_mode.user_command",
+      runtimeSessionId: null,
+      userId: input.conversation.user_id,
+      gardenId: null,
+      payload: { conversationPublicId: input.conversation.public_id, command: explicitGoal.kind },
+    });
+  }
+  const existingGoal = input.surface === "quartz_ai" ? null : readGoalModeState(input.conversation.public_id);
+  // Only the server scheduler supplies this identity. A worker report still
+  // goes through synthesis, even when the chat also has an active goal.
+  const goalObjective = input.goalContinuation && existingGoal?.goal_id === input.goalContinuation.goalId
+    ? existingGoal.objective : undefined;
   const priorRequests = currentConversationMessages
     .filter((message) => message.role === "user" && !presentConversationMessage(message).metadata.chatCoordination)
     .slice(-8)
     .map((message) => message.content);
   let resolvedResources = resolveVerifiedFilesystemReferences(
-    input.text,
+    goalObjective ?? input.text,
     currentConversationMessages,
   );
   let referenceSource: "current_chat" | "cross_chat" | null =
     resolvedResources.length > 0 ? "current_chat" : null;
   if (resolvedResources.length === 0 && memory.crossConversation) {
     resolvedResources = resolveVerifiedCrossChatFilesystemReferences(
-      input.text,
+      goalObjective ?? input.text,
       memory.crossConversation.messages,
     );
     if (resolvedResources.length > 0) referenceSource = "cross_chat";
@@ -803,14 +833,41 @@ export async function startConversationTurn(
   if (input.branchHistory !== undefined) {
     clearResearchState(input.conversation.id);
   }
+  // A goal turn is planned to act, not only to inspect: the continuation, any
+  // turn while the goal is active, and the turn that starts one.
+  const goalTurn = !input.chatCoordination && input.surface !== "quartz_ai" && (
+    goalObjective !== undefined ||
+    existingGoal?.status === "active" ||
+    /^\/goal\b/i.test(input.text.trim()) ||
+    shouldAutoSelectGoal({
+      text: input.text,
+      surface: input.surface,
+      authenticated: true,
+      internalContinuation: input.internalAgentContinuation === true,
+      hasActiveGoal: existingGoal !== null && existingGoal.status !== "complete",
+    }));
+  // YOLO means the whole machine for this turn, with no card: read, write and
+  // run on every local drive, whatever the message happened to name. Held in
+  // memory for this turn only; the autonomy tier is still the ceiling.
+  const yoloReach =
+    approvalPolicy.yoloMode &&
+    !input.chatCoordination &&
+    input.surface !== "quartz_ai" &&
+    tierAllows(getHermesUserSettings(input.conversation.user_id).autonomyTier, "write")
+      ? yoloReachGrants(input.conversation.user_id)
+      : [];
+  const turnGrants = [...filesystemGrants, ...yoloReach];
   let prepared = prepareTurn({
     request: input.text,
+    goalObjective,
+    goalMode: goalTurn,
+    yoloMode: approvalPolicy.yoloMode,
     internalAgentContinuation: input.internalAgentContinuation,
     priorRequests,
     resolvedResources,
     surface: input.surface,
     userId: input.conversation.user_id,
-    grants: filesystemGrants,
+    grants: turnGrants,
     workspaceRoot: session.activeDirectory,
     confirmedPermissionIds: input.confirmedPermissionIds,
     interactiveApprovals: approvalPolicy.interactiveApprovals,
@@ -919,12 +976,15 @@ export async function startConversationTurn(
         }
         const regranted = prepareTurn({
           request: input.text,
+          goalObjective,
+          goalMode: goalTurn,
+          yoloMode: approvalPolicy.yoloMode,
           internalAgentContinuation: input.internalAgentContinuation,
           priorRequests,
           resolvedResources,
           surface: input.surface,
           userId: input.conversation.user_id,
-          grants: listFilesystemGrants(input.conversation.user_id),
+          grants: [...listFilesystemGrants(input.conversation.user_id), ...yoloReach],
           workspaceRoot: session.activeDirectory,
           confirmedPermissionIds: [
             ...(input.confirmedPermissionIds ?? []),
@@ -1166,13 +1226,6 @@ export async function startConversationTurn(
     !input.surfaceContext?.deliveryChannel &&
     Boolean(input.internalAgentContinuation || input.goalContinuation || input.taskContinuation || input.scheduledChatReceipt) &&
     telegramAttentionAlertsOn(input.conversation.user_id);
-  // Whatever goal this conversation is already under, read before anything is
-  // selected: it decides both whether the Goal skill has anything to do this
-  // turn and whether the goal tools travel on the run at all.
-  const existingGoal =
-    input.surface === "quartz_ai"
-      ? null
-      : readGoalModeState(input.conversation.public_id);
   // Last in the chain, and deliberately so. Automatic selection adds one skill,
   // so anything that fires ahead of this has claimed the turn on its own
   // subject — and "keep watching this stream until they announce the price" is
@@ -2140,7 +2193,7 @@ export async function startConversationTurn(
   // the agent whose work it is entirely built from. The hidden worker turn is
   // the durable authority; the live launch queue is a richer fallback for
   // legacy hand-backs that predate the marker.
-  const carriedDelegations = input.internalAgentContinuation
+  const carriedDelegations = workerHandback
     ? await withDelegatedResearchSources(
         carriedExternalAgentsForContinuation({
           continuationText: input.text,
@@ -2201,7 +2254,7 @@ export async function startConversationTurn(
       ...(goalMode
         ? {
             goalMode: {
-              goalId: goalModeState?.goal_id ?? null,
+              goalId: goalModeState?.status === "complete" ? null : goalModeState?.goal_id ?? null,
               enabled: true,
               automatic: Boolean(input.goalContinuation),
               ...(input.goalContinuation ? { previousRunIds: [...(continuationDispatch?.goalMode?.previousRunIds ?? []), input.goalContinuation.sourceRunId] } : {}),

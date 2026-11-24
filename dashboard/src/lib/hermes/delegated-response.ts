@@ -3,6 +3,7 @@ interface DelegatedResponseMessage {
   content: string;
   clientMessageId?: string;
   internalAgentContinuation?: boolean;
+  goalContinuation?: boolean;
   delegatedAgentRun?: boolean;
   externalAgentOutcome?: string;
   externalAgentResult?: string;
@@ -29,8 +30,7 @@ export function delegatedResponsePresentation(
 ): { stateLabel?: string; failed: boolean; fallbackContent: string } {
   const message = messages[index];
   if (message?.role !== "assistant" || message.delegatedAgentRun ||
-      messages[index - 1]?.role !== "user" ||
-      !messages[index - 1]?.internalAgentContinuation) {
+      !isDelegationPrompt(messages[index - 1])) {
     return { failed: false, fallbackContent: "" };
   }
   // Persisted terminal state wins over a stale transport flag after reconnect.
@@ -42,7 +42,7 @@ export function delegatedResponsePresentation(
   if (failed || interrupted || incomplete) {
     for (let cursor = index - 2; cursor >= 0; cursor -= 1) {
       const prior = messages[cursor]!;
-      if (prior.role === "user" && !prior.internalAgentContinuation) break;
+      if (prior.role === "user" && !isDelegationPrompt(prior)) break;
       if (prior.role === "assistant" && prior.delegatedAgentRun &&
           !prior.godsEyeRun && prior.externalAgentOutcome === "completed") {
         const report = prior.externalAgentResult?.trim();
@@ -61,4 +61,11 @@ export function delegatedResponsePresentation(
     failed: failed || interrupted || incomplete,
     fallbackContent,
   };
+}
+
+/** Goal prompts are hidden from the transcript but start independent turns. */
+export function isDelegationPrompt(message?: {
+  role: string; internalAgentContinuation?: boolean; goalContinuation?: boolean;
+}) {
+  return message?.role === "user" && message.internalAgentContinuation === true && !message.goalContinuation;
 }

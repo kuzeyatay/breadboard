@@ -77,6 +77,7 @@
   border: 2px solid rgba(75, 216, 227, 0.2);
   border-top-color: #74e5ed;
   border-radius: 50%;
+  corner-shape: round;
   animation: project-import-spin 0.9s linear infinite;
 }
 
@@ -101,6 +102,7 @@
   margin-top: 13px;
   overflow: hidden;
   border-radius: 999px;
+  corner-shape: round;
   background: rgba(112, 155, 175, 0.16);
 }
 

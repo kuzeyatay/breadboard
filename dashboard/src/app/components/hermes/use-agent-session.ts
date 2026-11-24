@@ -31,6 +31,7 @@ import {
 } from "@/lib/assistant-reasoning";
 import {
   attachmentOnlyMessageText,
+  attachmentsForRequest,
   chatMessageAttachments,
   normalizeChatMessageAttachments,
   type ChatAttachment,
@@ -74,6 +75,8 @@ import {
   notifyChatResponseReady,
 } from "@/lib/task-completion-notification";
 import { rememberExternalRunStartedAt } from "./external-run-clock";
+import { GOAL_TURN_EVENT, type GoalTurnSnapshot } from "@/lib/goal-turn-activity";
+import { retainFollowUp } from "@/lib/chat-follow-up-queue";
 import {
   AgentStreamDisconnectedError,
   AgentStreamReportedError,
@@ -150,6 +153,9 @@ async function dispatchAgentMessage(
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ...payload,
+          attachments: attachmentsForRequest(
+            payload.attachments as readonly ChatAttachment[] | undefined,
+          ),
           // If the previous connection vanished after reserving the turn, the
           // server is allowed to recover that same turn instead of rejecting
           // it as an accidental duplicate.
@@ -257,6 +263,7 @@ export interface AgentMessage {
   modelChangeAfter?: string;
   /** Model-to-model hand-back; kept in context but never rendered as the user. */
   internalAgentContinuation?: boolean;
+  goalContinuation?: boolean;
   /** External transport that owns delivery of this turn and its hand-backs. */
   deliveryChannel?: "whatsapp" | "telegram";
   reasoning?: string;
@@ -1160,6 +1167,8 @@ function monitorBackgroundChatResponse(input: {
 export type ConnectionState =
   "idle" | "connecting" | "streaming" | "waiting" | "error";
 
+type StreamOutcome = "completed" | "continuing" | "cancelled" | "failed";
+
 export type AgentRunState =
   | "idle"
   | "submitting"
@@ -1513,7 +1522,13 @@ async function ensureSession(
   const response = await fetch("/api/hermes/sessions", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ surface, ...options, initialTurn }),
+    body: JSON.stringify({
+      surface,
+      ...options,
+      initialTurn: initialTurn
+        ? { ...initialTurn, attachments: attachmentsForRequest(initialTurn.attachments) }
+        : initialTurn,
+    }),
   });
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
@@ -1631,7 +1646,7 @@ export function useAgentSession(
   const delegatedExternalTurnIdsRef = useRef(new Set<string>());
   const attachedDelegatedExternalTurnIdsRef = useRef(new Set<string>());
   const delegatedExternalTurnReasonsRef = useRef(new Map<string, string>());
-  const activeStreamRef = useRef<Promise<"completed" | "cancelled" | "failed"> | null>(null);
+  const activeStreamRef = useRef<Promise<StreamOutcome> | null>(null);
   const steeringRef = useRef(false);
   const stopRequestedRef = useRef(false);
   const stopEpochRef = useRef(0);
@@ -1678,6 +1693,7 @@ export function useAgentSession(
   // keeps the normal path quiet and leaves replay as the crash-only fallback.
   const preDispatchRecoveriesRef = useRef(new Set<string>());
   const viewEpochRef = useRef(0);
+  const localTurnVersion = useRef(0);
   const latestSendOptionsRef = useRef<{
     model?: string;
     reasoningEffort?: AssistantReasoningEffort;
@@ -1786,6 +1802,27 @@ export function useAgentSession(
     [transition],
   );
 
+  const resumeSnapshotRun = useCallback((id: string, activeRun: unknown, viewEpoch: number) => {
+    const run = activeRun && typeof activeRun === "object" ? activeRun as Record<string, unknown> : null;
+    if (!run || typeof run.id !== "string" || typeof run.instruction !== "string") return false;
+    const clientMessageId = typeof run.clientMessageId === "string" ? run.clientMessageId : undefined;
+    if (stoppedRunIdsRef.current.has(run.id) || (clientMessageId && stoppedTurnIdsRef.current.has(clientMessageId))) return false;
+    pendingHistoryOverrideRef.current = null;
+    activeRunIdRef.current = run.id;
+    setActiveRunId(run.id);
+    setActiveInstruction(run.instruction);
+    setError(null);
+    setActiveTools([]);
+    setActivities([]);
+    transition("connecting");
+    setRunToResume({
+      sessionId: id, runId: run.id, instruction: run.instruction, clientMessageId, viewEpoch,
+      startedAt: typeof run.startedAt === "string" ? run.startedAt : undefined,
+      superAgent: run.superAgent === true,
+    });
+    return true;
+  }, [transition]);
+
   /**
    * A direct-provider turn has no Hermes run id to attach to, and an agent turn
    * has a brief reserved-before-dispatch window where its run id does not exist
@@ -1837,6 +1874,7 @@ export function useAgentSession(
             expectedClientMessageId;
         if (
           recovery?.agentMode === true &&
+          !initial.assistant.goalContinuation &&
           recoveryKey &&
           !localSendStillOwnsTurn &&
           !preDispatchRecoveriesRef.current.has(recoveryKey)
@@ -1970,36 +2008,8 @@ export function useAgentSession(
           }
 
           const nextMessages = normalizeRestoredMessages(restored.messages);
-          const restoredRun =
-            restored.activeRun && typeof restored.activeRun === "object"
-              ? (restored.activeRun as Record<string, unknown>)
-              : null;
-          if (
-            restoredRun &&
-            typeof restoredRun.id === "string" &&
-            typeof restoredRun.instruction === "string"
-          ) {
-            pendingHistoryOverrideRef.current = null;
+          if (resumeSnapshotRun(id, restored.activeRun, viewEpoch)) {
             setMessages(nextMessages);
-            activeRunIdRef.current = restoredRun.id;
-            setActiveRunId(restoredRun.id);
-            setActiveInstruction(restoredRun.instruction);
-            transition("connecting");
-            setRunToResume({
-              sessionId: id,
-              runId: restoredRun.id,
-              instruction: restoredRun.instruction,
-              startedAt:
-                typeof restoredRun.startedAt === "string"
-                  ? restoredRun.startedAt
-                  : undefined,
-              clientMessageId:
-                typeof restoredRun.clientMessageId === "string"
-                  ? restoredRun.clientMessageId
-                  : undefined,
-              superAgent: restoredRun.superAgent === true,
-              viewEpoch,
-            });
             return;
           }
 
@@ -2085,7 +2095,7 @@ export function useAgentSession(
     },
     // Restoration depends on this callback. Inline options (as used by the
     // PDF assistant) must not restart restoration on every loading-state render.
-    [createOptions?.concurrentInline, createOptions?.gardenSlug, createOptions?.pageSlug, rehydrateAwaitingPermission, surface, transition],
+    [createOptions?.concurrentInline, createOptions?.gardenSlug, createOptions?.pageSlug, rehydrateAwaitingPermission, resumeSnapshotRun, surface, transition],
   );
 
   useEffect(() => {
@@ -2194,35 +2204,7 @@ export function useAgentSession(
         );
         const restoredMessages = normalizeRestoredMessages(restored.messages);
         setMessages(restoredMessages);
-        const restoredRun =
-          restored.activeRun && typeof restored.activeRun === "object"
-            ? (restored.activeRun as Record<string, unknown>)
-            : null;
-        if (
-          restoredRun &&
-          typeof restoredRun.id === "string" &&
-          typeof restoredRun.instruction === "string"
-        ) {
-          activeRunIdRef.current = restoredRun.id;
-          setActiveRunId(restoredRun.id);
-          setActiveInstruction(restoredRun.instruction);
-          transition("connecting");
-          setRunToResume({
-            sessionId: selected.id,
-            runId: restoredRun.id,
-            instruction: restoredRun.instruction,
-            startedAt:
-              typeof restoredRun.startedAt === "string"
-                ? restoredRun.startedAt
-                : undefined,
-            clientMessageId:
-              typeof restoredRun.clientMessageId === "string"
-                ? restoredRun.clientMessageId
-                : undefined,
-            superAgent: restoredRun.superAgent === true,
-            viewEpoch: viewEpochRef.current,
-          });
-        } else if (!rehydrateAwaitingPermission(restoredMessages)) {
+        if (!resumeSnapshotRun(selected.id, restored.activeRun, bootEpoch) && !rehydrateAwaitingPermission(restoredMessages)) {
           resumePendingConversation(selected.id, restoredMessages, bootEpoch);
         }
       })
@@ -2245,6 +2227,7 @@ export function useAgentSession(
     markLoadingSession,
     rehydrateAwaitingPermission,
     resumePendingConversation,
+    resumeSnapshotRun,
     restoreLastConversation,
     storageKey,
     transition,
@@ -2269,12 +2252,14 @@ export function useAgentSession(
       onConnected: () => void,
       responseStartedAtMs: number,
       superAgentEnabled = false,
+      expectedRunId?: string,
       reconnectAttempt = 0,
       controller = new AbortController(),
       seenEventFrames = new Set<string>(),
-    ): Promise<"completed" | "cancelled" | "failed"> => {
+    ): Promise<StreamOutcome> => {
       abortRef.current = controller;
       const streamContext = new URLSearchParams({ surface });
+      if (expectedRunId) streamContext.set("runId", expectedRunId);
       if (createOptions?.gardenSlug) streamContext.set("gardenSlug", createOptions.gardenSlug);
       if (createOptions?.pageSlug) streamContext.set("pageSlug", createOptions.pageSlug);
       const decoder = new TextDecoder();
@@ -2311,6 +2296,7 @@ export function useAgentSession(
       const commitResponseDuration = (completedAtMs = Date.now()) => {
         assistant = {
           ...assistant,
+          pending: false,
           responseDurationMs: Math.max(0, completedAtMs - responseStartedAtMs),
           responseCompletedAt: new Date(completedAtMs).toISOString(),
         };
@@ -2324,7 +2310,7 @@ export function useAgentSession(
 
       const retryAfterDisconnect = async (
         streamError: unknown,
-      ): Promise<"completed" | "cancelled" | "failed"> => {
+      ): Promise<StreamOutcome> => {
         const delayMs = agentStreamReconnectDelay(reconnectAttempt);
         if (
           failed ||
@@ -2356,6 +2342,7 @@ export function useAgentSession(
                   typeof row.content === "string" && ["complete", "failed", "aborted"].includes(String(row.status));
               }) : undefined;
           if (saved) {
+            if (!connected) onConnected();
             const [terminal] = normalizeRestoredMessages([saved]);
             const outcome = saved.status === "complete" ? "completed"
               : saved.status === "aborted" ? "cancelled" : "failed";
@@ -2377,6 +2364,7 @@ export function useAgentSession(
           onConnected,
           responseStartedAtMs,
           superAgentEnabled,
+          expectedRunId,
           reconnectAttempt + 1,
           controller,
           seenEventFrames,
@@ -2393,6 +2381,7 @@ export function useAgentSession(
           },
         );
         if (!response.ok) {
+          if (expectedRunId && response.status === 409) throw new AgentStreamDisconnectedError();
           throw await agentStreamOpenFailure(response);
         }
         if (!response.body) {
@@ -2952,7 +2941,7 @@ export function useAgentSession(
               if (!failed && surface !== "quartz_ai") {
                 notifyHermesSessionsChanged(surface);
               }
-              return failed ? "failed" : "completed";
+              return failed ? "failed" : event.goalContinues ? "continuing" : "completed";
             default:
               break;
             }
@@ -3105,7 +3094,7 @@ export function useAgentSession(
       ]);
       transition("connecting");
 
-      let adoptedStream: Promise<"completed" | "cancelled" | "failed"> | null = null;
+      let adoptedStream: Promise<StreamOutcome> | null = null;
       let streamController: AbortController | null = null;
       try {
         let markConnected!: () => void;
@@ -3119,6 +3108,7 @@ export function useAgentSession(
           markConnected,
           responseStartedAtMs,
           superAgentEnabled,
+          runId,
         );
         adoptedStream = streamPromise;
         streamController = abortRef.current;
@@ -3175,7 +3165,7 @@ export function useAgentSession(
         }
         else {
           transition("completed");
-          if (surface !== "quartz_ai") {
+          if (surface !== "quartz_ai" && outcome === "completed") {
             notifyChatResponseReady(instruction, {
               chatId: activeSessionId,
               activeChatId: sessionRef.current,
@@ -3841,7 +3831,7 @@ export function useAgentSession(
             surface,
             model: input.options?.model,
             reasoningEffort: input.options?.reasoningEffort,
-            attachments: input.options?.attachments,
+            attachments: attachmentsForRequest(input.options?.attachments),
             textSelection: input.options?.textSelection,
             branchGroupId: input.options?.branchGroupId,
             internalAgentContinuation:
@@ -4070,7 +4060,20 @@ export function useAgentSession(
         await respondToClarification(trimmed);
         return;
       }
-      if (!trimmed || isActiveAgentRunState(runStateRef.current)) return;
+      if (!trimmed) return;
+      const preserveFollowUp = (id: string, chatId: string, position: "first" | "last") => {
+        if (options?.internalAgentContinuation || options?.historyOverride || pendingHistoryOverrideRef.current ||
+            blockedTurnRef.current?.text === trimmed) return;
+        retainFollowUp(chatId, {
+          id, conversationKey: chatId, text: trimmed,
+          attachments: [...(options?.attachments ?? [])], textSelection: options?.textSelection,
+        }, position);
+      };
+      if (isActiveAgentRunState(runStateRef.current)) {
+        // A server-started turn can take over before the composer re-renders.
+        if (sessionRef.current) preserveFollowUp(crypto.randomUUID(), sessionRef.current, "last");
+        return;
+      }
       // A turn composed while the transcript is still arriving is a turn built
       // against the wrong history: on a cold mount there is no conversation yet,
       // so the send would open a second one and the restore would then replace
@@ -4079,6 +4082,7 @@ export function useAgentSession(
       // surfaces disable the composer for this window, so reaching here means a
       // path that outran the flag -- drop the turn rather than corrupt the view.
       if (loadingSessionRef.current) return;
+      localTurnVersion.current++;
       const voiceTurn = options?.voice === true || createOptions?.voice === true;
       const agentModeEnabled = voiceTurn || isAgentModeEnabled();
       const superAgentEnabled = isSuperAgentEnabled();
@@ -4249,9 +4253,7 @@ export function useAgentSession(
         });
       };
 
-      let ownedStream: Promise<
-        "completed" | "cancelled" | "failed"
-      > | null = null;
+      let ownedStream: Promise<StreamOutcome> | null = null;
       let streamController: AbortController | null = null;
       let preparationController: AbortController | null = null;
       try {
@@ -4465,7 +4467,10 @@ export function useAgentSession(
           return dispatched;
         };
 
-        const trackBackgroundDispatch = (response: Response) => {
+        const preserveConflictingSend = () => {
+          if (!resumedBlockedTurn && !branchHistory && userMessage.id) preserveFollowUp(userMessage.id, activeSessionId, "first");
+        };
+        const trackBackgroundDispatch = async (response: Response) => {
           if (response.ok) {
             monitorBackgroundChatResponse({
               surface,
@@ -4474,6 +4479,8 @@ export function useAgentSession(
               clientMessageId: userMessage.id,
               getActiveChatId: () => sessionRef.current,
             });
+          } else if (response.status === 409 && (await response.json().catch(() => ({}))).code === "conversation_turn_active") {
+            preserveConflictingSend();
           } else if (surface !== "quartz_ai") {
             notifyChatResponseFailed(trimmed, {
               chatId: activeSessionId,
@@ -4485,7 +4492,7 @@ export function useAgentSession(
         // Already looking at another chat: send it without a viewer rather than
         // opening this chat's event stream over the one on screen.
         if (!stillViewing()) {
-          trackBackgroundDispatch(await dispatchTurn());
+          await trackBackgroundDispatch(await dispatchTurn());
           return;
         }
         transition("connecting");
@@ -4534,7 +4541,7 @@ export function useAgentSession(
         if (turnWasStopped()) return;
         if (!stillViewing()) {
           streamController?.abort();
-          trackBackgroundDispatch(await dispatchTurn());
+          await trackBackgroundDispatch(await dispatchTurn());
           return;
         }
         if (stopRequestedRef.current) {
@@ -4546,7 +4553,7 @@ export function useAgentSession(
         if (turnWasStopped()) return;
         if (viewEpochRef.current !== viewEpoch) {
           streamController?.abort();
-          trackBackgroundDispatch(sendResponse);
+          await trackBackgroundDispatch(sendResponse);
           return;
         }
         if (!sendResponse.ok) {
@@ -4555,10 +4562,10 @@ export function useAgentSession(
             sendResponse.status === 409 &&
             body.code === "conversation_turn_active"
           ) {
-            // The previous reply is still being written server-side (a
-            // reply this page lost sight of while it was away). That is not
-            // a failed turn to report and not a turn to redo: drop the
-            // unsent message and attach to the live one instead.
+            // An automatic turn can win the slot after the user presses Send.
+            // Retire this optimistic viewer before attaching the real run.
+            streamController?.abort();
+            preserveConflictingSend();
             const restored = await loadHermesSessionDetail(surface, activeSessionId).catch(
               () => null,
             );
@@ -4577,7 +4584,8 @@ export function useAgentSession(
               pendingHistoryOverrideRef.current = null;
               setMessages(restoredMessages);
               setError(null);
-              if (resumePendingConversation(activeSessionId, restoredMessages, viewEpoch)) {
+              if (resumeSnapshotRun(activeSessionId, restored.activeRun, viewEpoch) ||
+                  resumePendingConversation(activeSessionId, restoredMessages, viewEpoch)) {
                 return;
               }
               // The earlier turn finished between the refusal and this reload;
@@ -4749,7 +4757,7 @@ export function useAgentSession(
         }
         else {
           transition("completed");
-          if (surface !== "quartz_ai") {
+          if (surface !== "quartz_ai" && outcome === "completed") {
             notifyChatResponseReady(trimmed, {
               chatId: activeSessionId,
               activeChatId: sessionRef.current,
@@ -4825,6 +4833,7 @@ export function useAgentSession(
       streamEvents,
       surface,
       resumePendingConversation,
+      resumeSnapshotRun,
       transition,
     ],
   );
@@ -4859,7 +4868,7 @@ export function useAgentSession(
             body: JSON.stringify({
               runId,
               text: trimmed,
-              attachments,
+              attachments: attachmentsForRequest(attachments),
               textSelection,
               clientRequestId,
               assistantContentOffset,
@@ -5505,32 +5514,7 @@ export function useAgentSession(
         // branch. Anything still holding it would only contradict both.
         pendingHistoryOverrideRef.current = null;
 
-        if (
-          restoredRun &&
-          typeof restoredRun.id === "string" &&
-          typeof restoredRun.instruction === "string"
-        ) {
-          pendingHistoryOverrideRef.current = null;
-          activeRunIdRef.current = restoredRun.id;
-          setActiveRunId(restoredRun.id);
-          setActiveInstruction(restoredRun.instruction);
-          transition("connecting");
-          setRunToResume({
-            sessionId: id,
-            runId: restoredRun.id,
-            instruction: restoredRun.instruction,
-            startedAt:
-              typeof restoredRun.startedAt === "string"
-                ? restoredRun.startedAt
-                : undefined,
-            clientMessageId:
-              typeof restoredRun.clientMessageId === "string"
-                ? restoredRun.clientMessageId
-                : undefined,
-            superAgent: restoredRun.superAgent === true,
-            viewEpoch,
-          });
-        } else if (!rehydrateAwaitingPermission(restoredMessages)) {
+        if (!resumeSnapshotRun(id, restoredRun, viewEpoch) && !rehydrateAwaitingPermission(restoredMessages)) {
           resumePendingConversation(id, restoredMessages, viewEpoch);
         }
       } catch (openError) {
@@ -5551,6 +5535,7 @@ export function useAgentSession(
       createOptions?.concurrentInline,
       rehydrateAwaitingPermission,
       resumePendingConversation,
+      resumeSnapshotRun,
       reset,
       rememberActiveConversation,
       surface,
@@ -5559,14 +5544,31 @@ export function useAgentSession(
   );
 
   const refreshSession = useCallback(async () => {
-    const activeSessionId = sessionRef.current;
-    if (!activeSessionId || isActiveAgentRunState(runStateRef.current)) return;
-    const restored = await loadHermesSessionDetail(surface, activeSessionId).catch(() => null);
-    if (sessionRef.current !== activeSessionId || isActiveAgentRunState(runStateRef.current)) return;
-    if (restored?.id === activeSessionId) {
-      setMessages(normalizeRestoredMessages(restored.messages));
+    const id = sessionRef.current;
+    const viewEpoch = viewEpochRef.current;
+    if (!id || loadingSessionRef.current || isActiveAgentRunState(runStateRef.current)) return;
+    const turnVersion = localTurnVersion.current;
+    const restored = await loadHermesSessionDetail(surface, id).catch(() => null);
+    if (restored?.id !== id || viewEpochRef.current !== viewEpoch || sessionRef.current !== id ||
+        localTurnVersion.current !== turnVersion || isActiveAgentRunState(runStateRef.current)) return;
+    const nextMessages = normalizeRestoredMessages(restored.messages);
+    setMessages(nextMessages);
+    if (!resumeSnapshotRun(id, restored.activeRun, viewEpoch) && !rehydrateAwaitingPermission(nextMessages)) {
+      resumePendingConversation(id, nextMessages, viewEpoch);
     }
-  }, [surface]);
+  }, [rehydrateAwaitingPermission, resumePendingConversation, resumeSnapshotRun, surface]);
+
+  useEffect(() => {
+    const onGoalTurn = (event: Event) => {
+      const { sessionId: id, turn } = (event as CustomEvent<{ sessionId: string; turn: GoalTurnSnapshot }>).detail;
+      if (id !== sessionRef.current || isActiveAgentRunState(runStateRef.current)) return;
+      const assistant = messagesRef.current.findLast((row) =>
+        row.role === "assistant" && row.clientMessageId === turn.clientMessageId);
+      if (!assistant || assistant.pending || turn.status === "pending") void refreshSession();
+    };
+    window.addEventListener(GOAL_TURN_EVENT, onGoalTurn);
+    return () => window.removeEventListener(GOAL_TURN_EVENT, onGoalTurn);
+  }, [refreshSession]);
 
   return {
     sessionId,

@@ -223,6 +223,7 @@ body[data-maic-editor='true'] .editable-element-text li,
   height: 10px;
   margin-top: 10px;
   border-radius: 999px;
+  corner-shape: round;
 }
 .color-picker .react-colorful__pointer {
   width: 14px;
@@ -304,6 +305,7 @@ body[data-maic-editor='true'] .editable-element-text li,
 [data-pbl-workspace='true'] .pbl-v2-scroll-fade::-webkit-scrollbar-track {
   background: transparent;
   border-radius: 999px;
+  corner-shape: round;
 }
 
 [data-pbl-workspace='true'] .pbl-v2-scrollbar::-webkit-scrollbar-corner,
@@ -328,6 +330,7 @@ body[data-maic-editor='true'] .editable-element-text li,
   background-clip: content-box;
   border: 3px solid transparent;
   border-radius: 999px;
+  corner-shape: round;
   min-height: 48px;
   box-shadow:
     inset 0 0 0 1px rgb(255 255 255 / 0.06),
@@ -439,6 +442,7 @@ body[data-maic-editor='true'] .editable-element-text li,
   height: 120px;
   width: 120px;
   border-radius: 999px;
+  corner-shape: round;
   background: rgb(125 211 252 / 0.08);
   filter: blur(20px);
 }
@@ -573,5 +577,36 @@ body[data-maic-editor='true'] .editable-element-text li,
     animation: none;
     color: var(--muted-foreground);
     -webkit-text-fill-color: var(--muted-foreground);
+  }
+}
+
+/* Breadboard draws every rounded edge as a squircle (CSS `corner-shape:
+   squircle`); circles and pills (`rounded-full`, 50% / 9999px radii) stay round. */
+@layer base {
+  *,
+  *::before,
+  *::after {
+    corner-shape: squircle;
+  }
+
+  [class~="rounded-full"],
+  [class*="rounded-t-full"],
+  [class*="rounded-b-full"],
+  [class*="rounded-l-full"],
+  [class*="rounded-r-full"],
+  [class*="rounded-[50%]"],
+  [class*="rounded-[9999px]"],
+  [style*="border-radius: 50%"],
+  [style*="border-radius: 100%"],
+  [style*="border-radius: 999px"],
+  [style*="border-radius: 9999px"] {
+    corner-shape: round;
+  }
+}
+
+@layer base {
+  [class*="before:rounded-full"]::before,
+  [class*="after:rounded-full"]::after {
+    corner-shape: round;
   }
 }

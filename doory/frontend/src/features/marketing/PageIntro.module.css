@@ -83,6 +83,7 @@
   height: 0.9rem;
   margin-top: -0.8rem;
   border-radius: 50%;
+  corner-shape: round;
   background: rgb(43 28 23 / 0.08);
 }
 

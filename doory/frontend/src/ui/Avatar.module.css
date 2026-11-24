@@ -4,6 +4,7 @@
   place-items: center;
   overflow: hidden;
   border-radius: 50%;
+  corner-shape: round;
   background: var(--color-brand-soft);
   color: var(--color-brand-strong);
   font-family: var(--font-display);

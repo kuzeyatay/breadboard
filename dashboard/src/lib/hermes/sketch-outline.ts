@@ -14,6 +14,7 @@
  */
 
 import { seededRandom } from "../speech/voice-conversation.ts";
+import { squircleCornerPoint, SQUIRCLE_QUARTER_LENGTH } from "../squircle-corner.ts";
 
 export interface SketchBox {
   /** The card's border box, in CSS pixels. */
@@ -21,6 +22,12 @@ export interface SketchBox {
   height: number;
   /** The card's own corner radius. Read from the card, never restated. */
   radius: number;
+  /**
+   * Whether the card's corners render as squircles (`corner-shape:
+   * squircle`). Read from the card with `hasSquircleCorners`, so the drawn
+   * line follows the same curve the card does; circles and pills stay round.
+   */
+  squircle?: boolean;
 }
 
 /** How far beyond the card's border box the drawing surface extends. */
@@ -56,7 +63,15 @@ export function sketchRectPath(
 
   const straightWidth = right - left - 2 * radius;
   const straightHeight = bottom - top - 2 * radius;
-  const arcLength = (Math.PI * radius) / 2;
+  const squircle = box.squircle === true;
+  const arcLength = squircle ? SQUIRCLE_QUARTER_LENGTH * radius : (Math.PI * radius) / 2;
+  // A corner around (cx, cy), starting at `start` and walking a quarter turn
+  // clockwise: a squircle when the card draws one, a circular arc otherwise.
+  const corner = (cx: number, cy: number, start: number) => (t: number): [number, number] => {
+    if (squircle) return squircleCornerPoint(cx, cy, radius, start, t / (arcLength || 1));
+    const angle = start + (t / (arcLength || 1)) * (Math.PI / 2);
+    return [cx + Math.cos(angle) * radius, cy + Math.sin(angle) * radius];
+  };
   const perimeter = 2 * straightWidth + 2 * straightHeight + 4 * arcLength;
 
   // Clockwise from the end of the top-left corner, in arc length. Each entry
@@ -66,37 +81,13 @@ export function sketchRectPath(
     at: (t: number) => [number, number];
   }> = [
     { length: straightWidth, at: (t) => [left + radius + t, top] },
-    {
-      length: arcLength,
-      at: (t) => {
-        const angle = -Math.PI / 2 + (t / arcLength) * (Math.PI / 2);
-        return [right - radius + Math.cos(angle) * radius, top + radius + Math.sin(angle) * radius];
-      },
-    },
+    { length: arcLength, at: corner(right - radius, top + radius, -Math.PI / 2) },
     { length: straightHeight, at: (t) => [right, top + radius + t] },
-    {
-      length: arcLength,
-      at: (t) => {
-        const angle = (t / arcLength) * (Math.PI / 2);
-        return [right - radius + Math.cos(angle) * radius, bottom - radius + Math.sin(angle) * radius];
-      },
-    },
+    { length: arcLength, at: corner(right - radius, bottom - radius, 0) },
     { length: straightWidth, at: (t) => [right - radius - t, bottom] },
-    {
-      length: arcLength,
-      at: (t) => {
-        const angle = Math.PI / 2 + (t / arcLength) * (Math.PI / 2);
-        return [left + radius + Math.cos(angle) * radius, bottom - radius + Math.sin(angle) * radius];
-      },
-    },
+    { length: arcLength, at: corner(left + radius, bottom - radius, Math.PI / 2) },
     { length: straightHeight, at: (t) => [left, bottom - radius - t] },
-    {
-      length: arcLength,
-      at: (t) => {
-        const angle = Math.PI + (t / arcLength) * (Math.PI / 2);
-        return [left + radius + Math.cos(angle) * radius, top + radius + Math.sin(angle) * radius];
-      },
-    },
+    { length: arcLength, at: corner(left + radius, top + radius, Math.PI) },
   ];
 
   const pointAt = (distance: number): [number, number] => {
@@ -110,11 +101,31 @@ export function sketchRectPath(
 
   // A knot roughly every 30px keeps the wobble at the wavelength of the voice
   // ring's — closer and the line shivers, further and it reads as bent.
+  // A squircle corner turns more sharply than a quarter circle of the same
+  // radius, so 30px knots would round it off and bow the sides beside it.
+  // Its corners count triple when spacing knots, which keeps the line on the
+  // card's curve while the straight edges keep the ring's wavelength.
+  const weightOf = (segmentIndex: number) => (squircle && segmentIndex % 2 === 1 ? 3 : 1);
+  const weightedPerimeter = segments.reduce(
+    (sum, segment, segmentIndex) => sum + segment.length * weightOf(segmentIndex),
+    0,
+  );
+  const pointAtWeighted = (weighted: number): [number, number] => {
+    let remaining = weighted;
+    for (let segmentIndex = 0; segmentIndex < segments.length; segmentIndex += 1) {
+      const span = segments[segmentIndex].length * weightOf(segmentIndex);
+      if (remaining <= span) return segments[segmentIndex].at(remaining / weightOf(segmentIndex));
+      remaining -= span;
+    }
+    return segments[0].at(0);
+  };
   const random = seededRandom(seed);
-  const count = Math.max(12, Math.round(perimeter / 30));
+  const count = Math.max(12, Math.round(weightedPerimeter / 30));
   const knots: Array<[number, number]> = [];
   for (let index = 0; index < count; index += 1) {
-    const [x, y] = pointAt((index / count) * perimeter);
+    const [x, y] = squircle
+      ? pointAtWeighted((index / count) * weightedPerimeter)
+      : pointAt((index / count) * perimeter);
     knots.push([
       x + (random() - 0.5) * 2 * wobble,
       y + (random() - 0.5) * 2 * wobble,

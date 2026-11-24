@@ -195,6 +195,7 @@ article.popover-hint:has(> :is(.breadboard-source-visual, .breadboard-source-vis
 
 *::-webkit-scrollbar-track {
   border-radius: 999px;
+  corner-shape: round;
   background: var(--neu-q-scrollbar-track);
   box-shadow:
     inset 1px 1px 2px var(--neu-q-scrollbar-shadow),
@@ -204,6 +205,7 @@ article.popover-hint:has(> :is(.breadboard-source-visual, .breadboard-source-vis
 *::-webkit-scrollbar-thumb {
   border: 2px solid var(--neu-q-scrollbar-track);
   border-radius: 999px;
+  corner-shape: round;
   background: var(--neu-q-scrollbar-thumb);
   box-shadow:
     1px 1px 2px var(--neu-q-scrollbar-shadow),
@@ -505,3 +507,9 @@ button.desktop-explorer {
     box-shadow: none;
   }
 }
+
+/* Breadboard draws every rounded edge as a squircle (CSS `corner-shape:
+   squircle`). Zero specificity, so any explicit corner-shape wins; circles and
+   pills keep `corner-shape: round` beside their border-radius. */
+:where(*), :where(*)::before, :where(*)::after { corner-shape: squircle; }
+:where([style*="border-radius: 50%"], [style*="border-radius: 999px"], [style*="border-radius: 9999px"]) { corner-shape: round; }

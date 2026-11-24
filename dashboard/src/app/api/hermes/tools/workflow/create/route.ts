@@ -8,7 +8,11 @@
 
 import { NextResponse } from "next/server";
 
-import { conversationIsTemporary, getConversationById } from "@/lib/conversations/store.ts";
+import {
+  conversationIsTemporary,
+  getConversationById,
+  listRecentConversationMessages,
+} from "@/lib/conversations/store.ts";
 import { tokenAllows, verifyCapabilityToken } from "@/lib/hermes/capability-token.ts";
 import {
   ApiError,
@@ -28,6 +32,7 @@ import { capabilityForInternalToolRequest } from "@/lib/hermes/tool-service-auth
 import {
   buildAuthoredWorkflowState,
   explicitlyRequestsWorkflowCreation,
+  WORKFLOW_AUTHORING_GUIDE,
   workflowAuthoringCatalog,
   WorkflowAuthoringError,
   type AuthoredWorkflowDefinition,
@@ -146,11 +151,15 @@ export async function POST(request: Request) {
         data: {
           blocks: workflowAuthoringCatalog(),
           note: "Use these exact block types and input ids in workflow_create. Omitted edges connect steps in order.",
+          guide: WORKFLOW_AUTHORING_GUIDE,
         },
       });
     }
 
-    if (!explicitlyRequestsWorkflowCreation(run.instruction)) {
+    const previousAssistant = listRecentConversationMessages(session.conversation_id, 6)
+      .filter((message) => message.role === "assistant")
+      .at(-1)?.content ?? "";
+    if (!explicitlyRequestsWorkflowCreation(run.instruction, previousAssistant)) {
       throw new ApiError(
         409,
         "workflow_create_intent_required",

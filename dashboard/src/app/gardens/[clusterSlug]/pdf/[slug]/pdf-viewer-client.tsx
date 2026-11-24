@@ -34,6 +34,7 @@ import {
   type ReactNode,
 } from "react";
 import type { ChatTextSelectionReference } from "@/lib/chat-text-selection";
+import { FAILURE_EXPLANATIONS } from "@/lib/failure-explanations";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import {
   queueArtifactAiEdit,
@@ -410,6 +411,15 @@ export default function PdfViewerClient({
   usePageLoading(!embeddedInBrowser && opening);
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [openFailed, setOpenFailed] = useState(false);
+  // A restarting server (the watchdog, or a memory-pressure restart) is back within seconds: opening is tried
+  // again on its own a few times before the Retry button is the only way.
+  useEffect(() => {
+    if (!openFailed || loadAttempt >= 6) return;
+    const restarting = [FAILURE_EXPLANATIONS.server_unreachable, FAILURE_EXPLANATIONS.service_unavailable].includes(error);
+    if (!restarting) return;
+    const timer = window.setTimeout(() => setLoadAttempt(attempt => attempt + 1), 3_000);
+    return () => window.clearTimeout(timer);
+  }, [openFailed, error, loadAttempt]);
   const [mode, setMode] = useState<PdfViewerMode>("select");
   const [saveState, setSaveState] = useState<SaveState>("saved");
   const [lastSavedAt, setLastSavedAt] = useState("");

@@ -12,9 +12,12 @@
 // the dashboard terminal does.
 
 import {
+  useCallback,
   useEffect,
+  useId,
   useRef,
   useState,
+  useSyncExternalStore,
   type ReactNode,
   type RefObject,
 } from "react";
@@ -22,23 +25,8 @@ import { createPortal } from "react-dom";
 import type { ChatAttachment } from "@/lib/chat-attachments.ts";
 import type { ChatTextSelectionReference } from "@/lib/chat-text-selection.ts";
 import { QuotedChatSelection } from "../chat-text-selection-ui";
-
-export interface QueuedFollowUp {
-  id: string;
-  text: string;
-  /** Files are part of the queued message, not leftovers in the composer. */
-  attachments: ChatAttachment[];
-  /** The excerpt belongs to this message through queueing, editing and steering. */
-  textSelection?: ChatTextSelectionReference;
-  /**
-   * Conversation the message was queued in; null while the chat is a draft
-   * with no id yet. Queued messages only render and flush in their own
-   * conversation — switching chats holds them rather than sending them into
-   * the wrong transcript. A null tag belongs to whichever conversation the
-   * draft became, so it matches wherever the queue drains.
-   */
-  conversationKey: string | null;
-}
+import { emptyFollowUps, readFollowUps, subscribeFollowUps, updateFollowUps, type QueuedFollowUp } from "@/lib/chat-follow-up-queue";
+export type { QueuedFollowUp } from "@/lib/chat-follow-up-queue";
 
 interface DeletedFollowUp {
   item: QueuedFollowUp;
@@ -135,7 +123,18 @@ export function useQueuedFollowUps({
   ) => void;
   headerContent: ReactNode | undefined;
 } {
-  const [queuedFollowUps, setQueuedFollowUps] = useState<QueuedFollowUp[]>([]);
+  const draftKey = useId();
+  const queueKey = conversationKey ?? draftKey;
+  const queuedFollowUps = useSyncExternalStore(subscribeFollowUps, () => readFollowUps(queueKey), () => emptyFollowUps);
+  const setQueuedFollowUps = useCallback((update: (items: QueuedFollowUp[]) => QueuedFollowUp[]) =>
+    updateFollowUps(queueKey, update), [queueKey]);
+  useEffect(() => {
+    if (!conversationKey) return;
+    const draft = readFollowUps(draftKey);
+    if (!draft.length) return;
+    updateFollowUps(draftKey, () => emptyFollowUps);
+    updateFollowUps(conversationKey, items => [...draft.map(item => ({ ...item, conversationKey })), ...items]);
+  }, [conversationKey, draftKey]);
   const [deletedFollowUps, setDeletedFollowUps] = useState<DeletedFollowUp[]>([]);
   const queueRef = useRef<HTMLDivElement>(null);
   const [applyingSteerId, setApplyingSteerId] = useState<string | null>(null);
@@ -219,7 +218,7 @@ export function useQueuedFollowUps({
         item.conversationKey === null ||
         item.conversationKey === conversationKey,
     );
-    if (!next) return;
+    if (!next || !readFollowUps(queueKey).some(item => item.id === next.id)) return;
     setQueuedFollowUps((current) =>
       current.filter((item) => item.id !== next.id),
     );
@@ -232,6 +231,8 @@ export function useQueuedFollowUps({
     conversationKey,
     onSendQueued,
     queuedFollowUps,
+    queueKey,
+    setQueuedFollowUps,
     runInFlight,
     sendingQueuedId,
   ]);

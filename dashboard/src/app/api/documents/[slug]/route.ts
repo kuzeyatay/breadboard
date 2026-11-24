@@ -458,6 +458,8 @@ export async function PATCH(
   }
 }
 
+const MAX_LIVE_RENDER_CHARS = 300_000;
+
 export async function GET(
   request: Request,
   { params }: { params: Promise<{ slug: string }> },
@@ -467,7 +469,12 @@ export async function GET(
 
   const content = fs.readFileSync(context.filePath, "utf-8");
   const { body } = quartzDocumentParts(content);
-  const reader = new URL(request.url).searchParams.get("render") === "1"
+  // Rendering runs on the server's only thread: a whole book extracted from a PDF (several MB, much of it maths)
+  // held every request for over a minute and the watchdog restarted the dashboard. Such a page keeps Quartz's
+  // published copy instead of a fresh render.
+  // ponytail: size cap, render in a worker thread if large pages must refresh live.
+  const renderSkipped = content.length > MAX_LIVE_RENDER_CHARS;
+  const reader = new URL(request.url).searchParams.get("render") === "1" && !renderSkipped
     ? await (await import("@/lib/generated/quartz-reader.mjs")).renderQuartzDocument({
         content,
         relativePath: path.relative(externalRuntimePortableRealpath(context.contentPath), externalRuntimePortableRealpath(context.filePath)).replace(/\\/g, "/"),
@@ -489,6 +496,7 @@ export async function GET(
     tags: frontmatterArrayValue(parseFrontmatter(content), "semanticHints"),
     body,
     reader,
+    ...(renderSkipped ? { renderSkipped: "large" } : {}),
   });
 }
 

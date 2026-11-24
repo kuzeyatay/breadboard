@@ -93,6 +93,7 @@
   height: 1.4rem;
   border: 2px solid var(--ink);
   border-radius: 50%;
+  corner-shape: round;
   background: var(--paper);
 }
 

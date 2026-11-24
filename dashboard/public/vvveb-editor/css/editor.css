@@ -10365,7 +10365,7 @@ textarea.form-control-lg {
   border: var(--bs-border-width) solid var(--bs-border-color);
   print-color-adjust: exact; }
   .form-check-input[type="checkbox"] {
-    border-radius: 0.25em; }
+    border-radius: 0.25em; corner-shape: squircle; }
   .form-check-input[type="radio"] {
     border-radius: 50%;
     corner-shape: round; }

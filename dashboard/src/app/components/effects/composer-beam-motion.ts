@@ -1,11 +1,15 @@
+import { hasSquircleCorners, squircleCornerPoint, SQUIRCLE_QUARTER_LENGTH } from "../../../lib/squircle-corner";
+
 const SPEED_PX_PER_SECOND = 90;
 const CORNER_STEPS = 12;
 
-/** Equal distances take equal time, even on a very wide, shallow composer. */
-function borderTrajectory(width: number, height: number, radius: number) {
+/** Equal distances take equal time, even on a very wide, shallow composer.
+ * The corners follow the composer's own corner shape: a squircle when it
+ * renders one, a quarter circle when it stays round (a pill). */
+function borderTrajectory(width: number, height: number, radius: number, squircle = false) {
   const horizontal = width - 2 * radius;
   const vertical = height - 2 * radius;
-  const corner = Math.PI * radius / 2;
+  const corner = squircle ? SQUIRCLE_QUARTER_LENGTH * radius : Math.PI * radius / 2;
   const perimeter = 2 * (horizontal + vertical) + 4 * corner;
   const keyframes: Keyframe[] = [];
   let distance = 0;
@@ -25,6 +29,10 @@ function borderTrajectory(width: number, height: number, radius: number) {
     point(cx + radius * Math.cos(start), cy + radius * Math.sin(start));
     for (let step = 1; step <= CORNER_STEPS; step++) {
       distance += corner / CORNER_STEPS;
+      if (squircle) {
+        point(...squircleCornerPoint(cx, cy, radius, start, step / CORNER_STEPS));
+        continue;
+      }
       const angle = start + step / CORNER_STEPS * Math.PI / 2;
       point(cx + radius * Math.cos(angle), cy + radius * Math.sin(angle));
     }
@@ -65,8 +73,9 @@ export function startComposerBeam(surface: HTMLElement) {
     if (disposed || width <= 0 || height <= 0 || (width === previousWidth && height === previousHeight)) return;
     previousWidth = width;
     previousHeight = height;
-    const radius = Math.min(parseFloat(getComputedStyle(surface).borderTopLeftRadius) || 0, width / 2, height / 2);
-    const trajectory = borderTrajectory(width, height, radius);
+    const style = getComputedStyle(surface);
+    const radius = Math.min(parseFloat(style.borderTopLeftRadius) || 0, width / 2, height / 2);
+    const trajectory = borderTrajectory(width, height, radius, hasSquircleCorners(style));
     tracks.forEach((track, index) => {
       if (track.animation) {
         const progress = (Number(track.animation.currentTime) % duration) / duration;

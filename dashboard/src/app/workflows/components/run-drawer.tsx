@@ -3,8 +3,147 @@
 // Bottom drawer: run input prompt, Run button (POST .../execute), result
 // output, and per-block logs. Opens automatically when a run starts.
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { spacesEditHref } from "@/lib/office/types";
 import { useRunStore } from "../stores/run-store";
+import { useWorkflowStore } from "../stores/workflow-store";
+
+/** Shared with the Spaces page, so a result goes where new Spaces files go. */
+const WORKSPACE_KEY = "breadboard:office:workspace";
+const ROOT_NAME = "Root";
+const NO_WORKSPACE = "none";
+
+type Workspace = { slug: string; name: string };
+type SavedFile = { id: string; gardenId: string; name: string };
+
+function readStorage(key: string): string | null {
+  try { return localStorage.getItem(key); } catch { return null; }
+}
+function writeStorage(key: string, value: string): void {
+  try { localStorage.setItem(key, value); } catch { /* the choice still holds for this visit */ }
+}
+
+/**
+ * Saves the run's result into a Garden workspace as a Spaces file. The server
+ * reads the result from the run itself and picks the file type: a video, image
+ * or document the workflow produced keeps its type; text becomes Markdown.
+ */
+function SaveToWorkspace({ workflowId, runId }: { workflowId: string; runId: string }) {
+  const workflowName = useWorkflowStore((state) => state.name);
+  const [workspaces, setWorkspaces] = useState<Workspace[] | null>(null);
+  const [workspace, setWorkspace] = useState("");
+  const [title, setTitle] = useState("");
+  const [state, setState] = useState<{ status: "idle" | "saving" | "saved" | "error"; error?: string; file?: SavedFile }>({ status: "idle" });
+
+  useEffect(() => {
+    setState({ status: "idle" });
+    setTitle(`${workflowName || "Workflow"} result`);
+  }, [runId, workflowName]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch("/api/clusters", { cache: "no-store", signal: controller.signal })
+      .then((response) => response.json())
+      .then((body: { clusters?: Array<{ slug?: unknown; name?: unknown }> }) => {
+        const list = (body.clusters ?? []).flatMap((garden) =>
+          typeof garden.slug === "string" && typeof garden.name === "string" ? [{ slug: garden.slug, name: garden.name }] : []);
+        setWorkspaces(list);
+        const remembered = readStorage(WORKSPACE_KEY);
+        setWorkspace(remembered === NO_WORKSPACE ? "" : list.some((garden) => garden.slug === remembered && garden.name !== ROOT_NAME)
+          ? remembered ?? "" : list.find((garden) => garden.name !== ROOT_NAME)?.slug ?? "");
+      })
+      .catch(() => setWorkspaces((current) => current ?? []));
+    return () => controller.abort();
+  }, []);
+
+  /** "No workspace" files all live in one Garden called Root, made the first time it is needed. */
+  async function targetWorkspace(): Promise<string> {
+    if (workspace) return workspace;
+    const root = workspaces?.find((garden) => garden.name === ROOT_NAME);
+    if (root) return root.slug;
+    const response = await fetch("/api/clusters", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: ROOT_NAME, description: "Spaces files that belong to no workspace." }),
+    });
+    const body = (await response.json().catch(() => ({}))) as { slug?: string; error?: string };
+    if (!response.ok || !body.slug) throw new Error(body.error || "The workspace could not be created.");
+    setWorkspaces((current) => [...(current ?? []), { slug: body.slug!, name: ROOT_NAME }]);
+    return body.slug;
+  }
+
+  async function save() {
+    if (state.status === "saving") return;
+    setState({ status: "saving" });
+    try {
+      const gardenId = await targetWorkspace();
+      const response = await fetch(`/api/workflows/${encodeURIComponent(workflowId)}/save-output`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ runId, gardenId, title: title.trim() }),
+      });
+      const body = (await response.json().catch(() => ({}))) as { file?: SavedFile; error?: string };
+      if (!response.ok || !body.file) throw new Error(body.error || "The result could not be saved.");
+      setState({ status: "saved", file: body.file });
+    } catch (cause) {
+      setState({ status: "error", error: cause instanceof Error ? cause.message : "The result could not be saved." });
+    }
+  }
+
+  const choose = (slug: string) => {
+    setWorkspace(slug);
+    writeStorage(WORKSPACE_KEY, slug || NO_WORKSPACE);
+  };
+  const workspaceName = (slug: string) => {
+    const garden = workspaces?.find((item) => item.slug === slug);
+    return !garden || garden.name === ROOT_NAME ? "No workspace" : garden.name;
+  };
+
+  return (
+    <div className="mb-3 rounded-xl border border-[var(--line)] bg-[var(--paper-surface)] p-2.5">
+      <h4 className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-[var(--ink-faint)]">Save to a workspace</h4>
+      {state.status === "saved" && state.file ? (
+        <p className="flex flex-wrap items-center gap-2 text-xs text-[var(--ink)]">
+          Saved <strong className="font-medium">{state.file.name}</strong> to {workspaceName(state.file.gardenId)}.
+          <a href={spacesEditHref(state.file)} className="text-[var(--botanical)] underline underline-offset-2">Open it</a>
+          <button type="button" onClick={() => setState({ status: "idle" })} className="text-[var(--ink-muted)] underline underline-offset-2">Save again</button>
+        </p>
+      ) : (
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            value={title}
+            onChange={(event) => setTitle(event.target.value)}
+            aria-label="File name"
+            placeholder="File name"
+            maxLength={120}
+            className="min-w-0 flex-1 rounded-lg border border-[var(--line)] bg-[var(--paper-raised)] px-2.5 py-1.5 text-xs text-[var(--ink)] outline-none"
+          />
+          <select
+            value={workspace}
+            onChange={(event) => choose(event.target.value)}
+            aria-label="Workspace"
+            disabled={workspaces === null}
+            className="rounded-lg border border-[var(--line)] bg-[var(--paper-raised)] px-2 py-1.5 text-xs text-[var(--ink)] outline-none"
+          >
+            <option value="">No workspace</option>
+            {(workspaces ?? []).filter((garden) => garden.name !== ROOT_NAME).map((garden) => (
+              <option key={garden.slug} value={garden.slug}>{garden.name}</option>
+            ))}
+          </select>
+          <button
+            type="button"
+            onClick={() => void save()}
+            disabled={state.status === "saving" || workspaces === null}
+            className="neu-button-primary shrink-0 rounded-lg px-3 py-1.5 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {state.status === "saving" ? "Saving…" : "Save"}
+          </button>
+        </div>
+      )}
+      {state.status === "error" ? <p role="alert" className="mt-1.5 text-xs text-[var(--danger)]">{state.error}</p> : null}
+    </div>
+  );
+}
 
 function formatOutput(output: unknown): string {
   if (output === null || output === undefined) return "";
@@ -71,7 +210,7 @@ export function RunDrawer({ workflowId }: { workflowId: string }) {
       <button
         type="button"
         onClick={() => setDrawerOpen(true)}
-        className="neu-button-primary absolute bottom-4 right-4 z-10 flex items-center gap-2 rounded-full px-4 py-2.5 text-sm font-medium shadow-lg"
+        className="neu-button-primary absolute right-4 top-4 z-10 flex items-center gap-2 rounded-full px-4 py-2.5 text-sm font-medium shadow-lg"
       >
         <PlayIcon /> Run
       </button>
@@ -79,7 +218,7 @@ export function RunDrawer({ workflowId }: { workflowId: string }) {
   }
 
   return (
-    <div className="neu-surface-raised absolute inset-x-3 bottom-3 z-10 flex max-h-[45%] flex-col overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--paper-raised)] shadow-xl">
+    <div className="neu-surface-raised absolute inset-x-3 bottom-16 z-10 flex max-h-[55%] flex-col overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--paper-raised)] shadow-xl">
       <div className="flex shrink-0 items-center justify-between gap-2 border-b border-[var(--line)] px-4 py-2.5">
         <div className="flex min-w-0 flex-1 items-center gap-2">
           <input
@@ -121,6 +260,9 @@ export function RunDrawer({ workflowId }: { workflowId: string }) {
               {formatOutput(output)}
             </pre>
           </div>
+        ) : null}
+        {status === "success" && runId && output !== null && output !== undefined ? (
+          <SaveToWorkspace workflowId={workflowId} runId={runId} />
         ) : null}
         {logs.length ? (
           <div>

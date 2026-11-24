@@ -3,7 +3,7 @@ import db from "../db.ts";
 import { isReaderAssistantPageContext } from "../pdf-assistant-scope.ts";
 import { conversationOrigin } from "./session-surface.ts";
 import {
-  listConversationMessages,
+  listConversationTranscript,
   presentConversation,
   presentConversationMessage,
 } from "../conversations/store.ts";
@@ -199,7 +199,7 @@ export function presentHermesSessionDetail(conversation: ConversationRow) {
     : new Set<string>();
   let recoverableHardwareCards: Map<number, RecoverableHardwareCardSource> | null = null;
   const conversationMessages = projectConversationBranchMessages(
-    listConversationMessages(conversation.id),
+    listConversationTranscript(conversation.id),
   );
   const messages = conversationMessages.map((message, messageIndex) => {
     const presented = presentConversationMessage(message);
@@ -462,6 +462,8 @@ export function presentHermesSessionDetail(conversation: ConversationRow) {
       ...(metadata.internalAgentContinuation === true
         ? { internalAgentContinuation: true }
         : {}),
+      ...(metadata.goalContinuation === true || message.client_message_id?.startsWith("goal:")
+        ? { goalContinuation: true } : {}),
       ...(metadata.deliveryChannel === "telegram" ||
       metadata.deliveryChannel === "whatsapp"
         ? { deliveryChannel: metadata.deliveryChannel }

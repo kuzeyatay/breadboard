@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { activateGoalMode, accountGoalModeTurn, callGoalModeTool, clearGoalModeState,
-  clearGoalContinuationDeferral, extendGoalModeBudget, goalCanContinue, goalModePaths,
+  extendGoalModeBudget, goalCanContinue, goalModePaths,
   goalModeSection, goalTokensForUsage, readGoalModeState, setGoalModeStatus } from '../src/lib/goal-mode.ts';
 
 const home=fs.mkdtempSync(path.join(os.tmpdir(),'goal-codex-parity-'));
@@ -58,12 +58,10 @@ test('changing a budget does not silently resume a blocked or usage-limited goal
     assert.equal(extendGoalModeBudget({conversationPublicId:id,tokenBudget:1000,env}).status,stopped.status);
   }
 });
-test('a no-tool automatic turn defers continuation until user input or resume',()=>{
+test('a text-only automatic turn keeps an active goal moving',()=>{
   const state=create('no-tools');
-  assert.equal(goalCanContinue(account('no-tools',state,{automatic:true,toolCalls:0})),false);
+  assert.equal(goalCanContinue(account('no-tools',state,{automatic:true,toolCalls:0})),true);
   assert.equal(readGoalModeState('no-tools',env).status,'active');
-  clearGoalContinuationDeferral('no-tools',env);
-  assert.equal(goalCanContinue(readGoalModeState('no-tools',env)),true);
 });
 test('interruptions pause; permission refusals and usage limits stop without retry storms',()=>{
   for(const [outcome,expected] of [['cancelled','paused'],['error','blocked'],['usage_limited','usage_limited']]){

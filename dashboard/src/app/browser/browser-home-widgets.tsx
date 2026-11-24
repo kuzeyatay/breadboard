@@ -72,6 +72,7 @@ import {
   sketchRectOutlines,
   type SketchBox,
 } from "@/lib/hermes/sketch-outline";
+import { hasSquircleCorners } from "@/lib/squircle-corner";
 import {
   DEFAULT_PLAYER_PALETTE,
   paletteFromCover,
@@ -110,17 +111,20 @@ export function BrowserSketchOutline({
     if (!target) return;
     const measure = () => {
       const bounds = target.getBoundingClientRect();
-      const radius = Number.parseFloat(getComputedStyle(target).borderTopLeftRadius) || 12;
+      const style = getComputedStyle(target);
+      const radius = Number.parseFloat(style.borderTopLeftRadius) || 12;
       const next = {
         width: Math.round(bounds.width),
         height: Math.round(bounds.height),
         radius,
+        squircle: hasSquircleCorners(style),
       };
       setBox((previous) =>
         previous &&
         previous.width === next.width &&
         previous.height === next.height &&
-        previous.radius === next.radius
+        previous.radius === next.radius &&
+        previous.squircle === next.squircle
           ? previous
           : next,
       );

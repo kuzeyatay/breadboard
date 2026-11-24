@@ -83,17 +83,38 @@ interface ScheduleTemplate {
 }
 
 // Suggestions, not built-ins: each one is only a sentence the composer parses,
-// so what you get is exactly what the box says it understood.
-const TEMPLATES: ScheduleTemplate[] = [
+// so what you get is exactly what the box says it understood. The Terminal and
+// a garden get their own sets; several lean on Recall, the assistant's memory
+// of what was on screen, because "what was I doing" is what a schedule is
+// best placed to ask on your behalf.
+const TERMINAL_TEMPLATES: ScheduleTemplate[] = [
   {
     emoji: "🌅",
     name: "Daily brief",
     description: "Every day at 8am, brief me on what changed across my gardens since yesterday",
   },
   {
+    emoji: "🧠",
+    name: "Yesterday, recalled",
+    description:
+      "Every weekday at 9am, use Recall to remind me what I was working on yesterday and what I left half done",
+  },
+  {
     emoji: "🗂️",
     name: "Week in review",
     description: "Every Friday at 5pm, summarize what I worked on this week and what is still unfinished",
+  },
+  {
+    emoji: "⏳",
+    name: "Screen time check-in",
+    description:
+      "Every day at 6pm, use Recall to tell me where my time went today and one thing to do differently tomorrow",
+  },
+  {
+    emoji: "📬",
+    name: "Loose ends",
+    description:
+      "Every Monday at 9am, look back through my chats from last week and list every promise, deadline or follow-up",
   },
   {
     emoji: "📖",
@@ -106,14 +127,48 @@ const TEMPLATES: ScheduleTemplate[] = [
     description: "Every Monday at 9am, check for new work on the topics I have been reading about and summarize what is new",
   },
   {
-    emoji: "🧪",
-    name: "Exam prep",
-    description: "Every weekday at 7pm, quiz me on the weakest topic across my gardens",
+    emoji: "🧘",
+    name: "Sunday reset",
+    description: "Every Sunday at 7pm, help me plan the week ahead from what is still open",
   },
+];
+
+const GARDEN_TEMPLATES: ScheduleTemplate[] = [
   {
     emoji: "🌱",
+    name: "Grow the garden",
+    description:
+      "Every day at 9pm, use Recall to find what I read today and add anything new to the right note in this garden",
+  },
+  {
+    emoji: "🧪",
+    name: "Exam prep",
+    description: "Every weekday at 7pm, quiz me on the weakest topic in this garden",
+  },
+  {
+    emoji: "🃏",
+    name: "Flashcard review",
+    description: "Every day at 8am, give me five flashcards from the notes in this garden I have not looked at lately",
+  },
+  {
+    emoji: "🔗",
+    name: "Link weaver",
+    description: "Every Wednesday at 6pm, suggest new links between notes in this garden that should know about each other",
+  },
+  {
+    emoji: "🔎",
+    name: "Topic watch",
+    description: "Every Monday at 9am, check for new work on the topics in this garden and summarize what is new",
+  },
+  {
+    emoji: "🗂️",
+    name: "Garden digest",
+    description: "Every Friday at 5pm, summarize what changed in this garden this week and what is still a stub",
+  },
+  {
+    emoji: "🧹",
     name: "Garden tidy",
-    description: "Every month, point out notes with broken links, missing sources, or no connections",
+    description: "Every month, point out notes in this garden with broken links, missing sources, or no connections",
   },
 ];
 
@@ -744,7 +799,7 @@ export default function TerminalScheduledPanel({ surface, gardenSlug = null }: P
 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">
         <ul className="space-y-0.5">
-          {TEMPLATES.map((template) => (
+          {(gardenSlug ? GARDEN_TEMPLATES : TERMINAL_TEMPLATES).map((template) => (
             <li key={template.name}>
               <button
                 type="button"

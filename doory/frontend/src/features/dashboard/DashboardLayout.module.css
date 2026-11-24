@@ -164,6 +164,7 @@
   flex: none;
   padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-full);
+  corner-shape: round;
   color: var(--color-text-muted);
   font-size: var(--text-sm);
   font-weight: 600;

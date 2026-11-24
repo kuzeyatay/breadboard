@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 
 import db from "@/lib/db";
 import { removeDirectory, workflowDirectory } from "@/lib/teach/artifacts";
+import { ensureStarterWorkflows } from "@/lib/workflows/starter-workflows";
 import type { LocalWorkflowSummary } from "@/lib/workflows/types";
 
 export type WorkflowRow = {
@@ -53,6 +54,32 @@ function procedureOf(row: WorkflowRow): unknown {
 }
 
 const EMPTY_STATE = { blocks: {}, edges: [], loops: {}, parallels: {} };
+
+/**
+ * A new workflow starts with its Start block: it is what carries the text typed
+ * into Run (as <start.input>) into the graph, and the palette does not offer it.
+ */
+function blankState() {
+  const id = randomUUID();
+  return {
+    ...EMPTY_STATE,
+    blocks: {
+      [id]: {
+        id,
+        type: "starter",
+        name: "Start",
+        position: { x: 80, y: 120 },
+        subBlocks: {
+          startWorkflow: { id: "startWorkflow", type: "dropdown", value: "manual" },
+          inputFormat: { id: "inputFormat", type: "input-format", value: [] },
+        },
+        outputs: {},
+        enabled: true,
+        horizontalHandles: true,
+      },
+    },
+  };
+}
 
 function parseState(raw: string): unknown {
   try {
@@ -112,6 +139,7 @@ export function summarize(
 export function listWorkflows(
   userId: number,
 ): Array<LocalWorkflowSummary & { description: string; source: WorkflowSource; stepCount: number }> {
+  ensureStarterWorkflows(userId);
   const rows = db
     .prepare(`SELECT * FROM workflows WHERE user_id = ? ORDER BY updated_at DESC`)
     .all(userId) as WorkflowRow[];
@@ -159,7 +187,7 @@ export function createWorkflow(
   const id = randomUUID();
   const name = (input.name?.trim() || "Untitled workflow").slice(0, 200);
   const description = (input.description?.trim() ?? "").slice(0, 2000);
-  const state = input.state ?? EMPTY_STATE;
+  const state = input.state ?? blankState();
   db
     .prepare(
       `INSERT INTO workflows (id, user_id, name, description, state) VALUES (?, ?, ?, ?, ?)`,

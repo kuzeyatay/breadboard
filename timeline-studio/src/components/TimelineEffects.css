@@ -607,6 +607,7 @@
   width: 13px;
   height: 13px;
   border-radius: 50%;
+  corner-shape: round;
   background: #eaf3f5;
   border: 0;
   box-shadow: 0 1px 3px #0004;
@@ -800,6 +801,7 @@
   width: 13px;
   height: 13px;
   border-radius: 50%;
+  corner-shape: round;
   background: #eaf3f5;
   border: 0;
   box-shadow: 0 1px 3px #0004;

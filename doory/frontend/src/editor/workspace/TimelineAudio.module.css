@@ -173,6 +173,7 @@
   padding: 0 10px;
   border: 1px dashed var(--color-border-strong);
   border-radius: var(--radius-full);
+  corner-shape: round;
   background: transparent;
   color: var(--color-text-muted);
   font: 600 11px / 1 var(--font-sans);

@@ -48,6 +48,7 @@
   width: 16px;
   height: 16px;
   border-radius: 50%;
+  corner-shape: round;
   background: #fff;
   box-shadow: var(--shadow-sm);
   transition: transform var(--duration-base) var(--ease-out);

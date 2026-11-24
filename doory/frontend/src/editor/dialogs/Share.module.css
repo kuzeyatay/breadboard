@@ -52,6 +52,7 @@
   height: 20px;
   padding: 0 8px;
   border-radius: 999px;
+  corner-shape: round;
   background: var(--color-brand-soft);
   color: var(--color-brand);
   font: 700 11px / 1 var(--font-sans);

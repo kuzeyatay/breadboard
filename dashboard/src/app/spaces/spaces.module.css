@@ -50,6 +50,8 @@
 .error { display: flex; align-items: center; gap: 10px; margin-top: 14px; padding: 9px 12px; border-radius: 10px; font-size: 13px; color: #b42318; background: color-mix(in srgb, #b42318 8%, var(--surface)); }
 .error button { border: 0; background: transparent; color: var(--accent); font-weight: 600; }
 
+.proposals { margin-top: 24px; }
+.proposals:empty { display: none; }
 .library { margin-top: 28px; }
 .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 10px; }
 .tabs { display: inline-flex; flex-wrap: wrap; padding: 3px; gap: 2px; border-radius: 10px; background: var(--glass); backdrop-filter: var(--glass-blur); }

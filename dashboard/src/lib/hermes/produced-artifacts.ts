@@ -32,6 +32,7 @@ import {
   type ArtifactRow,
 } from "./artifact-store.ts";
 import type { ArtifactKind } from "./artifact-types.ts";
+import { isFilesystemRoot } from "./yolo-reach.ts";
 
 export const PRODUCED_FILE_SCAN_TOOL = "produced_file_scan";
 
@@ -298,7 +299,9 @@ export async function publishProducedFilesForRun(
   const report: ProducedFilesReport = { imported: [], skipped: [], scannedRoots: [] };
   if (!Number.isFinite(since)) return report;
 
-  const roots = [input.workspaceRoot, ...input.authorizedRoots];
+  // A whole-drive root is YOLO's reach, not a destination: sweeping it would
+  // card every file any other program touched during the turn.
+  const roots = [input.workspaceRoot, ...input.authorizedRoots.filter((root) => !isFilesystemRoot(root))];
   const found = findProducedEntries({
     roots,
     since,

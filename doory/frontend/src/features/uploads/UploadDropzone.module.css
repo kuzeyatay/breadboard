@@ -127,6 +127,7 @@
   height: 6px;
   border: 0;
   border-radius: var(--radius-full);
+  corner-shape: round;
   background: var(--color-bg-muted);
   overflow: hidden;
 }
@@ -138,6 +139,7 @@
 .progress::-webkit-progress-value {
   background: var(--color-brand-fill);
   border-radius: var(--radius-full);
+  corner-shape: round;
   transition: width var(--duration-base) var(--ease-out);
 }
 

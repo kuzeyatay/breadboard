@@ -77,6 +77,7 @@
   height: 2.75rem;
   border: 2px solid var(--ink);
   border-radius: 50%;
+  corner-shape: round;
   background: var(--paper);
   color: var(--ink);
   box-shadow: 2px 2px 0 rgb(43 28 23 / 0.15);

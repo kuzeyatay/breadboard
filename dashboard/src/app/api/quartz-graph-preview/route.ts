@@ -3,6 +3,7 @@ import { externalRuntimePath as path } from "@/lib/external-runtime-path";
 import { externalRuntimeFilesystem as fs } from '@/lib/external-runtime-filesystem';
 import { QUARTZ_BASE_URL, quartzUrl } from '@/lib/quartz-url';
 import { requireReadableClusterFromSlug, routeErrorResponse } from '@/lib/server-auth';
+import { keepFullRoundCorners, SQUIRCLE_DOCUMENT_CSS } from "@/lib/squircle-corner";
 
 export const dynamic = 'force-dynamic';
 
@@ -212,7 +213,7 @@ function injectPreviewShell(
     }).replace(/</g, '\\u003c')};</script>`,
     PREVIEW_LAYOUT_SCRIPT,
     `<base href="${baseHref}">`,
-    `<style>${PREVIEW_STYLE}</style>`,
+    `<style>${SQUIRCLE_DOCUMENT_CSS}${keepFullRoundCorners(PREVIEW_STYLE)}</style>`,
     PREVIEW_READY_SCRIPT,
   ].join('');
 

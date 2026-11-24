@@ -145,6 +145,7 @@ async function requestGardenTurnCheckpoint(
   // its older transcript snapshot could overwrite the newly saved question.
   await pendingChatSaves.get(sessionId)?.catch(() => undefined);
   type CheckpointResponse = {
+    code?: string;
     error?: string | { message?: string };
     userMessage?: { id?: string; clientMessageId?: string };
     assistantMessage?: { id?: string; clientMessageId?: string };
@@ -191,7 +192,7 @@ async function requestGardenTurnCheckpoint(
           : typeof body.error?.message === "string"
             ? body.error.message
             : "Chat history could not be saved.";
-      throw new Error(reason);
+      throw Object.assign(new Error(reason), { code: body.code, status: response.status });
     }
     return {
       clientMessageId: body.userMessage?.clientMessageId ?? clientMessageId,

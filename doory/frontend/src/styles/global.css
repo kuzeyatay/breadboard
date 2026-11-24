@@ -157,6 +157,7 @@ samp {
 ::-webkit-scrollbar-thumb {
   background: var(--color-border-strong);
   border-radius: var(--radius-full);
+  corner-shape: round;
   border: 2px solid transparent;
   background-clip: content-box;
 }
@@ -192,3 +193,9 @@ samp {
   --color-brand-strong: var(--ink);
 }
 
+
+/* Breadboard draws every rounded edge as a squircle (CSS `corner-shape:
+   squircle`). Zero specificity, so any explicit corner-shape wins; circles and
+   pills keep `corner-shape: round` beside their border-radius. */
+:where(*), :where(*)::before, :where(*)::after { corner-shape: squircle; }
+:where([style*="border-radius: 50%"], [style*="border-radius: 999px"], [style*="border-radius: 9999px"]) { corner-shape: round; }

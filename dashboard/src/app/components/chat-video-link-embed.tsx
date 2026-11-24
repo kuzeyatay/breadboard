@@ -160,8 +160,23 @@ function VerticalEmbed({ source }: { source: VideoSource }) {
   );
 }
 
-function VideoLinkCard({ source, children }: { source: VideoSource; children: ReactNode }) {
-  const vertical = source.provider === "tiktok" || source.provider === "instagram";
+/**
+ * The card every chat video sits in, a pasted link or an attached file, so
+ * the two read as the same object: raised shell, the media, one caption link.
+ */
+function VideoCardShell({
+  vertical = false,
+  href,
+  title,
+  caption,
+  children,
+}: {
+  vertical?: boolean;
+  href: string;
+  title?: string;
+  caption: string;
+  children: ReactNode;
+}) {
   // Enlarging is left to the player itself: YouTube, TikTok and Instagram ship
   // a fullscreen control inside their iframes (delegated via allow="fullscreen"),
   // and the native <video> has one in its controls. A second button here only
@@ -172,17 +187,99 @@ function VideoLinkCard({ source, children }: { source: VideoSource; children: Re
         {children}
         <div className="flex items-center px-2 pt-1">
           <a
-            href={source.canonicalUrl}
+            href={href}
             target="_blank"
             rel="noreferrer"
             className="min-w-0 flex-1 truncate text-xs text-[var(--ink-muted)] hover:text-[var(--ink-heading)] hover:underline"
-            title={source.originalUrl}
+            title={title}
           >
-            {PROVIDER_NAME[source.provider]} · {source.label} ↗
+            {caption} ↗
           </a>
         </div>
       </div>
     </div>
+  );
+}
+
+function VideoLinkCard({ source, children }: { source: VideoSource; children: ReactNode }) {
+  return (
+    <VideoCardShell
+      vertical={source.provider === "tiktok" || source.provider === "instagram"}
+      href={source.canonicalUrl}
+      title={source.originalUrl}
+      caption={`${PROVIDER_NAME[source.provider]} · ${source.label}`}
+    >
+      {children}
+    </VideoCardShell>
+  );
+}
+
+const FACADE_CLASS =
+  "group absolute inset-0 grid w-full cursor-pointer place-items-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--botanical)]";
+
+/**
+ * An attached video file, dressed exactly like a pasted YouTube link: a 16:9
+ * frame under the same play button, and the player inline after a click. The
+ * box keeps one height, so the virtualized row never moves.
+ *
+ * A format the browser decodes shows its own first frame; only metadata and
+ * that frame load before the click. Matroska, AVI and the rest play from an
+ * MP4 the server converts on first play, so their facade is a plain frame with
+ * the format named, and nothing is converted until someone presses play.
+ */
+export function ChatVideoAttachmentCard({
+  name,
+  href,
+  playbackHref,
+  sizeLabel,
+  nativelyPlayable,
+  formatLabel,
+}: {
+  name: string;
+  /** The original file: the caption link opens or downloads it as uploaded. */
+  href: string;
+  /** What the player loads: `href` itself, or the converted MP4 copy. */
+  playbackHref: string;
+  sizeLabel?: string | null;
+  nativelyPlayable: boolean;
+  formatLabel?: string;
+}) {
+  const [playing, setPlaying] = useState(false);
+  const [posterFailed, setPosterFailed] = useState(false);
+  const showFrame = nativelyPlayable && !posterFailed;
+  return (
+    <VideoCardShell href={href} title={name} caption={sizeLabel ? `${name} · ${sizeLabel}` : name}>
+      <div className="relative aspect-video w-full overflow-hidden rounded-[18px] bg-black">
+        {playing ? (
+          <BreadboardVideoPlayer src={playbackHref} title={name} autoPlay className="absolute inset-0 h-full w-full" />
+        ) : (
+          <button type="button" onClick={() => setPlaying(true)} className={FACADE_CLASS} aria-label={`Play ${name}`}>
+            {showFrame ? (
+              // The first frame stands in for a thumbnail: #t steps past a black
+              // opening frame, and preload stops at metadata plus that frame.
+              <video
+                src={`${playbackHref}#t=0.1`}
+                preload="metadata"
+                muted
+                playsInline
+                tabIndex={-1}
+                aria-hidden
+                className="pointer-events-none absolute inset-0 h-full w-full object-cover"
+                onError={() => setPosterFailed(true)}
+              />
+            ) : (
+              <span className="absolute inset-0 bg-gradient-to-b from-neutral-800 via-black to-neutral-900" />
+            )}
+            <span className="relative flex flex-col items-center gap-3">
+              <PlayGlyph />
+              {!nativelyPlayable && formatLabel ? (
+                <span className="text-xs font-medium tracking-wide text-white/70">{formatLabel}</span>
+              ) : null}
+            </span>
+          </button>
+        )}
+      </div>
+    </VideoCardShell>
   );
 }
 

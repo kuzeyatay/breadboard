@@ -100,6 +100,7 @@ pre:has(> code.penecho-board-block) {
     border: 2px solid color-mix(in srgb, var(--secondary) 24%, transparent);
     border-top-color: var(--secondary);
     border-radius: 50%;
+    corner-shape: round;
     animation: penecho-board-spin 750ms linear infinite;
   }
 

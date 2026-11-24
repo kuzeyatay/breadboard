@@ -233,12 +233,12 @@ test("the goal tools are gated on the skill or an existing goal, not on a reques
     "utf8",
   );
   assert.doesNotMatch(service, /input\.goalMode/);
-  assert.match(service, /const goalMode = \(goalModeState !== null && goalModeState\.status !== "complete"\) \|\| goalSkillSelected;/);
+  assert.match(service, /const goalMode = !input\.chatCoordination && \(\(goalModeState !== null && goalModeState\.status !== "complete"\) \|\| goalSkillSelected\);/);
   assert.match(service, /invocation\.slug === GOAL_MODE_SKILL/);
   // The dispatched run carries a null id on the creating turn, and the stream's
   // finalize resolves it — otherwise the first turn of every goal goes
   // unaccounted.
-  assert.match(service, /goalId: goalModeState\?\.goal_id \?\? null/);
+  assert.match(service, /goalId: goalModeState\?\.status === "complete" \? null : goalModeState\?\.goal_id \?\? null/);
   const stream = fs.readFileSync(
     new URL("../src/lib/hermes/event-stream.ts", import.meta.url),
     "utf8",

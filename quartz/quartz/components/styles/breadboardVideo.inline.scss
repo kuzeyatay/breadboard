@@ -83,6 +83,7 @@
   height: 3.4rem;
   border: 1px solid rgba(255, 255, 255, 0.26);
   border-radius: 50%;
+  corner-shape: round;
   background: var(--bb-video-scrim);
   backdrop-filter: blur(3px);
   transition:
@@ -126,6 +127,7 @@
   height: 3.4rem;
   border: 1px solid rgba(255, 255, 255, 0.26);
   border-radius: 50%;
+  corner-shape: round;
   background: var(--bb-video-scrim);
   backdrop-filter: blur(3px);
 }
@@ -244,6 +246,7 @@
   top: 50%;
   height: 3px;
   border-radius: 999px;
+  corner-shape: round;
   transform: translateY(-50%);
   pointer-events: none;
 }
@@ -289,6 +292,7 @@
   margin-top: 0.1rem;
   border: 0;
   border-radius: 50%;
+  corner-shape: round;
   background: var(--bb-video-chrome);
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
 }
@@ -303,6 +307,7 @@
   height: 0.7rem;
   border: 0;
   border-radius: 50%;
+  corner-shape: round;
   background: var(--bb-video-chrome);
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
 }
@@ -320,6 +325,7 @@
 .bb-video-volume::-webkit-slider-runnable-track {
   height: 3px;
   border-radius: 999px;
+  corner-shape: round;
   background: rgba(255, 255, 255, 0.28);
 }
 
@@ -330,12 +336,14 @@
   margin-top: -0.15rem;
   border: 0;
   border-radius: 50%;
+  corner-shape: round;
   background: var(--bb-video-chrome);
 }
 
 .bb-video-volume::-moz-range-track {
   height: 3px;
   border-radius: 999px;
+  corner-shape: round;
   background: rgba(255, 255, 255, 0.28);
 }
 
@@ -344,6 +352,7 @@
   height: 0.6rem;
   border: 0;
   border-radius: 50%;
+  corner-shape: round;
   background: var(--bb-video-chrome);
 }
 

@@ -6,6 +6,15 @@ import { getConversationById, failAssistantMessage } from "./conversations/store
 import { goalCanContinue, readGoalModeState } from "./goal-mode.ts";
 import { getRuntimeRun, parseRuntimeRunDispatch, type RuntimeRunRow } from "./hermes/run-store.ts";
 import { recordAuditEvent } from "./hermes/runtime-store.ts";
+import type { GoalTurnSnapshot } from "./goal-turn-activity.ts";
+
+/** The composer polls goal state even when this viewer owns no stream. */
+export function latestGoalTurn(conversationId: number, goalId: string): GoalTurnSnapshot | null {
+  const latest = db.prepare(`SELECT client_message_id AS clientMessageId, status
+    FROM conversation_messages WHERE conversation_id=? AND role='assistant'
+    ORDER BY order_index DESC LIMIT 1`).get(conversationId) as GoalTurnSnapshot | undefined;
+  return latest?.clientMessageId?.startsWith(`goal:${goalId}:`) ? latest : null;
+}
 
 export function goalContinuationCurrent(conversationId: number, sourceRunId: string, goalId: string, ownClientMessageId = ""): boolean {
   if (conversationHasActiveSwarm(db, conversationId)) return false;

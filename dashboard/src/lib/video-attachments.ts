@@ -25,7 +25,10 @@ export interface VideoFormatDescriptor {
   mimeType: string;
   /** Shown on the attachment chip. */
   label: string;
-  /** False for the containers no browser will play; those are stored, not played. */
+  /**
+   * False for the containers no browser opens natively. Those still play: the
+   * server makes an MP4 copy on first play (see `chatVideoPlaybackHref`).
+   */
   playable: boolean;
 }
 
@@ -37,7 +40,7 @@ export const VIDEO_ATTACHMENT_FORMATS: Record<VideoAttachmentFormat, VideoFormat
   m4v: { mimeType: "video/x-m4v", label: "M4V", playable: true },
   webm: { mimeType: "video/webm", label: "WebM", playable: true },
   // ffmpeg reads these happily; a browser <video> element usually will not, so
-  // they are kept and analyzed rather than offered as something to press play on.
+  // playback goes through the converted MP4 copy instead of the original.
   mkv: { mimeType: "video/x-matroska", label: "Matroska", playable: false },
   avi: { mimeType: "video/x-msvideo", label: "AVI", playable: false },
   mpg: { mimeType: "video/mpeg", label: "MPEG", playable: false },
@@ -88,6 +91,15 @@ export function videoFormatLabel(format: VideoAttachmentFormat): string {
 
 export function isPlayableVideoFormat(format: VideoAttachmentFormat): boolean {
   return VIDEO_ATTACHMENT_FORMATS[format].playable;
+}
+
+/**
+ * The URL a chat player should load: the stored file itself when the browser
+ * decodes it, otherwise the MP4 copy the server converts on first request.
+ */
+export function chatVideoPlaybackHref(blobId: string, format: VideoAttachmentFormat): string {
+  const href = `/api/chat-attachments/videos/${encodeURIComponent(blobId)}`;
+  return isPlayableVideoFormat(format) ? href : `${href}?playback=mp4`;
 }
 
 /** `vid_` plus a hyphen-free UUID, the same shape a model blob id uses. */

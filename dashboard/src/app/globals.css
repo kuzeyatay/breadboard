@@ -50,6 +50,17 @@
   [class*="after:rounded-full"]::after {
     corner-shape: round;
   }
+
+  /* metal-fx (the send button) paints its ring in WebGL with circular arcs
+     from radii it computes itself; a canvas cannot follow corner-shape, so
+     the disc and everything inside it stay round to keep the ring on the
+     disc's edge. */
+  .metal-fx-root,
+  .metal-fx-root *,
+  .metal-fx-root *::before,
+  .metal-fx-root *::after {
+    corner-shape: round;
+  }
 }
 
 /* Shared loading mark. One geometric guide stays completely still while four
@@ -11873,6 +11884,8 @@ html[data-voice-minimized="true"] .voice-companion-drag { display: none; }
   padding: 0;
   aspect-ratio: auto;
   border-radius: 23px;
+  /* The full-size ring is a circle; minimized it is a rounded square. */
+  corner-shape: squircle;
   text-align: left;
   color: inherit;
   transform: none;

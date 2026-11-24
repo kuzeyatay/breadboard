@@ -45,6 +45,7 @@
   height: 4px;
   overflow: hidden;
   border-radius: var(--radius-full);
+  corner-shape: round;
   background: var(--color-border);
 }
 .transportBar > span {
@@ -150,6 +151,7 @@
   padding: 0 12px;
   border: 1px solid var(--color-border-strong);
   border-radius: var(--radius-full);
+  corner-shape: round;
   background: var(--color-surface);
   color: var(--color-text);
   font: 600 var(--text-xs) / 1 var(--font-sans);
@@ -495,6 +497,7 @@
   left: 8px;
   width: 4px;
   border-radius: var(--radius-full);
+  corner-shape: round;
   background: var(--color-brand);
 }
 .trimGrip::after {
@@ -582,6 +585,7 @@
   height: 3px;
   overflow: hidden;
   border-radius: var(--radius-full);
+  corner-shape: round;
   background: var(--color-border);
 }
 .progress > span {
@@ -823,6 +827,7 @@
   width: 10px;
   height: 10px;
   border-radius: 50%;
+  corner-shape: round;
   background: var(--color-brand);
 }
 .elapsed {
@@ -835,6 +840,7 @@
   height: 8px;
   overflow: hidden;
   border-radius: var(--radius-full);
+  corner-shape: round;
   background: var(--color-border);
 }
 .meter > span {
@@ -850,6 +856,7 @@
   border: 3px solid var(--color-border-strong);
   border-top-color: var(--color-brand);
   border-radius: 50%;
+  corner-shape: round;
 }
 .take {
   display: flex;

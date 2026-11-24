@@ -73,6 +73,7 @@
   height: 26px;
   overflow: hidden;
   border-radius: 50%;
+  corner-shape: round;
   background: var(--color-brand-soft);
   color: var(--color-brand);
   font: 700 11px / 1 var(--font-sans);
@@ -128,6 +129,7 @@
   padding: 0 7px;
   border: 0;
   border-radius: 999px;
+  corner-shape: round;
   background: var(--ed-surface-3);
   color: var(--ed-text-dim);
   font: 600 10px / 1 var(--font-sans);
@@ -182,6 +184,7 @@
   height: 18px;
   padding: 0 7px;
   border-radius: 999px;
+  corner-shape: round;
   background: var(--color-bg-muted);
   color: var(--color-text-muted);
   font: 600 10px / 1 var(--font-sans);

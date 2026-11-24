@@ -85,6 +85,7 @@
   padding: var(--space-1) var(--space-3);
   background: var(--color-bg-muted);
   border-radius: var(--radius-full);
+  corner-shape: round;
   color: var(--color-text);
   font-size: var(--text-sm);
   font-weight: 500;

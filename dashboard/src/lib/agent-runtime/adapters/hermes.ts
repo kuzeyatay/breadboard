@@ -591,6 +591,7 @@ export class HermesRuntimeAdapter implements AgentRuntime {
       "memory_query",
       "workflow_propose",
       "workflow_create",
+      "workflow_update",
       "document_skill_read",
       "capability_gap",
       "capability_search",

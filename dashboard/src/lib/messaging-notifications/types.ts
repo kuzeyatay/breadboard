@@ -2,6 +2,7 @@ export type NotificationChannel = "whatsapp" | "telegram";
 
 export interface MessagingNotificationSettings {
   enabled: boolean;
+  includeChatCompletions: boolean;
   recipient: string;
   recipients: Array<{ id: string; label: string }>;
   available: boolean;

@@ -50,6 +50,7 @@
   padding: 0;
   border: 1px solid var(--ed-border);
   border-radius: 50%;
+  corner-shape: round;
   cursor: pointer;
   transition: transform var(--ed-dur) var(--ed-ease);
 }
@@ -72,6 +73,7 @@
   padding: 0;
   border: 1px solid var(--ed-border);
   border-radius: 50%;
+  corner-shape: round;
   background: var(--ed-surface);
   color: var(--ed-text-dim);
   cursor: pointer;
@@ -103,6 +105,7 @@
   overflow: hidden;
   border: 1px solid var(--ed-border);
   border-radius: 999px;
+  corner-shape: round;
   background: var(--ed-surface);
   color: var(--ed-text);
   font-size: 13px;
@@ -168,6 +171,7 @@
   padding: 0 12px;
   border: 1px solid var(--ed-border);
   border-radius: 999px;
+  corner-shape: round;
   background: var(--ed-surface);
   color: var(--ed-text);
   font: 500 13px / 1 var(--font-sans);
@@ -191,6 +195,7 @@
   padding: 0;
   border: 1px dashed var(--ed-border);
   border-radius: 50%;
+  corner-shape: round;
   background: transparent;
   color: var(--ed-text-dim);
   cursor: pointer;

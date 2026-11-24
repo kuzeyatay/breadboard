@@ -15,9 +15,11 @@ export interface SpacesGarden { slug: string; name: string }
  * with Bread in the bottom-right corner: the same assistant the Garden uses, which reaches
  * Design and Video through their tool connections. No editor gets an assistant of its own.
  */
-export default function SpacesShell({ showFlowers, trail, actions, garden, pageKey, initialAssistantOpen = false, children }: {
+export default function SpacesShell({ showFlowers, trail, title, actions, garden, pageKey, initialAssistantOpen = false, children }: {
   showFlowers: boolean;
   trail: string[];
+  /** A last breadcrumb the editor owns, such as a name field it renames in place. */
+  title?: ReactNode;
   actions?: ReactNode;
   garden: SpacesGarden | null;
   /** The open file (`file:<id>`), so Bread here shares that file's chats with the Garden reader. */
@@ -41,8 +43,9 @@ export default function SpacesShell({ showFlowers, trail, actions, garden, pageK
           <NavigationLink href="/spaces" label="Spaces" prefetch={false} className={styles.crumbHome}><ArrowLeft size={15} aria-hidden="true" />Spaces</NavigationLink>
           {trail.filter(Boolean).map((part, index, all) => <span key={index} className={styles.crumbPart}>
             <span aria-hidden="true">/</span>
-            <span className={index === all.length - 1 ? styles.crumbTitle : styles.crumbKind} title={part}>{part}</span>
+            <span className={index === all.length - 1 && !title ? styles.crumbTitle : styles.crumbKind} title={part}>{part}</span>
           </span>)}
+          {title && <span className={styles.crumbPart}><span aria-hidden="true">/</span>{title}</span>}
         </nav>
         <div className={styles.actions}>{actions}</div>
       </header>

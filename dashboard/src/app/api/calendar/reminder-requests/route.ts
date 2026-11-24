@@ -10,14 +10,11 @@ import {
 import { endOfDay, startOfDay, todayDate } from "@/lib/calendar/wallclock.ts";
 import { telegramFeatureEnabled } from "@/lib/telegram/config.ts";
 import { hasBotToken } from "@/lib/telegram/credentials.ts";
-import { getTelegramStore } from "@/lib/telegram/instance.ts";
+import { getMessagingNotificationStore } from "@/lib/messaging-notifications/instance.ts";
 import { whatsAppFeatureEnabled } from "@/lib/whatsapp/config.ts";
 import { normalizeWhatsAppIdentifier } from "@/lib/whatsapp/identity.ts";
 import { getWhatsAppStore } from "@/lib/whatsapp/instance.ts";
-import {
-  resolveTelegramSelfTarget,
-  resolveWhatsAppSelfTarget,
-} from "@/lib/messaging/self-target.ts";
+import { resolveWhatsAppSelfTarget } from "@/lib/messaging/self-target.ts";
 import { getScheduledChatJobStore } from "@/lib/schedules/instance.ts";
 import { scheduledChatReceiptForUser } from "@/lib/schedules/receipt-server.ts";
 import { ScheduleError } from "@/lib/schedules/store.ts";
@@ -37,14 +34,7 @@ function availablePhoneChannel(
   for (const channel of order) {
     if (channel === "telegram") {
       if (!telegramFeatureEnabled() || !hasBotToken()) continue;
-      const store = getTelegramStore();
-      const settings = store.settings();
-      if (settings.ownerUserId !== userId || !settings.botId) continue;
-      const target = resolveTelegramSelfTarget({
-        linked: true,
-        ownerUserId: settings.ownerUserId,
-        chats: store.listChats(userId, 100),
-      });
+      const target = getMessagingNotificationStore().telegramOwnerTarget(userId);
       if (target.ok) return "telegram";
       continue;
     }

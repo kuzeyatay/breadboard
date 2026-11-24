@@ -7,12 +7,14 @@ import AttachmentPreviewDialog, {
   type AttachmentPreviewSource,
 } from "@/app/components/attachment-preview-dialog";
 import ModelAttachmentViewer from "@/app/components/model-attachment-viewer";
+import { ChatVideoAttachmentCard } from "@/app/components/chat-video-link-embed";
 import {
   chatAttachmentHref,
   visibleChatMessageAttachments,
   type ChatMessageAttachment,
 } from "@/lib/chat-attachments";
 import {
+  chatVideoPlaybackHref,
   formatVideoSize,
   isPlayableVideoFormat,
   videoFormatLabel,
@@ -285,39 +287,15 @@ function ChatMessageAttachments({
         {videos.length ? (
           <div className="flex w-full flex-col items-end gap-1.5">
             {videos.map((attachment, index) => (
-              <AttachmentPreviewDialog
+              <ChatVideoAttachmentCard
                 key={`${attachment.blobId}-${index}`}
-                source={{
-                  kind: "video",
-                  name: attachment.name,
-                  href: `/api/chat-attachments/videos/${attachment.blobId}`,
-                  playable: isPlayableVideoFormat(attachment.format),
-                }}
-                className="neu-surface-raised flex w-full max-w-[min(32rem,72vw)] items-center gap-2 rounded-xl border border-[var(--line)] px-3 py-2 text-left text-xs text-[var(--ink-muted)] transition hover:border-[var(--botanical)] hover:text-[var(--ink)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--botanical)]"
-                title={`Play ${attachment.name}`}
-              >
-                <svg
-                  aria-hidden
-                  className="h-4 w-4 shrink-0"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                  strokeWidth={1.7}
-                >
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h10.5v10.5H3.75zM14.25 10.5 20.25 7.5v9l-6-3z" />
-                </svg>
-                <span className="min-w-0 flex-1 truncate">
-                  {attachment.name}
-                  {formatVideoSize(attachment.sizeBytes)
-                    ? ` · ${formatVideoSize(attachment.sizeBytes)}`
-                    : ""}
-                </span>
-                <span className="shrink-0 text-[10px]">
-                  {isPlayableVideoFormat(attachment.format)
-                    ? "Open player"
-                    : videoFormatLabel(attachment.format)}
-                </span>
-              </AttachmentPreviewDialog>
+                name={attachment.name}
+                href={`/api/chat-attachments/videos/${attachment.blobId}`}
+                playbackHref={chatVideoPlaybackHref(attachment.blobId, attachment.format)}
+                sizeLabel={formatVideoSize(attachment.sizeBytes)}
+                nativelyPlayable={isPlayableVideoFormat(attachment.format)}
+                formatLabel={videoFormatLabel(attachment.format)}
+              />
             ))}
           </div>
         ) : null}

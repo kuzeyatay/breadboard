@@ -8,6 +8,7 @@ import { saveArtifactPdfBytes } from "@/lib/hermes/artifact-pdf-save.ts";
 import { authorizeGardenAccess } from "@/lib/hermes/session-service.ts";
 import { withInteractiveVisualizerWheelZoom } from "@/lib/hermes/interactive-visualizer-wheel.ts";
 import { withInteractiveVisualizerInlineLayout } from "@/lib/hermes/interactive-visualizer-inline.ts";
+import { keepFullRoundCorners, SQUIRCLE_DOCUMENT_CSS } from "@/lib/squircle-corner";
 
 export const dynamic = "force-dynamic";
 
@@ -15,6 +16,7 @@ const INTERACTIVE_PREVIEW_GUARDS = `<style data-breadboard-visualizer-guards>
 [hidden]{display:none!important}
 [data-action]{isolation:isolate;line-height:0}
 [data-action]>svg{display:block;width:min(20px,55%);height:min(20px,55%);margin:auto}
+${SQUIRCLE_DOCUMENT_CSS}
 </style>`;
 
 /**
@@ -25,6 +27,9 @@ const INTERACTIVE_PREVIEW_GUARDS = `<style data-breadboard-visualizer-guards>
 function guardInteractiveVisualizerPreview(source: string): string {
   source = withInteractiveVisualizerWheelZoom(source);
   if (source.includes("data-breadboard-visualizer-guards")) return source;
+  // Squircle corners like the rest of Breadboard; bundles from before that
+  // change keep their circles and pills round.
+  source = keepFullRoundCorners(source);
   return /<\/head\s*>/i.test(source)
     ? source.replace(/<\/head\s*>/i, `${INTERACTIVE_PREVIEW_GUARDS}</head>`)
     : `${INTERACTIVE_PREVIEW_GUARDS}${source}`;

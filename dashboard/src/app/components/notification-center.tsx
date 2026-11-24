@@ -80,7 +80,7 @@ export default function NotificationCenter({ notifications, status, onRefresh, o
       </div>
       <Dialog.Portal>
         <Dialog.Overlay className={panelStyles.scrim} />
-        <Dialog.Content className={panelStyles.panel} data-notification-center aria-describedby={undefined}>
+        <Dialog.Content className={`${panelStyles.panel} ${styles.panel}`} data-notification-center aria-describedby={undefined}>
           <header className={panelStyles.header}>
             <div className={styles.titleGroup}>
               {settingsOpen && <button type="button" className={panelStyles.iconButton} aria-label="Back to notifications" onClick={() => setSettingsOpen(false)}>

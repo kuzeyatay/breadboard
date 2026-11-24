@@ -1014,6 +1014,56 @@ export function elevateForSuperAgent(plan: TaskPlan): TaskPlan {
   };
 }
 
+/**
+ * Widen a plan for a turn that pursues a persistent goal.
+ *
+ * A goal names an end state to reach, never a question to answer, yet its
+ * objective is usually phrased as a briefing ("read the brief in <folder> and
+ * accomplish the task using <app>"). The lexical planner reads that as an
+ * inspection and grants read access only — and because every continuation
+ * re-plans from the same objective, the whole goal ran review-only and could
+ * only ever report that it lacked edit and run access.
+ *
+ * So a goal turn gets the Super Agent reach (skills, connections/MCP, app
+ * control, delegation, web), command execution, and — when the objective names
+ * a folder — coding, which the broker still authorizes only against the user's
+ * own write grant for that folder. A missing grant becomes a permission card,
+ * not a silently read-only turn. An objective with no folder gains no
+ * filesystem class, so a research goal never stalls asking for one.
+ */
+//
+// YOLO takes the same widening. YOLO approves whatever the plan asks for, so a
+// YOLO turn whose plan only asked to read stayed review-only with nothing left
+// to approve. Widening the plan is what lets "act without asking" act; the
+// server's YOLO preflight then auto-grants the folder (up to the user's chosen
+// autonomy tier), so no card appears.
+export function elevateForGoal(plan: TaskPlan, reason: "goal" | "yolo" = "goal"): TaskPlan {
+  const capabilities = new Set<TaskCapability>(plan.requiredCapabilities);
+  for (const capability of SUPER_AGENT_CAPABILITIES) capabilities.add(capability);
+  capabilities.add("command_execution");
+  const namesFolder = plan.requiredResources.some((resource) => resource.kind === "path");
+  // YOLO never depends on phrasing: "apply the fix in mendix" names no folder,
+  // and gating write on a named one left such turns inspect-only. Under YOLO
+  // the turn also carries a whole-machine grant (see yoloReachGrants), so the
+  // broker can satisfy coding without asking.
+  if (namesFolder || reason === "yolo") {
+    capabilities.add("coding");
+    capabilities.add("filesystem_write");
+  }
+  const why = reason === "goal"
+    ? "This turn pursues a persistent goal, which is an end state to reach rather than a question to answer"
+    : "YOLO mode is on, so the turn is planned to act rather than only inspect";
+  return {
+    ...plan,
+    requiredCapabilities: [...capabilities],
+    intendedOutcome: reason === "goal"
+      ? "Reach the goal's requested end state and verify it against current evidence."
+      : plan.intendedOutcome,
+    rationale:
+      `${plan.rationale} ${why}, so skills, connections, app control, delegation, web and command execution were added${namesFolder ? ", plus coding in the named folder" : ""}.`,
+  };
+}
+
 function explainPlan(signals: Signals, isolated: boolean): string {
   if (isolated) {
     return "This session is unauthenticated or isolated, so only public conversation and public garden context were planned.";

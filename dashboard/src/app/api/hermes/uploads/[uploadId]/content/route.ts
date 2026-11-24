@@ -10,6 +10,7 @@ import {
 } from "@/lib/conversations/uploads.ts";
 import { readModelBlob } from "@/lib/conversations/model-blob-store.ts";
 import { modelFormatMimeType } from "@/lib/model-attachments.ts";
+import { chatVideoPlaybackHref } from "@/lib/video-attachments.ts";
 import { findStoredFileBlob } from "@/lib/conversations/stored-file-blob-store.ts";
 import { STORED_FILE_ATTACHMENT_FORMATS } from "@/lib/stored-file-attachments.ts";
 import { findDocumentBlob } from "@/lib/conversations/document-blob-store.ts";
@@ -61,8 +62,16 @@ export async function GET(
     // it and honours range requests, so this hands the caller over to it rather
     // than buffering gigabytes to say the same thing.
     if (attachment.type === "video") {
+      // A preview gets the browser-playable copy (Matroska and AVI convert to
+      // MP4 on first play); a download keeps the original file.
+      const download = new URL(request.url).searchParams.get("download") === "1";
       return NextResponse.redirect(
-        new URL(`/api/chat-attachments/videos/${attachment.blobId}`, request.url),
+        new URL(
+          download
+            ? `/api/chat-attachments/videos/${attachment.blobId}`
+            : chatVideoPlaybackHref(attachment.blobId, attachment.format),
+          request.url,
+        ),
         307,
       );
     }

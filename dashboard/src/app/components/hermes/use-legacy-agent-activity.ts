@@ -20,6 +20,7 @@ import {
 } from "./permission-client";
 import {
   attachmentOnlyMessageText,
+  attachmentsForRequest,
   type ChatAttachment,
 } from "@/lib/chat-attachments.ts";
 
@@ -409,7 +410,7 @@ export function useLegacyAgentActivity(restored?: {
       body: JSON.stringify({
         runId,
         text: trimmed,
-        attachments,
+        attachments: attachmentsForRequest(attachments),
         textSelection,
         clientRequestId: crypto.randomUUID(),
       }),

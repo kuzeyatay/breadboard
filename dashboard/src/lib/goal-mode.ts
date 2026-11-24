@@ -250,6 +250,47 @@ export function activateGoalMode(input: {
   return state;
 }
 
+export type GoalCommand =
+  | { kind: "set"; objective: string }
+  | { kind: "pause" }
+  | { kind: "resume" }
+  | { kind: "clear" };
+
+/**
+ * Read an explicit `/goal …` the person typed. A bare `/goal` is not a
+ * command here (it falls through to the skill, as before).
+ */
+export function parseGoalCommand(text: string): GoalCommand | null {
+  const match = /^\s*\/goal(?:\s+([\s\S]*))?$/i.exec(text);
+  const args = match?.[1]?.trim();
+  if (!args) return null;
+  const control = args.toLowerCase();
+  if (control === "pause") return { kind: "pause" };
+  if (control === "resume") return { kind: "resume" };
+  if (control === "clear" || control === "abandon" || control === "stop") return { kind: "clear" };
+  return { kind: "set", objective: args };
+}
+
+/** Apply the person's own `/goal` command. Never reachable by the model. */
+export function applyGoalCommand(
+  conversationPublicId: string,
+  command: GoalCommand,
+  env: NodeJS.ProcessEnv = process.env,
+): GoalModeState | null {
+  const existing = readGoalModeState(conversationPublicId, env);
+  if (command.kind === "clear") {
+    clearGoalModeState(conversationPublicId, env);
+    return null;
+  }
+  if (command.kind === "pause" || command.kind === "resume") {
+    if (!existing || existing.status === "complete") return existing;
+    setGoalModeStatus({ conversationPublicId, status: command.kind === "pause" ? "paused" : "active", env });
+    return readGoalModeState(conversationPublicId, env);
+  }
+  if (existing && existing.status !== "complete") clearGoalModeState(conversationPublicId, env);
+  return activateGoalMode({ conversationPublicId, objective: command.objective, env });
+}
+
 /**
  * Move a goal between the two states the person controls. The model cannot
  * reach this: pausing and resuming are decisions about whether work should
@@ -388,7 +429,6 @@ export function accountGoalModeTurn(input: {
     accounting: { ...state.accounting, [receiptId]: { tokens, seconds, ended } },
     runtime_failures: runtimeFailures,
     runtime_failure_fingerprint: ended ? fingerprint : state.runtime_failure_fingerprint,
-    continuation_deferred: ended && input.automatic === true && input.toolCalls === 0 && !recoverableFailure,
     status,
     updated_at: nowIso(input.now),
   };

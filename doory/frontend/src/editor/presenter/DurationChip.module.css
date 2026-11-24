@@ -7,6 +7,7 @@
   padding: 0 7px;
   border: 0;
   border-radius: var(--radius-full);
+  corner-shape: round;
   background: var(--color-brand-soft);
   color: var(--color-brand);
   font: 600 11px / 1 var(--font-sans);

@@ -2,6 +2,7 @@
   display: inline-grid;
   place-items: center;
   border-radius: 50%;
+  corner-shape: round;
   transition: box-shadow var(--duration-fast) var(--ease-out);
 }
 

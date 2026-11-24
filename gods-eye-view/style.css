@@ -177,6 +177,7 @@ body.cockpit-mode #cockpit-cloud-effects.active {
   box-sizing: border-box;
   border: 0.8px solid rgba(151, 218, 232, 0.095);
   border-radius: 50%;
+  corner-shape: round;
   will-change: width, height;
 }
 
@@ -326,6 +327,7 @@ body.cockpit-mode #cockpit-cloud-effects.active {
   background: var(--glass-bg);
   border: 1px solid var(--glass-border);
   border-radius: 999px;
+  corner-shape: round;
   box-shadow:
     0 8px 32px rgba(0, 0, 0, 0.5),
     0 0 0 1px rgba(255, 255, 255, 0.03) inset,
@@ -345,6 +347,7 @@ body.cockpit-mode #cockpit-cloud-effects.active {
   background: rgba(0, 212, 255, 0.06);
   border: 1px solid rgba(0, 212, 255, 0.28);
   border-radius: var(--btn-radius);
+  corner-shape: squircle;
   font-family: var(--font-mono);
   font-size: 10px;
   letter-spacing: 0;
@@ -400,6 +403,7 @@ body.cockpit-mode #cockpit-cloud-effects.active {
   border-color: rgba(255, 92, 110, 0.6);
   /* Multi-line error block reads as a panel, not a capsule */
   border-radius: var(--panel-radius);
+  corner-shape: squircle;
 }
 
 #gev-voice-control[data-status='error'] #gev-voice-status {
@@ -660,6 +664,7 @@ body.cockpit-mode #cockpit-cloud-effects.active {
   margin-bottom: 2px;
   padding: 2px 8px;
   border-radius: 999px;
+  corner-shape: round;
   border: 1px solid rgba(255, 255, 255, 0.12);
   background: rgba(255, 255, 255, 0.04);
   font-family: var(--font-mono);
@@ -1083,6 +1088,7 @@ body.cockpit-mode #cockpit-cloud-effects.active {
   width: 10px;
   height: 10px;
   border-radius: 50%;
+  corner-shape: round;
   background: var(--accent);
   box-shadow: 0 0 6px var(--accent-glow);
   cursor: pointer;
@@ -1092,6 +1098,7 @@ body.cockpit-mode #cockpit-cloud-effects.active {
   width: 10px;
   height: 10px;
   border-radius: 50%;
+  corner-shape: round;
   background: var(--accent);
   border: none;
   box-shadow: 0 0 6px var(--accent-glow);
@@ -1132,6 +1139,7 @@ body.cockpit-mode #cockpit-cloud-effects.active {
   margin-top: -3.5px;
   border: 0;
   border-radius: 50%;
+  corner-shape: round;
   -webkit-appearance: none;
   appearance: none;
   background: var(--accent);
@@ -1150,6 +1158,7 @@ body.cockpit-mode #cockpit-cloud-effects.active {
   height: 10px;
   border: 0;
   border-radius: 50%;
+  corner-shape: round;
   background: var(--accent);
   box-shadow: 0 0 6px var(--accent-glow);
   cursor: pointer;
@@ -1389,6 +1398,7 @@ body.cockpit-mode #cockpit-cloud-effects.active {
   transform: translateX(50%);
   z-index: 300;
   border-radius: 999px;
+  corner-shape: round;
   border: 1px solid rgba(255, 255, 255, 0.25);
   background: rgba(8, 10, 14, 0.88);
   color: #d9f7ff;
@@ -1570,6 +1580,7 @@ body.ui-clean-view #scene-runtime.active {
   width: 12px;
   height: 12px;
   border-radius: 50%;
+  corner-shape: round;
   background: var(--accent);
   box-shadow: 0 0 6px var(--accent-glow);
   cursor: pointer;
@@ -1584,6 +1595,7 @@ body.ui-clean-view #scene-runtime.active {
   width: 12px;
   height: 12px;
   border-radius: 50%;
+  corner-shape: round;
   background: var(--accent);
   border: none;
   box-shadow: 0 0 6px var(--accent-glow);
@@ -1830,6 +1842,7 @@ body.ui-clean-view #scene-runtime.active {
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 50%;
+  corner-shape: round;
   cursor: pointer;
   transition: all var(--transition-fast);
   outline: none;
@@ -1891,6 +1904,7 @@ body.ui-clean-view #scene-runtime.active {
   background: var(--glass-bg);
   border: 1px solid var(--glass-border);
   border-radius: 50%;
+  corner-shape: round;
   color: var(--text-secondary);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
@@ -2269,6 +2283,7 @@ body.ui-clean-view #scene-runtime.active {
   inset: 18px 6% 0;
   border-top: 1px solid color-mix(in srgb, var(--cockpit-accent) 62%, transparent);
   border-radius: 50%;
+  corner-shape: round;
   opacity: 0.72;
 }
 .cockpit-roll-arc span {
@@ -2457,6 +2472,7 @@ body.cockpit-mode:has(#left-panel-stack > .panel-collapsible:not(.collapsed)) .c
   height: calc((var(--cockpit-keyhole-radius) - 20px) * 2);
   border: 2px solid color-mix(in srgb, var(--cockpit-accent) 72%, transparent);
   border-radius: 50%;
+  corner-shape: round;
   box-shadow: 5px 0 18px color-mix(in srgb, var(--cockpit-accent) 18%, transparent);
 }
 .cockpit-altitude-rim-scale {
@@ -2636,6 +2652,7 @@ body.cockpit-mode:has(#left-panel-stack > .panel-collapsible:not(.collapsed)) .c
   height: 5px;
   margin-right: 6px;
   border-radius: 50%;
+  corner-shape: round;
   background: var(--cockpit-accent);
   box-shadow: 0 0 8px var(--cockpit-accent);
   animation: cockpit-live 1.6s ease-in-out infinite;
@@ -2774,6 +2791,7 @@ body.cockpit-mode:has(#left-panel-stack > .panel-collapsible:not(.collapsed)) .c
   inset: 10px 2% 0;
   border-top: 1px solid color-mix(in srgb, var(--cockpit-accent) 78%, transparent);
   border-radius: 50%;
+  corner-shape: round;
   background: rgba(0, 7, 12, 0.16);
 }
 .cockpit-compass-tape span {
@@ -2983,6 +3001,7 @@ body.cockpit-mode #view-switcher button {
   min-height: 28px;
   padding: 6px 11px;
   border-radius: 999px;
+  corner-shape: round;
   background: rgba(0, 7, 12, 0.74);
   white-space: nowrap;
 }
@@ -3059,6 +3078,7 @@ body.cockpit-mode #view-switcher button {
   padding: 0 7px;
   border: 1px solid color-mix(in srgb, var(--cockpit-accent) 46%, transparent);
   border-radius: 999px;
+  corner-shape: round;
   background: color-mix(in srgb, var(--cockpit-accent) 8%, rgba(0, 7, 12, 0.78));
   color: color-mix(in srgb, var(--cockpit-accent) 82%, white);
   font: 700 6px/1 var(--font-mono);
@@ -3489,6 +3509,7 @@ body.cockpit-mode #view-switcher button {
   height: 5px;
   margin-right: 5px;
   border-radius: 50%;
+  corner-shape: round;
   background: var(--cockpit-accent);
   box-shadow: 0 0 7px var(--cockpit-accent);
   animation: cockpit-live 1.6s ease-in-out infinite;
@@ -4459,11 +4480,13 @@ body.cockpit-mode #intel-hud .hud-right-edge { right: 22px; }
 .data-toggle-list::-webkit-scrollbar-track {
   background: rgba(255, 255, 255, 0.04);
   border-radius: 999px;
+  corner-shape: round;
 }
 
 .data-toggle-list::-webkit-scrollbar-thumb {
   background: linear-gradient(180deg, rgba(0, 212, 255, 0.65), rgba(0, 212, 255, 0.2));
   border-radius: 999px;
+  corner-shape: round;
 }
 
 .data-toggle-row {
@@ -4726,6 +4749,7 @@ body.cockpit-mode #intel-hud .hud-right-edge { right: 22px; }
   height: 5px;
   justify-self: center;
   border-radius: 50%;
+  corner-shape: round;
   background: var(--mission-roster-color, #22e6e6);
   box-shadow: 0 0 7px color-mix(in srgb, var(--mission-roster-color, #22e6e6) 70%, transparent);
 }
@@ -5011,6 +5035,7 @@ body.cockpit-mode #intel-hud .hud-right-edge { right: 22px; }
   width: 8px;
   height: 8px;
   border-radius: 50%;
+  corner-shape: round;
   background: #22e6e6;
   box-shadow: 0 0 7px rgba(34, 230, 230, .78);
 }
@@ -5761,6 +5786,7 @@ body.cockpit-mode #intel-hud .hud-right-edge { right: 22px; }
   outline: 1px dashed rgba(111,196,255,0.28);
   outline-offset: -5px;
   border-radius: 50%;
+  corner-shape: round;
   box-shadow:
     inset 0 0 0 5px rgba(34,128,196,0.018),
     inset 0 0 24px rgba(34,128,196,0.035),
@@ -5772,6 +5798,7 @@ body.cockpit-mode #intel-hud .hud-right-edge { right: 22px; }
   position: absolute;
   inset: -5px;
   border-radius: 50%;
+  corner-shape: round;
   background: repeating-conic-gradient(
     from 0deg,
     rgba(125, 205, 255, 0.38) 0deg 0.7deg,
@@ -5980,6 +6007,7 @@ body.cockpit-mode #intel-hud .hud-right-edge { right: 22px; }
   width: 6px;
   height: 6px;
   border-radius: 50%;
+  corner-shape: round;
   /* The swatch IS the datum — keep it exactly the point color, with only a
      hairline ring so a near-black class still reads on the panel glass. */
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.18);
@@ -6036,12 +6064,14 @@ body.cockpit-mode #intel-hud .hud-right-edge { right: 22px; }
 .cctv-panel-inner::-webkit-scrollbar-track {
   background: rgba(255, 255, 255, 0.04);
   border-radius: 999px;
+  corner-shape: round;
 }
 
 .cctv-panel-inner::-webkit-scrollbar-thumb {
   background: linear-gradient(180deg, rgba(0, 212, 255, 0.6), rgba(0, 212, 255, 0.28));
   border: 1px solid rgba(0, 212, 255, 0.4);
   border-radius: 999px;
+  corner-shape: round;
 }
 
 .cctv-controls {
@@ -6282,6 +6312,7 @@ body.cockpit-mode #intel-hud .hud-right-edge { right: 22px; }
   align-self: flex-start;
   border: 1px solid rgba(0, 212, 255, 0.32);
   border-radius: 999px;
+  corner-shape: round;
   background: rgba(0, 212, 255, 0.09);
   color: #9defff;
   font-family: var(--font-mono);
@@ -6508,6 +6539,7 @@ body.cockpit-mode #intel-hud .hud-right-edge { right: 22px; }
 .scene-shot-list::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.16);
   border-radius: 999px;
+  corner-shape: round;
 }
 
 .scene-shot-empty {
@@ -6606,6 +6638,7 @@ body.cockpit-mode #intel-hud .hud-right-edge { right: 22px; }
   width: 100%;
   height: 18px;
   border-radius: 999px;
+  corner-shape: round;
   background: rgba(255, 255, 255, 0.06);
   border: 1px solid rgba(255, 255, 255, 0.1);
   overflow: hidden;
@@ -6651,6 +6684,7 @@ body.cockpit-mode #intel-hud .hud-right-edge { right: 22px; }
   background: rgba(0, 0, 0, 0.45);
   border: 1px solid rgba(0, 212, 255, 0.36);
   border-radius: 999px;
+  corner-shape: round;
   padding: 6px 14px;
   text-shadow: 0 0 8px rgba(0, 212, 255, 0.55);
   pointer-events: none;
@@ -7032,6 +7066,7 @@ body.scene-playback-mode :is(#clear-selected-layers, #reset-globe-view) {
   padding: 19px 14px 12px;
   border-color: rgba(0, 212, 255, 0.36);
   border-radius: 12px;
+  corner-shape: squircle;
   background: rgba(8, 31, 42, 0.94);
   box-shadow:
     0 12px 30px rgba(0, 0, 0, 0.56),
@@ -7157,6 +7192,7 @@ body.scene-playback-mode :is(#clear-selected-layers, #reset-globe-view) {
   width: 30px;
   height: 30px;
   border-radius: 6px;
+  corner-shape: squircle;
 }
 
 #command-dock #location-search,
@@ -7506,6 +7542,7 @@ body.recording-mode #cesium-credits {
   gap: 0 0.35rem;
   overflow: hidden;
   border-radius: var(--panel-radius);
+  corner-shape: squircle;
   transform: none;
 }
 
@@ -7533,6 +7570,7 @@ body.recording-mode #cesium-credits {
   gap: 0.15rem;
   padding: 0;
   border-radius: 50%;
+  corner-shape: round;
   box-shadow:
     0 0 0 0.2rem rgba(0, 212, 255, 0.06),
     0 0 1rem rgba(0, 212, 255, 0.12);
@@ -7819,6 +7857,7 @@ body:not(.ui-clean-view):not(.recording-mode) #cesium-credits {
   margin: -1.48rem -0.22rem 0.25rem 0;
   padding: 0;
   border-radius: 50%;
+  corner-shape: round;
   background: rgba(8, 24, 34, 0.96);
   box-shadow: 0 0.35rem 0.9rem rgba(0, 0, 0, 0.5);
   transform: translateY(-0.12rem);
@@ -7924,6 +7963,7 @@ body:not(.ui-clean-view):not(.recording-mode) #cesium-credits {
   background: rgba(0, 212, 255, 0.06);
   border: 1px solid rgba(0, 212, 255, 0.48);
   border-radius: 50%;
+  corner-shape: round;
   box-shadow: 0 0 0 0.18rem rgba(0, 212, 255, 0.06), 0 0 0.9rem rgba(0, 212, 255, 0.12);
 }
 
@@ -7993,6 +8033,7 @@ body:not(.ui-clean-view):not(.recording-mode) #cesium-credits {
   width: var(--dock-voice-width);
   border-color: rgba(255, 92, 110, 0.58);
   border-radius: 0.4rem;
+  corner-shape: squircle;
 }
 
 #command-dock #gev-voice-control[data-status='error'] .gev-voice-readout {
@@ -8260,6 +8301,7 @@ body:not(.ui-clean-view):not(.recording-mode):has(#intel-hud[data-variant='minim
   background: rgba(255, 255, 255, 0.025);
   border: 1px solid rgba(123, 189, 211, 0.2);
   border-radius: 0.2rem;
+  corner-shape: squircle;
   font-family: var(--font-mono);
   font-size: 0.35rem;
   letter-spacing: 0.04rem;
@@ -8433,6 +8475,7 @@ body:not(.ui-clean-view):not(.recording-mode):has(#intel-hud[data-variant='minim
   margin: 0;
   padding: 0;
   border-radius: 50%;
+  corner-shape: round;
   background: rgba(8, 24, 34, 0.96);
   box-shadow: 0 0.35rem 0.9rem rgba(0, 0, 0, 0.5);
   transform: none;
@@ -9161,3 +9204,9 @@ body.scene-playback-mode #first-run-launcher {
   /* Scrolling a tile into view must not animate either. */
   .first-run-choices { scroll-behavior: auto; }
 }
+
+/* Breadboard draws every rounded edge as a squircle (CSS `corner-shape:
+   squircle`). Zero specificity, so any explicit corner-shape wins; circles and
+   pills keep `corner-shape: round` beside their border-radius. */
+:where(*), :where(*)::before, :where(*)::after { corner-shape: squircle; }
+:where([style*="border-radius: 50%"], [style*="border-radius: 999px"], [style*="border-radius: 9999px"]) { corner-shape: round; }

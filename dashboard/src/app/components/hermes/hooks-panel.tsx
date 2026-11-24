@@ -3,16 +3,24 @@
 // Hooks: inbound webhooks plus Breadboard-owned lifecycle triggers. An event
 // either runs a native workflow or starts a programmatic chat turn — see
 // src/lib/hooks/{schema,store,dispatch}.ts and the receive route at
-// app/api/webhooks/trigger/[path]/route.ts. Data loading follows
-// processes-panel.tsx's idiom (snapshot state + a guarded load()).
+// app/api/webhooks/trigger/[path]/route.ts.
+//
+// The panel is laid out like the Scheduled panel beside it: one sentence in a
+// composer ("whenever a chat about invoices finishes, file the totals"), a line
+// saying what that sentence was understood as, and a short list of ready-made
+// suggestions underneath. The trigger and action pickers sit behind the "+"
+// for anything the sentence reader gets wrong; a webhook's secret is the only
+// field that is ever asked for up front, because nothing can guess it.
 //
 // The provider field map below is intentionally hand-written and small — sim
 // vendors ~70 providers behind a subBlocks UI-definition machinery; Breadboard
 // ships a deliberately small set, so a declarative array is simpler than
 // porting that machinery.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { KeyboardEvent } from "react";
 
+import { useConfirmDialog } from "@/app/components/confirm-dialog";
 import { parseHookRequest, resolveWorkflowByName } from "@/lib/hooks/natural-language.ts";
 
 type HookActionMode = "chat" | "workflow" | "command";
@@ -61,11 +69,18 @@ interface ProviderField {
 interface ProviderDef {
   id: string;
   label: string;
+  emoji: string;
   fields: ProviderField[];
   instructions: string[];
   internal?: boolean;
   /** Internal triggers: when it runs, completing "Runs automatically …". */
   summary?: string;
+}
+
+interface HookTemplate {
+  emoji: string;
+  name: string;
+  description: string;
 }
 
 const TOOL_MATCHER_FIELD: ProviderField = {
@@ -83,7 +98,8 @@ function randomToken(): string {
 const PROVIDERS: ProviderDef[] = [
   {
     id: "chat_completed",
-    label: "Chat completed",
+    label: "Chat finished",
+    emoji: "✅",
     fields: [
       {
         key: "matcher",
@@ -104,6 +120,7 @@ const PROVIDERS: ProviderDef[] = [
   {
     id: "session_started",
     label: "Chat started",
+    emoji: "🌅",
     fields: [],
     internal: true,
     summary: "when a new chat starts",
@@ -115,6 +132,7 @@ const PROVIDERS: ProviderDef[] = [
   {
     id: "prompt_submitted",
     label: "Prompt sent",
+    emoji: "✉️",
     fields: [
       {
         key: "matcher",
@@ -134,6 +152,7 @@ const PROVIDERS: ProviderDef[] = [
   {
     id: "tool_started",
     label: "Tool started",
+    emoji: "🛠️",
     fields: [TOOL_MATCHER_FIELD],
     internal: true,
     summary: "when a tool starts",
@@ -145,6 +164,7 @@ const PROVIDERS: ProviderDef[] = [
   {
     id: "tool_used",
     label: "Tool finished",
+    emoji: "🧰",
     fields: [TOOL_MATCHER_FIELD],
     internal: true,
     summary: "after a tool finishes",
@@ -155,56 +175,61 @@ const PROVIDERS: ProviderDef[] = [
   },
   {
     id: "generic",
-    label: "Generic",
+    label: "Webhook",
+    emoji: "🪝",
     fields: [{ key: "token", label: "Authentication token", prefillRandom: true }],
     instructions: [
       "Copy the webhook URL below and give it to your service or script.",
       "Send it any HTTP POST with a JSON body — that body becomes the hook's payload.",
-      "Include the token above as \"Authorization: Bearer TOKEN\" on every request.",
+      "Include the token as \"Authorization: Bearer TOKEN\" on every request.",
     ],
   },
   {
     id: "github",
     label: "GitHub",
+    emoji: "🐙",
     fields: [{ key: "webhookSecret", label: "Webhook secret", optional: true }],
     instructions: [
       "In your repository, go to Settings > Webhooks > Add webhook.",
       "Paste the webhook URL below into the Payload URL field.",
       "Set Content type to application/json.",
-      "Paste the secret above into the Secret field (recommended, not required).",
+      "Paste the secret into the Secret field (recommended, not required).",
       "Choose the events you want, then save.",
     ],
   },
   {
     id: "telegram",
     label: "Telegram",
+    emoji: "✈️",
     fields: [{ key: "botToken", label: "Bot token" }],
     instructions: [
       "Message /newbot to @BotFather in Telegram to create a bot and copy its token.",
-      "Paste the bot token above — Breadboard registers the webhook with Telegram automatically on save.",
+      "Paste the bot token — Breadboard registers the webhook with Telegram automatically on save.",
       "Any message sent to your bot will fire this hook once it is created.",
     ],
   },
   {
     id: "stripe",
     label: "Stripe",
+    emoji: "💳",
     fields: [{ key: "webhookSecret", label: "Signing secret" }],
     instructions: [
       "In the Stripe Dashboard, go to Developers > Webhooks > Add destination.",
       "Paste the webhook URL below into the Endpoint URL field.",
       "Select the events you want to listen for.",
-      "After creating the endpoint, reveal the signing secret and paste it above.",
+      "After creating the endpoint, reveal the signing secret and paste it into the hook.",
     ],
   },
   {
     id: "slack",
     label: "Slack",
+    emoji: "💬",
     fields: [
       { key: "signingSecret", label: "Signing secret" },
       { key: "botToken", label: "Bot token (optional, for reaction text)", optional: true },
     ],
     instructions: [
-      "In your Slack app's settings, copy the Signing Secret and paste it above.",
+      "In your Slack app's settings, copy the Signing Secret and paste it into the hook.",
       "Under Event Subscriptions, paste the webhook URL below as the Request URL — Slack will send a challenge Breadboard answers automatically.",
       "Subscribe to the events you want, then reinstall the app.",
     ],
@@ -212,24 +237,113 @@ const PROVIDERS: ProviderDef[] = [
   {
     id: "linear",
     label: "Linear",
+    emoji: "📐",
     fields: [{ key: "webhookSecret", label: "Webhook secret", optional: true }],
     instructions: [
       "In Linear, go to Settings > API > Webhooks > Create webhook.",
       "Paste the webhook URL below into the URL field.",
-      "Paste the secret above into the secret field (recommended, not required).",
+      "Paste the secret into the secret field (recommended, not required).",
       "Select the resource types you want, then create.",
     ],
   },
   {
     id: "gitlab",
     label: "GitLab",
+    emoji: "🦊",
     fields: [{ key: "webhookSecret", label: "Secret token" }],
     instructions: [
       "In your GitLab project, go to Settings > Webhooks.",
       "Paste the webhook URL below into the URL field.",
-      "Paste the secret above into the Secret token field — GitLab echoes it back on every delivery.",
+      "Paste the secret into the Secret token field — GitLab echoes it back on every delivery.",
       "Select the triggers you want, then add the webhook.",
     ],
+  },
+];
+
+const MODES: Array<{ id: HookActionMode; emoji: string; label: string }> = [
+  { id: "chat", emoji: "💬", label: "Start a chat" },
+  { id: "workflow", emoji: "🔀", label: "Run a workflow" },
+  { id: "command", emoji: "⌨️", label: "Run a command" },
+];
+
+// Suggestions, not built-ins: each one is only a sentence the composer reads,
+// so what you get is exactly what the line under the box says it understood.
+// Several lean on Recall, the assistant's memory of what was on screen, since
+// "pick up where I left off" is what a hook is best placed to do.
+const TERMINAL_TEMPLATES: HookTemplate[] = [
+  {
+    emoji: "☀️",
+    name: "Pick up where I left off",
+    description:
+      "When a new chat starts, use Recall to remind me in two lines what I was working on last",
+  },
+  {
+    emoji: "🧾",
+    name: "Receipt keeper",
+    description:
+      "Whenever a chat mentioning invoice or receipt finishes, list the amounts, dates and vendors it found",
+  },
+  {
+    emoji: "🔎",
+    name: "Source catcher",
+    description:
+      "After the web_search tool finishes, keep the three most useful sources with a one-line note on each",
+  },
+  {
+    emoji: "🚀",
+    name: "Release check",
+    description:
+      "Whenever I send a prompt about deploy or release, check what I changed recently with Recall and list anything that looks unfinished",
+  },
+  {
+    emoji: "✨",
+    name: "Follow-up spotter",
+    description:
+      "Whenever a chat finishes, note any promise, deadline or follow-up it mentions so nothing slips",
+  },
+  {
+    emoji: "🐙",
+    name: "PR buddy",
+    description: "When a GitHub pull request is opened, review it and tell me what needs attention",
+  },
+];
+
+const GARDEN_TEMPLATES: HookTemplate[] = [
+  {
+    emoji: "🌱",
+    name: "Grow the garden",
+    description:
+      "Whenever a chat finishes, add anything new I learned to the right note in this garden",
+  },
+  {
+    emoji: "🧠",
+    name: "Recall the context",
+    description:
+      "When a new chat starts, recall the notes in this garden closest to what I was last reading on screen",
+  },
+  {
+    emoji: "📚",
+    name: "Reading list",
+    description:
+      "Whenever a chat mentioning paper or article finishes, add it to this garden's reading list with a one-line summary",
+  },
+  {
+    emoji: "🃏",
+    name: "Flashcard maker",
+    description:
+      "Whenever a chat about exam or quiz finishes, turn the key points into flashcards in this garden",
+  },
+  {
+    emoji: "🔗",
+    name: "Link weaver",
+    description:
+      "Whenever a chat finishes, suggest links between the notes it touched and the rest of this garden",
+  },
+  {
+    emoji: "📎",
+    name: "Clip to notes",
+    description:
+      "After the web_extract tool finishes, save the page as a source note in this garden",
   },
 ];
 
@@ -240,12 +354,25 @@ function providerDef(id: string): ProviderDef {
   );
 }
 
+function modeDef(id: HookActionMode) {
+  return MODES.find((candidate) => candidate.id === id) ?? MODES[0];
+}
+
+function freshFieldValues(provider: string, matcher?: string | null): Record<string, string> {
+  const next: Record<string, string> = {};
+  for (const field of providerDef(provider).fields) {
+    next[field.key] = field.prefillRandom ? randomToken() : "";
+  }
+  if ("matcher" in next && matcher) next.matcher = matcher;
+  return next;
+}
+
 function formatRelative(iso: string | null): string {
-  if (!iso) return "Never";
+  if (!iso) return "never";
   const then = new Date(iso).getTime();
-  if (!Number.isFinite(then)) return "Never";
+  if (!Number.isFinite(then)) return "never";
   const minutes = Math.max(0, Math.floor((Date.now() - then) / 60_000));
-  if (minutes < 1) return "Just now";
+  if (minutes < 1) return "just now";
   if (minutes < 60) return `${minutes} min ago`;
   const hours = Math.floor(minutes / 60);
   if (hours < 24) return `${hours} h ago`;
@@ -263,40 +390,57 @@ function CopyUrlButton({ url }: { url: string }) {
           window.setTimeout(() => setCopied(false), 1500);
         });
       }}
-      className="neu-button shrink-0 rounded-lg px-2 py-1 text-[11px]"
+      className="shrink-0 rounded-lg px-2 py-1 text-[11px] font-medium text-[var(--botanical)]"
     >
-      {copied ? "Copied" : "Copy"}
+      {copied ? "Copied ✓" : "Copy"}
     </button>
   );
 }
 
+const CONTROL_CLASS =
+  "neu-control mt-1 w-full rounded-xl border border-[var(--line)] bg-[var(--paper-raised)] px-3 py-2 text-sm outline-none focus:border-[var(--botanical)]";
+
+function chipClass(selected: boolean): string {
+  return `rounded-full border px-3 py-1 text-xs transition ${
+    selected
+      ? "border-[var(--botanical)] bg-[var(--botanical)] font-medium text-white"
+      : "border-[var(--line)] text-[var(--ink-muted)] hover:text-[var(--ink)]"
+  }`;
+}
+
 export default function HooksPanel({ gardenSlug = null }: Props = {}) {
+  const { confirm: confirmDelete, confirmDialog } = useConfirmDialog();
   const [hooks, setHooks] = useState<PresentedHook[]>([]);
   const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const [showActiveOnly, setShowActiveOnly] = useState(false);
   const requestActive = useRef(false);
 
-  const [creating, setCreating] = useState(false);
-  const [description, setDescription] = useState("");
-  const [name, setName] = useState("");
-  const [provider, setProvider] = useState("generic");
+  const [text, setText] = useState("");
+  const [optionsOpen, setOptionsOpen] = useState(false);
+  const [provider, setProvider] = useState("chat_completed");
   const [mode, setMode] = useState<HookActionMode>("chat");
   const [command, setCommand] = useState("");
-  const [chatInstructions, setChatInstructions] = useState("");
   const [workflowId, setWorkflowId] = useState("");
-  const [fieldValues, setFieldValues] = useState<Record<string, string>>({});
+  const [fieldValues, setFieldValues] = useState<Record<string, string>>(() =>
+    freshFieldValues("chat_completed"),
+  );
+  // Once a picker is used by hand, the sentence stops overriding that choice.
+  const [providerPinned, setProviderPinned] = useState(false);
+  const [modePinned, setModePinned] = useState(false);
+  // A suggestion used as-is keeps its friendly name ("Receipt keeper") rather
+  // than the trigger clause, which several suggestions share.
+  const [templateName, setTemplateName] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [formError, setFormError] = useState<string | null>(null);
   const [justCreated, setJustCreated] = useState<PresentedHook | null>(null);
 
   const [workflows, setWorkflows] = useState<WorkflowOption[]>([]);
-  const [workflowsLoading, setWorkflowsLoading] = useState(false);
+  const [workflowsLoading, setWorkflowsLoading] = useState(true);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  const load = useCallback(async (manual = false) => {
+  const load = useCallback(async () => {
     if (requestActive.current) return;
     requestActive.current = true;
-    if (manual) setRefreshing(true);
     try {
       const response = await fetch(
         gardenSlug ? `/api/hooks?gardenSlug=${encodeURIComponent(gardenSlug)}` : "/api/hooks",
@@ -308,36 +452,22 @@ export default function HooksPanel({ gardenSlug = null }: Props = {}) {
       };
       if (!response.ok) throw new Error(payload.error ?? "Hooks could not be loaded.");
       setHooks(Array.isArray(payload.hooks) ? payload.hooks : []);
-      setError(null);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Hooks could not be loaded.");
+      setMessage(cause instanceof Error ? cause.message : "Hooks could not be loaded.");
     } finally {
       requestActive.current = false;
       setLoading(false);
-      setRefreshing(false);
     }
   }, [gardenSlug]);
 
   useEffect(() => {
     void load();
+    // Hooks fire in the background; keep the "last fired" lines honest.
+    const timer = window.setInterval(() => void load(), 15_000);
+    return () => window.clearInterval(timer);
   }, [load]);
 
-  function openCreateForm() {
-    setCreating(true);
-    setDescription("");
-    setJustCreated(null);
-    setFormError(null);
-    setName("");
-    setProvider("generic");
-    setMode("chat");
-    setChatInstructions("");
-    setCommand("");
-    setWorkflowId("");
-    setFieldValues({ token: randomToken() });
-
-    // Fetched eagerly (not only when workflow mode is picked) so switching
-    // the segmented control never shows a loading flash.
-    setWorkflowsLoading(true);
+  useEffect(() => {
     fetch("/api/workflows/local", { cache: "no-store" })
       .then((response) => (response.ok ? response.json() : { workflows: [] }))
       .then((payload: { workflows?: Array<{ id: string; name: string }> }) => {
@@ -349,63 +479,87 @@ export default function HooksPanel({ gardenSlug = null }: Props = {}) {
       })
       .catch(() => setWorkflows([]))
       .finally(() => setWorkflowsLoading(false));
-  }
+  }, []);
 
-  function selectProvider(nextProvider: string) {
-    setProvider(nextProvider);
-    const def = providerDef(nextProvider);
-    const next: Record<string, string> = {};
-    for (const field of def.fields) {
-      next[field.key] = field.prefillRandom ? randomToken() : "";
-    }
-    setFieldValues(next);
-  }
+  const parsed = useMemo(() => parseHookRequest(text), [text]);
+  const activeDef = providerDef(provider);
+  const activeMode = modeDef(mode);
+  const templates = gardenSlug ? GARDEN_TEMPLATES : TERMINAL_TEMPLATES;
 
   /**
-   * The sentence fills the form rather than bypassing it: what was understood
-   * stays visible and editable, and a provider's secret is still asked for.
+   * The sentence fills the pickers rather than bypassing them: what was
+   * understood stays visible on the line below and can be corrected behind +.
    */
-  function describeHook(nextDescription: string) {
-    setDescription(nextDescription);
-    if (!nextDescription.trim()) return;
-    const parsed = parseHookRequest(nextDescription);
-    // Re-selecting the same provider would regenerate its token on every key.
-    if (parsed.provider !== provider) selectProvider(parsed.provider);
-    if (providerDef(parsed.provider).fields.some((field) => field.key === "matcher")) {
-      setFieldValues((prev) => ({ ...prev, matcher: parsed.matcher ?? "" }));
+  function describe(next: string) {
+    setText(next);
+    if (!next.trim()) return;
+    const reading = parseHookRequest(next);
+    if (!providerPinned) {
+      if (reading.provider !== provider) {
+        setProvider(reading.provider);
+        setFieldValues(freshFieldValues(reading.provider, reading.matcher));
+      } else if (providerDef(reading.provider).fields.some((field) => field.key === "matcher")) {
+        setFieldValues((prev) => ({ ...prev, matcher: reading.matcher ?? "" }));
+      }
     }
-    setName(parsed.name);
-    setMode(parsed.mode);
-    setChatInstructions(parsed.instructions);
-    setCommand(parsed.command ?? "");
-    // An unknown or ambiguous name leaves the picker empty rather than guessing.
-    setWorkflowId(resolveWorkflowByName(parsed.workflowName, workflows)?.id ?? "");
+    if (!modePinned) {
+      setMode(reading.mode);
+      setCommand(reading.command ?? "");
+      setWorkflowId(resolveWorkflowByName(reading.workflowName, workflows)?.id ?? "");
+    }
   }
 
-  async function submitCreate() {
-    if (saving) return;
-    setFormError(null);
-    if (!name.trim()) {
-      setFormError("Give this hook a name.");
-      return;
-    }
-    if (mode === "chat" && !chatInstructions.trim()) {
-      setFormError("Tell the assistant what to do when this hook fires.");
-      return;
-    }
+  function pickProvider(next: string) {
+    setProviderPinned(true);
+    if (next === provider) return;
+    setProvider(next);
+    setFieldValues(freshFieldValues(next, fieldValues.matcher));
+  }
+
+  function pickMode(next: HookActionMode) {
+    setModePinned(true);
+    setMode(next);
+  }
+
+  function resetComposer() {
+    setText("");
+    setTemplateName(null);
+    setOptionsOpen(false);
+    setProviderPinned(false);
+    setModePinned(false);
+    setProvider("chat_completed");
+    setFieldValues(freshFieldValues("chat_completed"));
+    setMode("chat");
+    setCommand("");
+    setWorkflowId("");
+  }
+
+  // A secret nobody could guess is asked for inline; everything else waits
+  // behind +. The pre-filled webhook token never needs to be typed.
+  const inlineFields = activeDef.fields.filter(
+    (field) => field.key !== "matcher" && !field.prefillRandom,
+  );
+
+  const instructions = (parsed.instructions || text).trim();
+
+  async function create() {
+    if (saving || !text.trim()) return;
+    setMessage(null);
     if (mode === "workflow" && !workflowId) {
-      setFormError("Pick a workflow to run.");
+      setOptionsOpen(true);
+      setMessage("Pick the workflow this hook should run.");
       return;
     }
     if (mode === "command" && !command.trim()) {
-      setFormError("Enter the command to run.");
+      setOptionsOpen(true);
+      setMessage("Enter the command to run — or put it between `backticks` in the sentence.");
       return;
     }
-    const missingProviderField = activeDef.fields.find(
+    const missing = activeDef.fields.find(
       (field) => !field.optional && !(fieldValues[field.key] ?? "").trim(),
     );
-    if (missingProviderField) {
-      setFormError(`${missingProviderField.label} is required.`);
+    if (missing) {
+      setMessage(`${activeDef.label} needs its ${missing.label.toLowerCase()} first.`);
       return;
     }
 
@@ -415,10 +569,10 @@ export default function HooksPanel({ gardenSlug = null }: Props = {}) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          name: name.trim(),
+          name: templateName ?? (parsed.name || "New hook"),
           provider,
           mode,
-          chatInstructions: mode === "chat" ? chatInstructions.trim() : null,
+          chatInstructions: mode === "chat" ? instructions : null,
           workflowId: mode === "workflow" ? workflowId : null,
           command: mode === "command" ? command.trim() : null,
           providerConfig: fieldValues,
@@ -433,20 +587,26 @@ export default function HooksPanel({ gardenSlug = null }: Props = {}) {
       if (!response.ok || !payload.hook) {
         throw new Error(payload.error ?? "This hook could not be created.");
       }
-      setJustCreated(payload.hook);
-      if (payload.telegramWarning) {
-        setFormError(`Hook created, but Telegram registration failed: ${payload.telegramWarning}`);
-      }
+      resetComposer();
+      // Only a webhook has something left to do: hand its URL to the service.
+      setJustCreated(payload.hook.url ? payload.hook : null);
+      setMessage(
+        payload.telegramWarning
+          ? `Hook created, but Telegram registration failed: ${payload.telegramWarning}`
+          : providerDef(payload.hook.provider).internal
+            ? `🎉 "${payload.hook.name}" is live — it runs ${providerDef(payload.hook.provider).summary}.`
+            : `🎉 "${payload.hook.name}" is ready. Give its URL to ${providerDef(payload.hook.provider).label}.`,
+      );
       await load();
     } catch (cause) {
-      setFormError(cause instanceof Error ? cause.message : "This hook could not be created.");
+      setMessage(cause instanceof Error ? cause.message : "This hook could not be created.");
     } finally {
       setSaving(false);
     }
   }
 
   async function toggleEnabled(hook: PresentedHook) {
-    setError(null);
+    setMessage(null);
     try {
       const response = await fetch(`/api/hooks/${hook.id}`, {
         method: "PATCH",
@@ -455,382 +615,418 @@ export default function HooksPanel({ gardenSlug = null }: Props = {}) {
       });
       if (!response.ok) throw new Error("This hook could not be updated.");
       await load();
+      setMessage(hook.enabled ? "Hook paused." : "Hook resumed.");
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "This hook could not be updated.");
+      setMessage(cause instanceof Error ? cause.message : "This hook could not be updated.");
     }
   }
 
   async function removeHook(hook: PresentedHook) {
-    if (!window.confirm(`Delete the hook "${hook.name}"? This cannot be undone.`)) return;
-    setError(null);
+    if (
+      !(await confirmDelete({
+        title: "Delete hook?",
+        subject: hook.name,
+        body: "This stops the hook from reacting to any more events.",
+        detail: "Chats it already started are kept.",
+        confirmLabel: "Delete hook",
+        tone: "danger",
+      }))
+    ) {
+      return;
+    }
+    setMessage(null);
     try {
       const response = await fetch(`/api/hooks/${hook.id}`, { method: "DELETE" });
       if (!response.ok) throw new Error("This hook could not be deleted.");
+      if (justCreated?.id === hook.id) setJustCreated(null);
       await load();
+      setMessage("Hook deleted.");
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "This hook could not be deleted.");
+      setMessage(cause instanceof Error ? cause.message : "This hook could not be deleted.");
     }
   }
 
-  const activeDef = providerDef(provider);
+  const visible = showActiveOnly ? hooks.filter((hook) => hook.enabled) : hooks;
+  const understoodMatcher = activeDef.fields.some((field) => field.key === "matcher")
+    ? fieldValues.matcher
+    : "";
 
   return (
     <section
       aria-label="Hooks"
       className="flex h-full min-h-0 flex-col bg-[var(--paper-surface)] text-[var(--ink)]"
     >
-      <header className="shrink-0 border-b border-[var(--line)] px-4 pb-3 pt-4">
-        <div className="flex items-start gap-3">
-          <div className="min-w-0 flex-1">
-            <h2 className="text-lg font-semibold text-[var(--ink-heading)]">Hooks</h2>
-            <p className="mt-1 text-xs text-[var(--ink-muted)]">
-              {gardenSlug
-                ? "Automations that react when something happens, and answer inside this garden."
-                : "Create automations that react when something happens."}
-            </p>
-          </div>
-          {!creating && hooks.length > 0 ? (
+      <div className="shrink-0 px-4 pb-3 pt-4">
+        <div className="flex items-center gap-3">
+          <h2 className="text-lg font-semibold text-[var(--ink-heading)]">Hooks</h2>
+          <button
+            type="button"
+            onClick={() => setShowActiveOnly((value) => !value)}
+            aria-pressed={showActiveOnly}
+            className={`ml-auto inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs transition ${
+              showActiveOnly
+                ? "border-[var(--botanical)] text-[var(--botanical)]"
+                : "border-[var(--line)] text-[var(--ink-muted)] hover:text-[var(--ink)]"
+            }`}
+          >
+            <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} aria-hidden>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4 5h16l-6.2 7.3v5.2L10.2 20v-7.7L4 5Z" />
+            </svg>
+            {showActiveOnly ? "Active" : "All"}
+          </button>
+        </div>
+        <p className="mt-1 text-xs text-[var(--ink-muted)]">
+          Say what should happen and when. Hooks react to your chats, tools, and outside services
+          {gardenSlug ? ", and answer inside this garden." : "."}
+        </p>
+
+        <div className="neu-composer relative mt-5 rounded-[30px] p-2">
+          <div className="flex min-w-0 items-end gap-1.5">
             <button
               type="button"
-              onClick={openCreateForm}
-              className="neu-button-accent inline-flex shrink-0 items-center justify-center rounded-xl border px-3 py-1.5 text-xs font-semibold"
+              onClick={() => setOptionsOpen((value) => !value)}
+              aria-expanded={optionsOpen}
+              aria-label={optionsOpen ? "Hide trigger and action" : "Choose the trigger and action by hand"}
+              title={optionsOpen ? "Hide trigger and action" : "Choose the trigger and action by hand"}
+              className="neu-button-icon flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-[var(--ink)] transition hover:bg-[var(--paper-strong)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--botanical)]"
             >
-              + New hook
+              <svg
+                className={`h-5 w-5 transition-transform duration-150 ${optionsOpen ? "rotate-45" : ""}`}
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={1.8}
+                aria-hidden
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+              </svg>
             </button>
-          ) : null}
-        </div>
-      </header>
-
-      <div className="min-h-0 flex-1 overflow-y-auto p-4">
-        {error ? (
-          <div role="alert" className="mb-3 rounded-xl border border-[color-mix(in_srgb,var(--danger)_28%,var(--line))] bg-[var(--paper-raised)] p-3">
-            <p className="text-xs text-[var(--danger)]">{error}</p>
-            <button type="button" onClick={() => void load(true)} className="neu-button mt-2 rounded-lg border px-3 py-1.5 text-xs font-medium text-[var(--botanical)]">
-              Try again
+            <div className="relative flex min-h-11 min-w-0 flex-1 items-center">
+              <textarea
+                ref={inputRef}
+                value={text}
+                rows={1}
+                onChange={(event) => {
+                  setTemplateName(null);
+                  describe(event.target.value);
+                }}
+                onKeyDown={(event: KeyboardEvent<HTMLTextAreaElement>) => {
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault();
+                    void create();
+                  }
+                }}
+                placeholder="When something happens, do this…"
+                aria-label="Describe a hook"
+                className="block max-h-32 min-h-6 w-full min-w-0 max-w-full resize-none overflow-y-auto bg-transparent px-1 py-0 text-[15px] leading-6 text-[var(--ink)] caret-[var(--composer-caret)] outline-none placeholder:text-[var(--ink-muted)]"
+              />
+            </div>
+            <button
+              type="button"
+              onClick={() => void create()}
+              disabled={saving || !text.trim()}
+              aria-label="Create this hook"
+              className="neu-button-accent flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-[var(--botanical-hover)] bg-[var(--botanical)] text-[var(--paper-raised)] transition-colors hover:bg-[var(--botanical-hover)] disabled:cursor-not-allowed disabled:border-[var(--line)] disabled:bg-[var(--line)] disabled:text-[var(--ink-muted)]"
+            >
+              <svg className="h-[18px] w-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} aria-hidden>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 19.5v-15m0 0-6 6m6-6 6 6" />
+              </svg>
             </button>
           </div>
-        ) : null}
 
-        {creating ? (
-          <div className="neu-surface-subtle rounded-2xl border border-[var(--line)] bg-[var(--paper-raised)] p-4">
-            {justCreated ? (
-              <div>
-                <h3 className="text-base font-semibold text-[var(--ink-heading)]">Hook created</h3>
-                <p className="mt-1 text-xs text-[var(--ink-muted)]">
-                  {providerDef(justCreated.provider).internal
-                    ? `Breadboard will run this hook ${providerDef(justCreated.provider).summary}.`
-                    : `${providerDef(justCreated.provider).label} sends events to this URL.`}
-                </p>
-                {justCreated.url ? (
-                  <div className="neu-control mt-3 flex items-center gap-2 rounded-xl border border-[var(--line)] bg-[var(--paper-surface)] px-3 py-2">
-                    <code className="min-w-0 flex-1 truncate text-xs">{justCreated.url}</code>
-                    <CopyUrlButton url={justCreated.url} />
-                  </div>
-                ) : null}
-                <p className="mt-3 text-xs font-medium text-[var(--ink-heading)]">Setup</p>
-                <ol className="mt-1 list-decimal space-y-1 pl-4 text-xs text-[var(--ink-muted)]">
-                  {providerDef(justCreated.provider).instructions.map((step) => (
-                    <li key={step}>{step}</li>
-                  ))}
-                </ol>
-                {!providerDef(justCreated.provider).internal ? (
-                  <p className="mt-3 text-[11px] text-[var(--ink-muted)]">
-                    External providers must be able to reach this computer over the internet to deliver
-                    events here.
-                  </p>
-                ) : null}
-                <button
-                  type="button"
-                  onClick={() => setCreating(false)}
-                  className="neu-button-accent mt-4 inline-flex items-center justify-center rounded-xl border px-4 py-2 text-sm font-medium"
-                >
-                  Done
-                </button>
-              </div>
-            ) : (
-              <div>
-                <h3 className="text-base font-semibold text-[var(--ink-heading)]">New hook</h3>
-
-                <label className="mt-3 block text-xs font-medium">
-                  Describe it
-                  <textarea
-                    value={description}
-                    onChange={(event) => describeHook(event.target.value)}
-                    rows={2}
-                    autoFocus
-                    placeholder="When a GitHub issue is opened, triage it and tell me what needs attention."
-                    className="neu-control mt-1 w-full resize-none rounded-xl border border-[var(--line)] bg-[var(--paper-surface)] px-3 py-2 text-sm outline-none focus:border-[var(--botanical)]"
-                  />
-                  <span className="mt-1 block text-[10px] font-normal text-[var(--ink-muted)]">
-                    {description.trim()
-                      ? `Understood as: ${activeDef.label}${
-                          fieldValues.matcher ? ` matching ${fieldValues.matcher}` : ""
-                        } → ${
-                          mode === "command" ? "run a command" : mode === "workflow" ? "run a workflow" : "start a chat"
-                        }. Correct anything below.`
-                      : "Or fill in the fields below yourself."}
-                  </span>
-                </label>
-
-                <label className="mt-3 block text-xs font-medium">
-                  Name
-                  <input
-                    value={name}
-                    onChange={(event) => setName(event.target.value)}
-                    placeholder="e.g. GitHub issues"
-                    className="neu-control mt-1 w-full rounded-xl border border-[var(--line)] bg-[var(--paper-surface)] px-3 py-2 text-sm outline-none focus:border-[var(--botanical)]"
-                  />
-                </label>
-
-                <label className="mt-3 block text-xs font-medium">
-                  Trigger
-                  <select
-                    value={provider}
-                    onChange={(event) => selectProvider(event.target.value)}
-                    className="neu-control mt-1 w-full rounded-xl border border-[var(--line)] bg-[var(--paper-surface)] px-3 py-2 text-sm outline-none focus:border-[var(--botanical)]"
+          {text.trim() ? (
+            <p className="mt-1.5 border-t border-[var(--line)] pt-1.5 text-[11px] text-[var(--ink-muted)]">
+              {parsed.recognized || providerPinned ? "Understood" : "Assuming"}:{" "}
+              <span className="font-medium text-[var(--ink)]">
+                {activeDef.emoji} {activeDef.label}
+                {understoodMatcher ? ` · ${understoodMatcher}` : ""} → {activeMode.emoji}{" "}
+                {activeMode.label.toLowerCase()}
+                {mode === "workflow" && workflowId
+                  ? ` “${workflows.find((w) => w.id === workflowId)?.name ?? ""}”`
+                  : ""}
+              </span>
+              {!optionsOpen ? (
+                <>
+                  {" · "}
+                  <button
+                    type="button"
+                    onClick={() => setOptionsOpen(true)}
+                    className="font-medium text-[var(--botanical)] underline-offset-2 hover:underline"
                   >
-                    {PROVIDERS.map((def) => (
-                      <option key={def.id} value={def.id}>
-                        {def.label}
+                    change
+                  </button>
+                </>
+              ) : null}
+            </p>
+          ) : null}
+
+          {inlineFields.length > 0 && text.trim() ? (
+            <div className="mt-2 space-y-2 border-t border-[var(--line)] px-1 pt-2">
+              {inlineFields.map((field) => (
+                <label key={field.key} className="block text-xs font-medium">
+                  🔑 {field.label}
+                  <input
+                    type={field.plain ? "text" : "password"}
+                    value={fieldValues[field.key] ?? ""}
+                    onChange={(event) =>
+                      setFieldValues((prev) => ({ ...prev, [field.key]: event.target.value }))
+                    }
+                    placeholder={field.placeholder ?? (field.optional ? "Optional" : `Paste your ${activeDef.label} ${field.label.toLowerCase()}`)}
+                    className={`${CONTROL_CLASS} font-mono`}
+                  />
+                </label>
+              ))}
+            </div>
+          ) : null}
+
+          {optionsOpen ? (
+            <div className="mt-2 space-y-3 border-t border-[var(--line)] px-1 pb-1 pt-2">
+              <div>
+                <p className="text-[11px] font-medium text-[var(--ink-muted)]">When</p>
+                <div className="mt-1.5 flex flex-wrap gap-1.5">
+                  {PROVIDERS.map((def) => (
+                    <button
+                      key={def.id}
+                      type="button"
+                      aria-pressed={provider === def.id}
+                      onClick={() => pickProvider(def.id)}
+                      className={chipClass(provider === def.id)}
+                    >
+                      {def.emoji} {def.label}
+                    </button>
+                  ))}
+                </div>
+                {activeDef.fields.some((field) => field.key === "matcher") ? (
+                  <label className="mt-2 block text-xs font-medium">
+                    {activeDef.fields.find((field) => field.key === "matcher")?.label}
+                    <input
+                      value={fieldValues.matcher ?? ""}
+                      onChange={(event) =>
+                        setFieldValues((prev) => ({ ...prev, matcher: event.target.value }))
+                      }
+                      placeholder={activeDef.fields.find((field) => field.key === "matcher")?.placeholder}
+                      className={`${CONTROL_CLASS} font-mono`}
+                    />
+                  </label>
+                ) : null}
+              </div>
+
+              <div>
+                <p className="text-[11px] font-medium text-[var(--ink-muted)]">Then</p>
+                <div className="mt-1.5 flex flex-wrap gap-1.5">
+                  {MODES.map((item) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      aria-pressed={mode === item.id}
+                      onClick={() => pickMode(item.id)}
+                      className={chipClass(mode === item.id)}
+                    >
+                      {item.emoji} {item.label}
+                    </button>
+                  ))}
+                </div>
+                {mode === "workflow" ? (
+                  <select
+                    value={workflowId}
+                    onChange={(event) => setWorkflowId(event.target.value)}
+                    aria-label="Workflow"
+                    className={`${CONTROL_CLASS} mt-2`}
+                  >
+                    <option value="">
+                      {workflowsLoading
+                        ? "Loading workflows…"
+                        : workflows.length === 0
+                          ? "No workflows yet"
+                          : "Select a workflow"}
+                    </option>
+                    {workflows.map((w) => (
+                      <option key={w.id} value={w.id}>
+                        {w.name}
                       </option>
                     ))}
                   </select>
-                </label>
-
-                {activeDef.fields.map((field) => (
-                  <label key={field.key} className="mt-3 block text-xs font-medium">
-                    {field.label}
+                ) : mode === "command" ? (
+                  <>
                     <input
-                      type={field.plain ? "text" : "password"}
-                      value={fieldValues[field.key] ?? ""}
-                      onChange={(event) =>
-                        setFieldValues((prev) => ({ ...prev, [field.key]: event.target.value }))
-                      }
-                      placeholder={field.placeholder ?? (field.optional ? "Optional" : undefined)}
-                      className="neu-control mt-1 w-full rounded-xl border border-[var(--line)] bg-[var(--paper-surface)] px-3 py-2 font-mono text-sm outline-none focus:border-[var(--botanical)]"
+                      value={command}
+                      onChange={(event) => setCommand(event.target.value)}
+                      spellCheck={false}
+                      aria-label="Command"
+                      placeholder="node scripts/on-event.mjs"
+                      className={`${CONTROL_CLASS} mt-2 font-mono`}
                     />
-                  </label>
-                ))}
-
-                <div className="mt-4 border-t border-[var(--line)] pt-3">
-                  <p className="text-xs font-medium">When this hook fires</p>
-                  <div
-                    className="neu-segmented mt-2 grid grid-cols-3 rounded-xl p-1"
-                    role="group"
-                    aria-label="Hook action"
-                  >
-                    <button
-                      type="button"
-                      aria-pressed={mode === "chat"}
-                      onClick={() => setMode("chat")}
-                      className={`rounded-lg px-3 py-2 text-xs transition-[background-color,color,box-shadow,transform] duration-150 ease-out active:scale-[0.97] motion-reduce:transform-none ${
-                        mode === "chat"
-                          ? "neu-selected bg-[var(--paper-raised)] font-medium text-[var(--botanical)]"
-                          : "text-[var(--ink-muted)]"
-                      }`}
-                    >
-                      Start a chat
-                    </button>
-                    <button
-                      type="button"
-                      aria-pressed={mode === "workflow"}
-                      onClick={() => setMode("workflow")}
-                      className={`rounded-lg px-3 py-2 text-xs transition-[background-color,color,box-shadow,transform] duration-150 ease-out active:scale-[0.97] motion-reduce:transform-none ${
-                        mode === "workflow"
-                          ? "neu-selected bg-[var(--paper-raised)] font-medium text-[var(--botanical)]"
-                          : "text-[var(--ink-muted)]"
-                      }`}
-                    >
-                      Run a workflow
-                    </button>
-                    <button
-                      type="button"
-                      aria-pressed={mode === "command"}
-                      onClick={() => setMode("command")}
-                      className={`rounded-lg px-3 py-2 text-xs transition-[background-color,color,box-shadow,transform] duration-150 ease-out active:scale-[0.97] motion-reduce:transform-none ${
-                        mode === "command"
-                          ? "neu-selected bg-[var(--paper-raised)] font-medium text-[var(--botanical)]"
-                          : "text-[var(--ink-muted)]"
-                      }`}
-                    >
-                      Run a command
-                    </button>
-                  </div>
-
-                  {mode === "command" ? (
-                    <label className="mt-3 block text-xs font-medium">
-                      Command
-                      <input
-                        value={command}
-                        onChange={(event) => setCommand(event.target.value)}
-                        spellCheck={false}
-                        placeholder="node scripts/on-event.mjs"
-                        className="neu-control mt-1 w-full rounded-xl border border-[var(--line)] bg-[var(--paper-surface)] px-3 py-2 font-mono text-sm outline-none focus:border-[var(--botanical)]"
-                      />
-                      <span className="mt-1 block text-[10px] font-normal text-[var(--ink-muted)]">
-                        Runs in a shell on this computer, from your home folder, with nobody asked
-                        first. The event arrives as JSON on standard input. Stopped after 60 seconds.
-                      </span>
-                    </label>
-                  ) : mode === "chat" ? (
-                    <label className="mt-3 block text-xs font-medium">
-                      Instructions for the assistant
-                      <textarea
-                        value={chatInstructions}
-                        onChange={(event) => setChatInstructions(event.target.value)}
-                        rows={3}
-                        placeholder="Summarize this event and note anything that needs my attention."
-                        className="neu-control mt-1 w-full resize-none rounded-xl border border-[var(--line)] bg-[var(--paper-surface)] px-3 py-2 text-sm outline-none focus:border-[var(--botanical)]"
-                      />
-                      <span className="mt-1 block text-[10px] font-normal text-[var(--ink-muted)]">
-                        The event payload is attached automatically.
-                      </span>
-                    </label>
-                  ) : (
-                    <label className="mt-3 block text-xs font-medium">
-                      Workflow
-                      <select
-                        value={workflowId}
-                        onChange={(event) => setWorkflowId(event.target.value)}
-                        className="neu-control mt-1 w-full rounded-xl border border-[var(--line)] bg-[var(--paper-surface)] px-3 py-2 text-sm outline-none focus:border-[var(--botanical)]"
-                      >
-                        <option value="">
-                          {workflowsLoading ? "Loading workflows…" : "Select a workflow"}
-                        </option>
-                        {workflows.map((w) => (
-                          <option key={w.id} value={w.id}>
-                            {w.name}
-                          </option>
-                        ))}
-                      </select>
-                      {!workflowsLoading && workflows.length === 0 ? (
-                        <span className="mt-1 block text-[10px] font-normal text-[var(--ink-muted)]">
-                          No workflows yet.
-                        </span>
-                      ) : null}
-                    </label>
-                  )}
-                </div>
-
-                {formError ? <p role="alert" className="mt-3 text-xs text-[var(--danger)]">{formError}</p> : null}
-
-                <div className="mt-4 flex gap-2">
-                  <button
-                    type="button"
-                    onClick={() => void submitCreate()}
-                    disabled={saving}
-                    className="neu-button-accent inline-flex min-w-28 items-center justify-center rounded-xl border px-4 py-2 text-sm font-semibold disabled:cursor-wait disabled:opacity-50"
-                  >
-                    {saving ? "Creating…" : "Create hook"}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setCreating(false)}
-                    className="neu-button inline-flex min-w-24 items-center justify-center rounded-xl border px-4 py-2 text-sm font-medium"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-        ) : loading ? (
-          <div className="space-y-2" aria-label="Loading hooks">
-            {[0, 1].map((row) => (
-              <div key={row} className="h-20 animate-pulse rounded-xl bg-[var(--paper-strong)] motion-reduce:animate-none" />
-            ))}
-          </div>
-        ) : hooks.length === 0 ? (
-          <div className="neu-surface-subtle flex min-h-56 flex-col items-center justify-center rounded-2xl border border-[var(--line)] bg-[var(--paper-raised)] px-6 py-10 text-center">
-            <h3 className="text-base font-semibold text-[var(--ink-heading)]">No hooks yet</h3>
-            <p className="mt-1 max-w-sm text-sm text-[var(--ink-muted)]">
-              Create a hook to automatically run an action when an event occurs.
-            </p>
-            <button
-              type="button"
-              onClick={openCreateForm}
-              className="neu-button-accent mt-5 inline-flex items-center justify-center rounded-xl border px-4 py-2 text-sm font-semibold"
-            >
-              + New hook
-            </button>
-          </div>
-        ) : (
-          <ul className="space-y-2">
-            {hooks.map((hook) => (
-              <li key={hook.id} className="neu-surface-subtle rounded-xl border border-[var(--line)] p-3">
-                <div className="flex items-start gap-3">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <p className="truncate text-sm font-medium text-[var(--ink-heading)]">{hook.name}</p>
-                      <span className="rounded-full border border-[var(--line)] px-2 py-0.5 text-[10px] uppercase tracking-wide text-[var(--ink-muted)]">
-                        {providerDef(hook.provider).label}
-                      </span>
-                      <span className="rounded-full border border-[var(--line)] px-2 py-0.5 text-[10px] text-[var(--ink-muted)]">
-                        {hook.mode === "command" ? "Command" : hook.mode === "chat" ? "Chat" : "Workflow"}
-                      </span>
-                      {!hook.enabled ? (
-                        <span className="rounded-full border border-[var(--line)] px-2 py-0.5 text-[10px] text-[var(--ink-muted)]">
-                          Disabled
-                        </span>
-                      ) : null}
-                    </div>
-                    {hook.url ? (
-                      <div className="neu-control mt-2 flex items-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--paper-surface)] px-2 py-1">
-                        <code className="min-w-0 flex-1 truncate text-[11px]">{hook.url}</code>
-                        <CopyUrlButton url={hook.url} />
-                      </div>
-                    ) : (
-                      <p className="mt-2 text-xs text-[var(--ink-muted)]">
-                        Runs automatically {providerDef(hook.provider).summary ?? ""}
-                        {typeof hook.providerConfig.matcher === "string" && hook.providerConfig.matcher
-                          ? `, matching ${hook.providerConfig.matcher}`
-                          : ""}
-                        .
-                      </p>
-                    )}
-                    {hook.command ? (
-                      <code className="mt-2 block truncate text-[11px] text-[var(--ink-muted)]">
-                        {hook.command}
-                      </code>
-                    ) : null}
-                    <p className="mt-2 text-[10px] text-[var(--ink-muted)]">
-                      Last fired {formatRelative(hook.lastFiredAt)} · {hook.fireCount} total
-                      {hook.lastResult ? ` · ${hook.lastResult}` : ""}
+                    <p className="mt-1 text-[10px] text-[var(--ink-muted)]">
+                      Runs in a shell on this computer, from your home folder, with nobody asked
+                      first. The event arrives as JSON on standard input. Stopped after 60 seconds.
                     </p>
-                  </div>
-                  <div className="flex shrink-0 flex-col items-stretch gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() => void toggleEnabled(hook)}
-                      className="neu-button rounded-lg border px-2 py-1 text-xs font-medium text-[var(--botanical)]"
-                    >
-                      {hook.enabled ? "Disable" : "Enable"}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void removeHook(hook)}
-                      className="neu-button rounded-lg border px-2 py-1 text-xs font-medium text-[var(--danger)]"
-                    >
-                      Delete
-                    </button>
-                  </div>
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
+                  </>
+                ) : (
+                  <p className="mt-1.5 text-[10px] text-[var(--ink-muted)]">
+                    The assistant gets your sentence as its instructions, with the event attached.
+                  </p>
+                )}
+              </div>
+            </div>
+          ) : null}
+        </div>
 
-        {!creating && hooks.length > 0 ? (
-          <button
-            type="button"
-            onClick={() => void load(true)}
-            disabled={refreshing}
-            className="neu-button mt-3 w-full rounded-lg border px-3 py-1.5 text-xs text-[var(--ink-muted)] disabled:opacity-50"
-          >
-            {refreshing ? "Refreshing…" : "Refresh"}
-          </button>
+        {message ? (
+          <p role="status" className="mt-2 text-xs text-[#8a6f00]">
+            {message}
+          </p>
         ) : null}
       </div>
+
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">
+        {justCreated?.url ? (
+          <div className="neu-surface-subtle mb-3 rounded-2xl border border-[var(--line)] p-3">
+            <div className="flex items-start gap-2">
+              <p className="min-w-0 flex-1 text-sm font-medium text-[var(--ink-heading)]">
+                {providerDef(justCreated.provider).emoji} Connect {providerDef(justCreated.provider).label}
+              </p>
+              <button
+                type="button"
+                onClick={() => setJustCreated(null)}
+                aria-label="Dismiss setup steps"
+                className="rounded-lg px-1.5 text-sm text-[var(--ink-muted)] hover:text-[var(--ink)]"
+              >
+                ×
+              </button>
+            </div>
+            <div className="neu-control mt-2 flex items-center gap-2 rounded-xl border border-[var(--line)] bg-[var(--paper-raised)] px-3 py-1.5">
+              <code className="min-w-0 flex-1 truncate text-xs">{justCreated.url}</code>
+              <CopyUrlButton url={justCreated.url} />
+            </div>
+            <ol className="mt-2 list-decimal space-y-1 pl-4 text-xs text-[var(--ink-muted)]">
+              {providerDef(justCreated.provider).instructions.map((step) => (
+                <li key={step}>{step}</li>
+              ))}
+            </ol>
+            <p className="mt-2 text-[10px] text-[var(--ink-muted)]">
+              The service must be able to reach this computer over the internet to deliver events.
+            </p>
+          </div>
+        ) : null}
+
+        <ul className="space-y-0.5">
+          {templates.map((template) => (
+            <li key={template.name}>
+              <button
+                type="button"
+                onClick={() => {
+                  describe(template.description);
+                  setTemplateName(`${template.emoji} ${template.name}`);
+                  inputRef.current?.focus();
+                }}
+                className="flex w-full items-start gap-3 rounded-xl px-2 py-2.5 text-left transition hover:bg-[var(--paper-strong)]"
+              >
+                <span className="mt-0.5 shrink-0 text-[var(--ink-muted)]">
+                  <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} aria-hidden>
+                    <circle cx="12" cy="12" r="8.5" />
+                    <path strokeLinecap="round" d="M12 8.5v7M8.5 12h7" />
+                  </svg>
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-[13px] font-medium text-[var(--ink-heading)]">
+                    {template.emoji} {template.name}
+                  </span>
+                  <span className="mt-0.5 block text-xs text-[var(--ink-muted)]">
+                    {template.description}
+                  </span>
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+
+        <div className="mt-4 border-t border-[var(--line)] pt-3">
+          <h3 className="text-xs font-semibold text-[var(--ink-muted)]">
+            {showActiveOnly ? "Active hooks" : "All hooks"}
+          </h3>
+          {loading && hooks.length === 0 ? (
+            <p className="mt-4 text-center text-xs text-[var(--ink-muted)]">Loading hooks…</p>
+          ) : visible.length === 0 ? (
+            <p className="mt-4 text-center text-xs text-[var(--ink-muted)]">
+              {hooks.length === 0
+                ? "🪝 No hooks yet — pick a suggestion above or describe your own."
+                : "Nothing is active right now."}
+            </p>
+          ) : (
+            <ul className="mt-2 space-y-2">
+              {visible.map((hook) => {
+                const def = providerDef(hook.provider);
+                const action = modeDef(hook.mode);
+                const matcher =
+                  typeof hook.providerConfig.matcher === "string" ? hook.providerConfig.matcher : "";
+                return (
+                  <li
+                    key={hook.id}
+                    className={`neu-surface-subtle rounded-xl border p-3 ${hook.enabled ? "" : "opacity-70"}`}
+                  >
+                    <div className="flex items-start gap-3">
+                      <span
+                        aria-hidden
+                        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--paper-strong)] text-base"
+                      >
+                        {def.emoji}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <p className="line-clamp-2 text-sm font-medium leading-5 text-[var(--ink-heading)]">
+                          {hook.name}
+                        </p>
+                        <p className="mt-1 text-[10px] text-[var(--ink-muted)]">
+                          {def.internal ? `Runs ${def.summary}` : `${def.label} webhook`}
+                          {matcher ? ` · matching ${matcher}` : ""} → {action.emoji}{" "}
+                          {action.label.toLowerCase()}
+                        </p>
+                        {hook.mode === "chat" && hook.chatInstructions ? (
+                          <p className="mt-1 line-clamp-2 text-xs text-[var(--ink-body,var(--ink))]">
+                            {hook.chatInstructions}
+                          </p>
+                        ) : null}
+                        {hook.command ? (
+                          <code className="mt-1 block truncate text-[11px] text-[var(--ink-muted)]">
+                            {hook.command}
+                          </code>
+                        ) : null}
+                        {hook.url ? (
+                          <div className="neu-control mt-2 flex items-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--paper-raised)] px-2 py-0.5">
+                            <code className="min-w-0 flex-1 truncate text-[11px]">{hook.url}</code>
+                            <CopyUrlButton url={hook.url} />
+                          </div>
+                        ) : null}
+                        <p className="mt-1.5 text-[10px] text-[var(--ink-muted)]">
+                          {hook.enabled ? "🟢 On" : "⏸️ Paused"} · fired {hook.fireCount}×
+                          {hook.lastFiredAt ? `, last ${formatRelative(hook.lastFiredAt)}` : ""}
+                          {hook.lastResult ? ` · ${hook.lastResult}` : ""}
+                        </p>
+                      </div>
+                      <div className="flex shrink-0 flex-col items-end gap-1">
+                        <button
+                          type="button"
+                          onClick={() => void toggleEnabled(hook)}
+                          className="rounded-lg px-2 py-1 text-xs text-[var(--botanical)]"
+                        >
+                          {hook.enabled ? "Pause" : "Resume"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void removeHook(hook)}
+                          className="rounded-lg px-2 py-1 text-xs text-[#9a4438]"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      </div>
+      {confirmDialog}
     </section>
   );
 }

@@ -491,6 +491,68 @@ _GADGET_PACKAGE_SCHEMA = _object_schema(
 )
 
 
+# Step and edge schema shared by workflow_create and workflow_update: both
+# send a complete definition that Breadboard compiles the same way.
+_WORKFLOW_GRAPH_PROPERTIES: dict[str, Any] = {
+    "steps": {
+        "type": "array",
+        "maxItems": 50,
+        "description": "Ordered registered blocks. May be empty for a blank workflow.",
+        "items": {
+            "type": "object",
+            "properties": {
+                "key": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+                    "description": "Local key used by edges.",
+                },
+                "type": {
+                    "type": "string",
+                    "enum": [
+                        "generic_webhook",
+                        "schedule",
+                        "agent",
+                        "api",
+                        "function",
+                        "condition",
+                        "router",
+                        "evaluator",
+                        "response",
+                    ],
+                },
+                "name": {"type": "string", "maxLength": 120},
+                "inputs": {
+                    "type": "object",
+                    "additionalProperties": True,
+                    "description": "Values keyed by input id from the catalog.",
+                },
+            },
+            "required": ["key", "type"],
+            "additionalProperties": False,
+        },
+    },
+    "edges": {
+        "type": "array",
+        "maxItems": 100,
+        "description": "Optional graph edges; omit to connect steps linearly.",
+        "items": {
+            "type": "object",
+            "properties": {
+                "from": {"type": "string"},
+                "to": {"type": "string"},
+                "sourceHandle": {
+                    "type": "string",
+                    "maxLength": 100,
+                    "description": "From a condition step: 'if', 'else if 1', 'else if 2', … or 'else'. Omit for every other step, including a router.",
+                },
+            },
+            "required": ["from", "to"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+
 _TOOLS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
     (
         "breadboard_use",
@@ -2115,6 +2177,38 @@ _TOOLS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
         ),
     ),
     (
+        "workflow_update",
+        "/api/hermes/tools/workflow/update",
+        "workflow",
+        _schema(
+            "workflow_update",
+            (
+                "Change one of the user's saved Breadboard workflows: add, "
+                "remove or rewire steps, edit a step's inputs, or rename it. "
+                "Use it only when the user asks for a change. Call action "
+                "'get' to read the workflow as steps and edges (the same shape "
+                "workflow_create takes), then action 'update' with the "
+                "complete new definition: every step and edge to keep plus "
+                "your changes; steps left out are removed. When the user is "
+                "in the workflow editor, the open workflow's id and current "
+                "definition are already in context. Workflows taught by "
+                "demonstration cannot be edited this way."
+            ),
+            {
+                "action": {
+                    "type": "string",
+                    "enum": ["get", "update"],
+                    "description": "Read the workflow or save its new definition. Defaults to update.",
+                },
+                "workflowId": {"type": "string", "minLength": 1, "maxLength": 100},
+                "name": {"type": "string", "maxLength": 200, "description": "New name; omit to keep it."},
+                "description": {"type": "string", "maxLength": 2000},
+                **_WORKFLOW_GRAPH_PROPERTIES,
+            },
+            ["workflowId"],
+        ),
+    ),
+    (
         "workflow_create",
         "/api/hermes/tools/workflow/create",
         "workflow",
@@ -2127,9 +2221,13 @@ _TOOLS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
                 "register a workflow/automation. Never use it to enact your "
                 "own suggestion; use workflow_propose for that. Call action "
                 "'catalog' first to read the exact registered block types and "
-                "input ids, then call action 'create'. Steps are connected in "
-                "their listed order when edges is omitted. Return the saved "
-                "workflow link and any configuration warnings to the user."
+                "input ids and the authoring guide, then call action 'create'. "
+                "Steps are connected in their listed order when edges is "
+                "omitted. A Start block is added for you: the text the user "
+                "types when running the workflow is <start.input>, and a "
+                "later step reads an earlier one as <blockname.content>. "
+                "Return the saved workflow link and any configuration "
+                "warnings to the user."
             ),
             {
                 "action": {
@@ -2144,57 +2242,7 @@ _TOOLS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
                     "description": "Short name shown in the Workflows capability page.",
                 },
                 "description": {"type": "string", "maxLength": 2000},
-                "steps": {
-                    "type": "array",
-                    "maxItems": 50,
-                    "description": "Ordered registered blocks. May be empty for a blank workflow.",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "key": {
-                                "type": "string",
-                                "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
-                                "description": "Local key used by edges.",
-                            },
-                            "type": {
-                                "type": "string",
-                                "enum": [
-                                    "generic_webhook",
-                                    "schedule",
-                                    "agent",
-                                    "api",
-                                    "function",
-                                    "condition",
-                                    "evaluator",
-                                    "response",
-                                ],
-                            },
-                            "name": {"type": "string", "maxLength": 120},
-                            "inputs": {
-                                "type": "object",
-                                "additionalProperties": True,
-                                "description": "Values keyed by input id from the catalog.",
-                            },
-                        },
-                        "required": ["key", "type"],
-                        "additionalProperties": False,
-                    },
-                },
-                "edges": {
-                    "type": "array",
-                    "maxItems": 100,
-                    "description": "Optional graph edges; omit to connect steps linearly.",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "from": {"type": "string"},
-                            "to": {"type": "string"},
-                            "sourceHandle": {"type": "string", "maxLength": 100},
-                        },
-                        "required": ["from", "to"],
-                        "additionalProperties": False,
-                    },
-                },
+                **_WORKFLOW_GRAPH_PROPERTIES,
             },
             [],
         ),

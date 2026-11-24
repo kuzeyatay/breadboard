@@ -5,7 +5,7 @@ import { chatNotificationMessageId, chatNotificationDeliveryId, ensureChatNotifi
 import { ensureLearnNotificationSchema, listPendingLearnNotifications } from "../chat-notifications/learn.ts";
 import { listPendingQuestionNotifications } from "../chat-notifications/questions.ts";
 import { TelegramStore } from "../telegram/store.ts";
-import { senderIsAllowed as telegramSenderIsAllowed } from "../telegram/identity.ts";
+import { resolveTelegramSelfTarget, type SelfTargetResult } from "../messaging/self-target.ts";
 import { WhatsAppStore } from "../whatsapp/store.ts";
 import { normalizeWhatsAppIdentifier, senderIsAllowed as whatsAppSenderIsAllowed } from "../whatsapp/identity.ts";
 import type { MessagingNotificationSettings, NotificationChannel } from "./types.ts";
@@ -15,6 +15,7 @@ interface PreferenceRow {
   recipient: string;
   link_id: string;
   enabled_at: number;
+  chat_completions_since: number | null;
   revision: string;
   last_error: string | null;
   last_sent_at: string | null;
@@ -54,6 +55,7 @@ export class MessagingNotificationStore {
         recipient TEXT NOT NULL DEFAULT '',
         link_id TEXT NOT NULL DEFAULT '',
         enabled_at INTEGER NOT NULL DEFAULT 0,
+        chat_completions_since INTEGER DEFAULT 0,
         revision TEXT NOT NULL,
         last_error TEXT,
         last_sent_at TEXT,
@@ -71,6 +73,12 @@ export class MessagingNotificationStore {
         FOREIGN KEY(user_id, channel) REFERENCES messaging_notification_settings(user_id, channel) ON DELETE CASCADE
       );
     `);
+    db.transaction(() => {
+      const columns = db.pragma("table_info(messaging_notification_settings)") as { name: string }[];
+      if (!columns.some(column => column.name === "chat_completions_since")) {
+        db.exec("ALTER TABLE messaging_notification_settings ADD COLUMN chat_completions_since INTEGER DEFAULT 0");
+      }
+    }).immediate();
   }
 
   private preference(userId: number, channel: NotificationChannel): PreferenceRow | undefined {
@@ -78,17 +86,32 @@ export class MessagingNotificationStore {
       .get(userId, channel) as PreferenceRow | undefined;
   }
 
+  private telegramConnection(userId: number) {
+    const store = new TelegramStore(this.db);
+    const settings = store.settings();
+    if (settings.ownerUserId !== userId) return { linkId: "", chats: [] };
+    return { linkId: settings.botId ?? "", chats: store.allowedPrivateChats(userId, settings.allowedUsers) };
+  }
+
+  /** Use the chosen destination for reminders and reviews even if inbox forwarding is off. */
+  telegramOwnerTarget(userId: number): SelfTargetResult {
+    const { linkId, chats } = this.telegramConnection(userId);
+    const preference = this.preference(userId, "telegram");
+    if (preference?.recipient && preference.link_id !== linkId && linkId) {
+      return { ok: false, reason: "telegram_choose_owner_chat" };
+    }
+    return resolveTelegramSelfTarget({
+      linked: Boolean(linkId), ownerUserId: userId, chats, selectedChatId: preference?.recipient,
+    });
+  }
+
   /** Destinations are explicit private chats owned by this account; never broadcast to an allowlist. */
   private connection(userId: number, channel: NotificationChannel) {
     if (channel === "telegram") {
-      const store = new TelegramStore(this.db);
-      const settings = store.settings();
-      if (settings.ownerUserId !== userId) return { linkId: "", recipients: [] };
+      const { linkId, chats } = this.telegramConnection(userId);
       return {
-        linkId: settings.botId ?? "",
-        recipients: store.listChats(userId).filter(chat => chat.is_group === 0 &&
-          telegramSenderIsAllowed({ senderId: chat.chat_id, senderUsername: chat.contact_handle }, settings.allowedUsers))
-          .map(chat => ({ id: chat.chat_id, label: chat.contact_label || chat.contact_handle || chat.chat_id })),
+        linkId,
+        recipients: chats.map(chat => ({ id: chat.chat_id, label: chat.contact_label || chat.contact_handle || chat.chat_id })),
       };
     }
     const store = new WhatsAppStore(this.db);
@@ -109,6 +132,7 @@ export class MessagingNotificationStore {
       connection.recipients.some(item => item.id === row.recipient));
     return {
       enabled: row?.enabled === 1,
+      includeChatCompletions: row?.chat_completions_since !== null,
       recipient: row?.recipient ?? "",
       recipients: connection.recipients,
       available: Boolean(connection.linkId && connection.recipients.length),
@@ -117,25 +141,31 @@ export class MessagingNotificationStore {
     };
   }
 
-  private pending(userId: number): ChatNotificationRecord[] {
+  private pending(userId: number, chatCompletionsSince: number | null = 0): ChatNotificationRecord[] {
     // Phone reminders and review replies are saved for continuing their chats.
     // Keep those local notices, but never forward the delivered transcript back
     // to either phone channel as a second "Response ready" message.
-    const externalDelivery = this.db.prepare(`SELECT 1 FROM conversation_messages m
+    const excluded = this.db.prepare(`SELECT 1 FROM conversation_messages m
       JOIN conversations c ON c.id = m.conversation_id
       WHERE m.id = ? AND c.user_id = ?
-        AND json_extract(CASE WHEN json_valid(m.metadata) THEN m.metadata ELSE '{}' END,
-          '$.externalMessagingChannel') IN ('telegram', 'whatsapp')`);
+        AND (json_extract(CASE WHEN json_valid(m.metadata) THEN m.metadata ELSE '{}' END,
+          '$.externalMessagingChannel') IN ('telegram', 'whatsapp')
+          OR (? AND (c.scheduled_chat_job_id IS NULL OR coalesce(m.client_message_id, '') NOT LIKE 'schedule-%')))`);
     const messages = listPendingChatNotifications(this.db, userId).filter(notice => {
       const messageId = chatNotificationMessageId(notice.id);
-      return messageId === null || !externalDelivery.get(messageId, userId);
+      const mutedCompletion = notice.type === "success" &&
+        (chatCompletionsSince === null || notificationTime(notice.updatedAt) < chatCompletionsSince);
+      return messageId === null || !excluded.get(messageId, userId, Number(mutedCompletion));
     });
     return [...messages, ...listPendingQuestionNotifications(this.db, userId), ...listPendingLearnNotifications(this.db, userId)];
   }
 
-  update(userId: number, channel: NotificationChannel, input: { enabled?: unknown; recipient?: unknown }): MessagingNotificationSettings {
+  update(userId: number, channel: NotificationChannel, input: { enabled?: unknown; recipient?: unknown; includeChatCompletions?: unknown }): MessagingNotificationSettings {
     if (typeof input.enabled !== "boolean" || (input.recipient !== undefined && typeof input.recipient !== "string")) {
       throw new MessagingNotificationError(400, "Choose a notification switch and a chat.");
+    }
+    if (input.includeChatCompletions !== undefined && typeof input.includeChatCompletions !== "boolean") {
+      throw new MessagingNotificationError(400, "Choose whether to send completed chat alerts.");
     }
     const current = this.preference(userId, channel);
     const connection = this.connection(userId, channel);
@@ -152,6 +182,13 @@ export class MessagingNotificationStore {
           link_id = excluded.link_id, enabled_at = excluded.enabled_at, revision = excluded.revision, last_error = NULL
       `).run(userId, channel, input.enabled ? 1 : 0, recipient, connection.linkId,
         reset ? Math.floor(Date.now() / 1_000) * 1_000 : current?.enabled_at ?? 0, randomUUID());
+      if (typeof input.includeChatCompletions === "boolean") {
+        // NULL mutes completions. On re-enabling, only new answers should reach the phone.
+        this.db.prepare(`UPDATE messaging_notification_settings SET chat_completions_since =
+          CASE WHEN ? THEN coalesce(chat_completions_since, ?) ELSE NULL END
+          WHERE user_id = ? AND channel = ?`)
+          .run(Number(input.includeChatCompletions), Date.now(), userId, channel);
+      }
       if (reset) {
         // Initialize the shared inbox baseline and skip its current contents.
         // The timestamp also excludes older notices that enter the bounded inbox later.
@@ -170,7 +207,8 @@ export class MessagingNotificationStore {
     if (initial?.enabled !== 1) return;
     const connection = this.connection(userId, channel);
     if (!connection.linkId || initial.link_id !== connection.linkId || !connection.recipients.some(item => item.id === initial.recipient)) return;
-    const pending = this.pending(userId).filter(notice => notificationTime(notice.updatedAt) >= initial.enabled_at);
+    const pending = this.pending(userId, initial.chat_completions_since)
+      .filter(notice => notificationTime(notice.updatedAt) >= initial.enabled_at);
     let attempted = 0;
     for (const notice of pending) {
       const current = this.preference(userId, channel);

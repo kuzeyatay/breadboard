@@ -112,17 +112,19 @@ const tgChat = (over = {}) => ({
   ...over,
 });
 
-test("the owner's most recent private Telegram chat is the destination", () => {
-  const resolved = resolveTelegramSelfTarget({
+test("several private Telegram chats require a choice and newer activity cannot redirect it", () => {
+  const input = {
     linked: true,
     ownerUserId: 1,
     chats: [
       tgChat({ chat_id: "111", last_message_at: "2026-08-01 10:00:00" }),
       tgChat({ chat_id: "222", last_message_at: "2026-08-05 18:00:00" }),
     ],
-  });
+  };
+  assert.deepEqual(resolveTelegramSelfTarget(input), { ok: false, reason: "telegram_choose_owner_chat" });
+  const resolved = resolveTelegramSelfTarget({ ...input, selectedChatId: "111" });
   assert.equal(resolved.ok, true);
-  assert.equal(resolved.target.chatId, "222");
+  assert.equal(resolved.target.chatId, "111");
 });
 
 test("a group is never the destination, even when it is the newest chat", () => {

@@ -61,6 +61,8 @@ type ChatMessage = {
   role: ChatRole;
   content: string;
   internalAgentContinuation?: boolean;
+  goalContinuation?: boolean;
+  activityLabel?: string;
   clarificationAnswer?: boolean;
   createdAt?: string;
   sources?: string[];
@@ -191,7 +193,8 @@ function chatHistorySurface(value: unknown): ChatHistorySurface {
 const recentJsonParses = new Map<string, unknown>();
 function parseJson(value: string): unknown {
   if (recentJsonParses.has(value)) return recentJsonParses.get(value);
-  const parsed: unknown = JSON.parse(value);
+  let parsed: unknown;
+  try { parsed = JSON.parse(value); } catch { return null; }
   if (recentJsonParses.size === 0) queueMicrotask(() => recentJsonParses.clear());
   recentJsonParses.set(value, parsed);
   if (recentJsonParses.size > 4) recentJsonParses.delete(recentJsonParses.keys().next().value as string);
@@ -602,7 +605,10 @@ async function readSessions(
                 CASE WHEN json_valid(legacy.tool_calls)
                   THEN json_extract(legacy.tool_calls, '$.clientMessageId') END
               ) AS client_message_id, legacy.role, legacy.content,
-              legacy.sources, legacy.token_usage, legacy.tool_calls,
+              legacy.sources, CASE WHEN legacy.runtime_status = 'pending' AND canonical.client_message_id LIKE 'goal:%'
+                THEN COALESCE(canonical.token_usage, legacy.token_usage) ELSE legacy.token_usage END AS token_usage,
+              CASE WHEN legacy.runtime_status = 'pending' AND canonical.client_message_id LIKE 'goal:%'
+                THEN COALESCE(canonical.metadata, legacy.tool_calls) ELSE legacy.tool_calls END AS tool_calls,
               legacy.runtime_status, legacy.runtime_error, legacy.created_at
        FROM chat_messages legacy
        LEFT JOIN conversation_message_reads canonical
@@ -660,6 +666,9 @@ async function readSessions(
         ? { contentVersions: presentMessageVersions(contentVersions) } : {}),
       ...delegatedAgentPresentation(message.content, externalAgent),
       ...(internalAgentContinuation ? { internalAgentContinuation: true } : {}),
+      ...(message.client_message_id?.startsWith("goal:") ? { goalContinuation: true,
+        activityLabel: (parseJson(message.tool_calls || "{}") as { activityLabel?: string } | null)?.activityLabel,
+      } : {}),
       ...(clarificationAnswer ? { clarificationAnswer: true } : {}),
       ...(selectedText ? { selectedText } : {}),
       ...(inlineSelection ? { inlineSelection } : {}),

@@ -45,7 +45,8 @@ function mount() {
   const exports = {};
   const mod = { exports };
   new Function("require", "module", "exports", "window", "fetch", code)(
-    name => name === "react" ? React : require(name), mod, exports, window, fetch,
+    name => name === "react" ? React : name === "@/lib/goal-turn-activity"
+      ? { GOAL_TURN_EVENT: "breadboard:goal-turn" } : require(name), mod, exports, window, fetch,
   );
   const render = (sessionId = "lab-chat") => {
     cursor = 0; effects = [];

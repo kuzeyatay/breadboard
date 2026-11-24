@@ -113,6 +113,7 @@
         width: 0.65rem;
         height: 0.65rem;
         border-radius: 999px;
+        corner-shape: round;
         background: var(--secondary);
         opacity: 0.42;
         animation: thought-topology-loading-pulse 1.4s ease-in-out infinite alternate;
@@ -443,6 +444,7 @@
         min-width: 1.1rem;
         padding: 0.05rem 0.3rem;
         border-radius: 999px;
+        corner-shape: round;
         background: var(--secondary);
         color: var(--light);
         font-size: 0.66rem;
@@ -853,6 +855,7 @@
       height: 0.48rem;
       border: 1px solid var(--secondary);
       border-radius: 50%;
+      corner-shape: round;
       background: color-mix(in srgb, var(--secondary) 24%, var(--light));
 
       &[data-kind="hierarchy"] {
@@ -1047,6 +1050,7 @@
       width: 0.4rem;
       height: 0.4rem;
       border-radius: 50%;
+      corner-shape: round;
       background: var(--gray);
       opacity: 0.6;
     }
@@ -1234,55 +1238,58 @@
 html:not([data-theme=dark]):not([saved-theme=dark]) .graph.home-knowledge-graph {
   &:is([data-active-mode=topology-pending], [data-active-mode=thought-topology]) > :is(.graph-outer, .global-graph-outer),
   > :is(.graph-outer, .global-graph-outer):has(> [data-map-ready]) {
-    --map-paper: var(--paper-surface, #faf7ef);
+    --map-paper: var(--light, #e6f0e6);
     background: var(--map-paper);
 
     > :is(.graph-container, .global-graph-container) {
       background: var(--map-paper);
     }
   }
+}
 
-  // Keep the title, counts and live status in document flow over the canvas.
-  > .global-graph-outer.active:has(> [data-map-ready]) {
-    display: grid;
-    box-sizing: border-box;
-    grid-template-columns: minmax(0, 1fr);
-    align-content: start;
-    gap: 0.25rem;
-    padding: 0.65rem 3.5rem 0 6.4rem;
+// Keep the title, counts and live status in document flow over the canvas, in
+// both themes, so the status line, title, Filters and close never overlap.
+// Scoped under each theme selector so it outranks the theme-specific
+// map-overview rules in thoughtTopologyViewer.css.
+:is(html:not([data-theme=dark]):not([saved-theme=dark]), html:is([saved-theme=dark], [data-theme=dark])) .graph.home-knowledge-graph > .global-graph-outer.active:has(> [data-map-ready]) {
+  display: grid;
+  box-sizing: border-box;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: start;
+  gap: 0.25rem;
+  padding: 0.65rem 3.5rem 0 6.4rem;
 
-    > .map-overview {
-      position: relative;
-      inset: auto;
-      grid-row: 1;
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      justify-content: space-between;
-      gap: 0.15rem 1rem;
-      min-height: 1.9rem;
-      max-width: none;
-      overflow-wrap: anywhere;
-    }
+  > .map-overview {
+    position: relative;
+    inset: auto;
+    grid-row: 1;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.15rem 1rem;
+    min-height: 1.9rem;
+    max-width: none;
+    overflow-wrap: anywhere;
+  }
 
-    > .thought-topology-controls {
-      position: relative;
-      inset: auto;
-      grid-row: 2;
-      z-index: 4;
-      display: flex;
-      flex-flow: row wrap;
-      align-items: center;
-      gap: 0.35rem;
-      max-width: 100%;
-    }
+  > .thought-topology-controls {
+    position: relative;
+    inset: auto;
+    grid-row: 2;
+    z-index: 4;
+    display: flex;
+    flex-flow: row wrap;
+    align-items: center;
+    gap: 0.35rem;
+    max-width: 100%;
+  }
 
-    > .global-graph-close {
-      top: 0.65rem;
-      right: 0.65rem;
-      width: 1.9rem;
-      height: 1.9rem;
-    }
+  > .global-graph-close {
+    top: 0.65rem;
+    right: 0.65rem;
+    width: 1.9rem;
+    height: 1.9rem;
   }
 }
 

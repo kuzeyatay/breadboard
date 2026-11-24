@@ -107,7 +107,9 @@ import {
 } from "@/app/components/chat/chat-row-identity";
 import ChatTimeSeparator from "@/app/components/chat-time-separator";
 import ChatMessageAttachments from "@/app/components/chat-message-attachments";
-import { delegatedResponsePresentation } from "@/lib/hermes/delegated-response";
+import { delegatedResponsePresentation, isDelegationPrompt } from "@/lib/hermes/delegated-response";
+import { GOAL_TURN_EVENT, type GoalTurnSnapshot } from "@/lib/goal-turn-activity";
+import { retainFollowUp } from "@/lib/chat-follow-up-queue";
 import AttachmentPreviewDialog, {
   type AttachmentPreviewSource,
 } from "@/app/components/attachment-preview-dialog";
@@ -619,6 +621,8 @@ interface Message {
   content: string;
   /** Model-to-model hand-back; retained in context but hidden from the user. */
   internalAgentContinuation?: boolean;
+  goalContinuation?: boolean;
+  activityLabel?: string;
   /** Runtime input that answered the assistant's own mid-turn question. */
   clarificationAnswer?: boolean;
   /**
@@ -2073,7 +2077,7 @@ function buildTranscriptRows(messages: readonly Message[]): TranscriptRow[] {
       supersededDelegationAssistants.has(index) ||
       (storedMessage.delegatedAgentRun === true &&
         !storedMessage.godsEyeRun &&
-        messages[index + 1]?.internalAgentContinuation === true)
+        isDelegationPrompt(messages[index + 1]))
     ) {
       return;
     }
@@ -2388,7 +2392,7 @@ const ChatTranscript = memo(function ChatTranscript({
                 msg.rufloRun;
               const isAgentContinuationResponse = Boolean(
                 msg.role === "assistant" &&
-                  messages[i - 1]?.internalAgentContinuation === true,
+                  isDelegationPrompt(messages[i - 1]),
               );
               const continuationPreamble =
                 delegatedContinuationPreamble(messages, i);
@@ -2802,6 +2806,7 @@ const ChatTranscript = memo(function ChatTranscript({
                               usage={msg.usage}
                               responseDurationMs={msg.responseDurationMs}
                               responseCompletedAt={delegatedAgentActive ? undefined : msg.responseCompletedAt}
+                              restoredActivityLabel={msg.activityLabel}
                               activePhaseStartedAt={delegatedAgentStartedAt}
                               onPermissionDecision={onPermissionDecision}
                               stateLabel={delegatedAgentLabel}
@@ -2856,6 +2861,7 @@ const ChatTranscript = memo(function ChatTranscript({
                                   : null
                               }
                               usage={totalUsage}
+                              restoredActivityLabel={msg.activityLabel}
                               responseDurationMs={msg.responseDurationMs}
                               responseCompletedAt={delegatedAgentActive ? undefined : msg.responseCompletedAt}
                               responseStartedAt={
@@ -5236,6 +5242,17 @@ export default function WorkspaceClient({
     return load;
   }, [refreshChatSession]);
   loadChatTranscriptRef.current = loadChatTranscript;
+  useEffect(() => {
+    const onGoalTurn = (event: Event) => {
+      const { sessionId, turn } = (event as CustomEvent<{ sessionId: string; turn: GoalTurnSnapshot }>).detail;
+      const chat = chatSessionsRef.current.find(row => row.id === activeChatIdRef.current);
+      if (!chat || chat.conversationId !== sessionId || inFlightChatMessagesRef.current.has(chat.id)) return;
+      const row = chat.messages.findLast(msg => msg.role === "assistant" && msg.clientMessageId === turn.clientMessageId);
+      if (!row || row.pending || turn.status === "pending") void loadChatTranscript(chat.id, true);
+    };
+    window.addEventListener(GOAL_TURN_EVENT, onGoalTurn);
+    return () => window.removeEventListener(GOAL_TURN_EVENT, onGoalTurn);
+  }, [loadChatTranscript]);
 
   /** Drop the transcripts of chats not used lately, keeping any with live work. */
   const releaseIdleTranscripts = useCallback(() => {
@@ -5706,8 +5723,10 @@ export default function WorkspaceClient({
     isStreaming,
     launchingExternalAgent,
   ]);
+  const pendingGoalTurn = messages.findLast(message => message.role === "assistant" && message.textSelection?.mode !== "inline");
   const visibleAgentConnection: ConnectionState =
-    activeChat?.active === true && agentActivity.connection === "idle"
+    (pendingGoalTurn?.goalContinuation && pendingGoalTurn.pending) ||
+    (activeChat?.active === true && agentActivity.connection === "idle")
       ? "streaming"
       : agentActivity.connection;
   const transcriptVirtual = useChatVirtualBridge();
@@ -14432,12 +14451,13 @@ if (careerOpsAgent) {
       activeGardenTurnRef.current = null;
       agentSignal = agentActivity.start();
     }
-    const abandonTurn = () => {
+    const abandonTurn = (restoreDraft = true) => {
       if (showedDraft) setDraftMessages(null);
       if (agentSignal) agentActivity.finish(false, agentSignal);
-      if (composerSend) {
+      if (composerSend && restoreDraft) {
         setInput(text);
         setChatAttachments(pendingAttachments);
+        setComposerSelection(textSelection ?? null);
       }
     };
 
@@ -14534,6 +14554,7 @@ if (careerOpsAgent) {
     // restart can now either resume this answer or terminalize it; it can no
     // longer restore the question alone.
     let checkpointSaved = false;
+    let turnConflict = false;
     try {
       const checkpoint = await reserveGardenTurnCheckpoint(
         sessionId,
@@ -14555,10 +14576,11 @@ if (careerOpsAgent) {
         checkpoint.conversationId ?? session.conversationId ?? null,
       );
       checkpointSaved = true;
-    } catch {
+    } catch (error) {
       // Stop during the save is not a failed save: the turn stays on screen as
       // interrupted, and the reservation seals whatever the request committed.
-      if (!agentSignal?.aborted) {
+      turnConflict = error instanceof Error && "code" in error && error.code === "conversation_turn_active";
+      if (!agentSignal?.aborted && !turnConflict) {
         addToast(
           chatSaveFailureLabel(sessionId, session.title, nextMessages, clusterName),
           "error", "Chat was not saved", String(sessionId),
@@ -14584,11 +14606,22 @@ if (careerOpsAgent) {
     }
     if (!checkpointSaved) {
       setChatStreaming(sessionId, awaitedLaunchesRef.current.size > 0);
-      updateChatMessages(sessionId, history);
+      if (activeGardenTurnRef.current?.clientMessageId === clientMessageId) activeGardenTurnRef.current = null;
       if (activeSteerContextRef.current === steerContext) {
         activeSteerContextRef.current = null;
       }
-      abandonTurn();
+      if (turnConflict && !internalAgentContinuation) {
+        // Keep the queue held while restoring the automatic turn that won the reservation.
+        setChatStreaming(sessionId, true);
+        retainFollowUp(String(sessionId), { id: clientMessageId, conversationKey: String(sessionId),
+          text, attachments: pendingAttachments, textSelection: textSelection ?? undefined }, "first");
+        abandonTurn(false);
+        try { await loadChatTranscript(sessionId, true); }
+        finally { setChatStreaming(sessionId, false); }
+      } else {
+        updateChatMessages(sessionId, history);
+        abandonTurn();
+      }
       return;
     }
     if (agentSignal?.aborted) {
@@ -19374,6 +19407,7 @@ if (careerOpsAgent) {
               onReasoningEffortChange={setReasoningEffort}
               intelligenceModes={intelligenceModes}
               onAddDocuments={() => chatFileInputRef.current?.click()}
+              onPasteFiles={attachChatFiles}
               isAddingDocuments={extractingAttachments}
               attachmentUploadError={attachmentUploadError}
               attachments={chatAttachments}

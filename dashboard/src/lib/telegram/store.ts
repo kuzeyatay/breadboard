@@ -5,7 +5,7 @@
 import type DatabaseType from "better-sqlite3";
 
 import { ensureTelegramSchema } from "./schema.ts";
-import { formatAllowedUsers, parseAllowedUsers } from "./identity.ts";
+import { formatAllowedUsers, parseAllowedUsers, senderIsAllowed } from "./identity.ts";
 
 type Db = DatabaseType.Database;
 
@@ -246,6 +246,15 @@ export class TelegramStore {
           LIMIT ?`,
       )
       .all(userId, Math.max(1, Math.min(200, limit))) as TelegramChatRow[];
+  }
+
+  allowedPrivateChats(userId: number, allowedUsers: readonly string[]): TelegramChatRow[] {
+    const rows = this.db.prepare(`
+      SELECT * FROM telegram_chats WHERE user_id = ? AND is_group = 0
+      ORDER BY last_message_at DESC, id DESC
+    `).all(userId) as TelegramChatRow[];
+    return rows.filter(chat => /^[1-9]\d*$/.test(chat.chat_id) &&
+      senderIsAllowed({ senderId: chat.chat_id, senderUsername: chat.contact_handle }, allowedUsers));
   }
 
   /**

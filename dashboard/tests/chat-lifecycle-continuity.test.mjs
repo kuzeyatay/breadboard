@@ -51,7 +51,7 @@ test("the first durable id does not replace its visible turn with a chat loader"
   );
   assert.match(
     panel,
-    /loadingTranscript \|\| \(!visibleConversationJustCreated && !artifactsReady\)/,
+    /loadingTranscript \|\| \(!visibleConversationJustCreated && !openingStarredMessage && !artifactsReady\)/,
   );
   for (const owner of [terminal, gardenChat]) {
     assert.match(owner, /createdSessionId=\{session\.createdSessionId\}/);
@@ -76,7 +76,7 @@ test("reopening a live chat revalidates settled prefetches", () => {
     sessionClient,
     /if \(!options\.revalidateAfterPending\) return shared;[\s\S]*return loadHermesSessionDetail\(surface, id, \{ signal: options\.signal \}\);/,
   );
-  assert.match(openSession, /setRunToResume\(\{/);
+  assert.match(openSession, /resumeSnapshotRun\(id, restoredRun, viewEpoch\)/);
   assert.match(openSession, /resumePendingConversation\(id, restoredMessages, viewEpoch\)/);
 });
 
@@ -146,7 +146,7 @@ test("a health downgrade cannot swap transports after a chat has engaged", () =>
 
 test("Garden Workspace checkpoints a prompt before runtime dispatch", () => {
   const checkpointAt = gardenWorkspace.indexOf("await reserveGardenTurnCheckpoint");
-  const dispatchAt = gardenWorkspace.indexOf('const res = await fetch("/api/chat"');
+  const dispatchAt = gardenWorkspace.indexOf("await fetchGardenChat(sessionId, clientMessageId");
   assert.ok(checkpointAt >= 0 && dispatchAt > checkpointAt);
   assert.match(gardenWorkspace, /const clientMessageId = crypto\.randomUUID\(\)/);
   assert.match(gardenWorkspace, /assistantMsg\.id = checkpoint\.assistantMessageId/);
@@ -178,7 +178,7 @@ test("the page-side Garden assistant uses the same durable checkpoint contract",
   const checkpointAt = gardenAssistant.indexOf(
     "await reserveGardenTurnCheckpoint",
   );
-  const dispatchAt = gardenAssistant.indexOf("const response = await fetch('/api/chat'");
+  const dispatchAt = gardenAssistant.indexOf("await fetchGardenChat(session.id, clientMessageId");
   assert.ok(checkpointAt >= 0 && dispatchAt > checkpointAt);
   assert.match(gardenAssistant, /const clientMessageId = crypto\.randomUUID\(\)/);
   assert.match(gardenAssistant, /persistenceChainsRef/);

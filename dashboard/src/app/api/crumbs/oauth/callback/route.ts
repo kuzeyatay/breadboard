@@ -1,4 +1,5 @@
 import { crumbs } from "@/lib/crumbs/service.ts";
+import { SQUIRCLE_DOCUMENT_CSS } from "@/lib/squircle-corner";
 
 export const dynamic = "force-dynamic";
 const escapeHtml = (value: string) => value.replace(/[&<>"']/g, character => `&#${character.charCodeAt(0)};`);
@@ -15,7 +16,7 @@ export async function GET(request: Request) {
   const title = result.error ? "Could not sign in" : "Signed in to Crumbs";
   const detail = result.error ?? "You can close this tab.";
   return new Response(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title>
-<style>html{color-scheme:light dark}body{margin:0;min-height:100vh;display:grid;place-items:center;background:#e6f0e6;color:#13201b;font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+<style>${SQUIRCLE_DOCUMENT_CSS}html{color-scheme:light dark}body{margin:0;min-height:100vh;display:grid;place-items:center;background:#e6f0e6;color:#13201b;font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 main{max-width:380px;margin:24px;padding:32px;border:1px solid #bccfc2;border-radius:18px;background:#faf7ef;text-align:center;box-shadow:0 10px 30px #13201b14}
 svg{color:${result.error ? "#a45c5c" : "#4f6f68"}}h1{margin:14px 0 6px;font-size:19px;letter-spacing:-.02em}p{margin:0;color:#50615a}
 @media(prefers-color-scheme:dark){body{background:#141a17;color:#e8efe9}main{background:#1c2420;border-color:#33423a}p{color:#a5b5ac}}</style></head>

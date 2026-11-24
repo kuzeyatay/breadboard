@@ -6703,6 +6703,7 @@ body.docs-crop-active
 
 .protect-dialog .protect-check input[type='checkbox'] + .ctl {
   border-radius: 5px;
+  corner-shape: squircle;
 }
 
 .protect-dialog .protect-check input[type='checkbox']:checked + .ctl {

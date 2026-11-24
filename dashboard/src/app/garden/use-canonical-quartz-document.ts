@@ -35,6 +35,12 @@ export function useCanonicalQuartzDocument(
       });
       const body = await response.json();
       if (controller.signal.aborted) return;
+      // A very large page is not re-rendered by the server: Quartz's published copy stays.
+      if (response.ok && body.success && body.renderSkipped && typeof body.content === "string") {
+        setActive(current => current?.cluster === cluster && current.slug === slug
+          ? { ...current, content: body.content, title: body.title || current.title, loading: false } : current);
+        return;
+      }
       if (!response.ok || !body.success || typeof body.content !== "string" || typeof body.reader?.html !== "string") {
         throw new Error(body.error || "Could not refresh the saved page.");
       }

@@ -18,7 +18,6 @@ import {
   modelPreviewStrategy,
   type ModelAttachmentFormat,
 } from "../model-attachments.ts";
-import { isPlayableVideoFormat } from "../video-attachments.ts";
 
 export interface UploadSourceRow {
   message_id: number;
@@ -132,10 +131,10 @@ export function collectUploads(
         (attachment.type === "file" && Boolean(attachment.blobId && attachment.format));
       const previewAvailable =
         attachment.type === "image" ||
-        // Every stored audio format plays in a browser, so there is no
-        // unplayable case to exclude the way there is for Matroska or AVI.
+        // Every stored audio format plays in a browser, and every video does
+        // too: Matroska, AVI and the rest play through their MP4 copy.
         attachment.type === "audio" ||
-        (attachment.type === "video" && isPlayableVideoFormat(attachment.format)) ||
+        attachment.type === "video" ||
         (attachment.type === "model" &&
           (Boolean(attachment.previewBlobId) || modelPreviewStrategy(attachment.format) === "three"));
       const previewFormat =

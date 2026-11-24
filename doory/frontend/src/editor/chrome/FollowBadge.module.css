@@ -10,6 +10,7 @@
   padding: 5px 6px 5px 8px;
   border: 1px solid var(--ed-accent);
   border-radius: 999px;
+  corner-shape: round;
   background: var(--ed-surface);
   color: var(--ed-text);
   box-shadow: var(--shadow-md);
@@ -29,6 +30,7 @@
   padding: 0;
   border: 0;
   border-radius: 50%;
+  corner-shape: round;
   background: var(--ed-surface-3);
   color: var(--ed-text-dim);
   cursor: pointer;

@@ -218,3 +218,12 @@ button.cardContent {
   .cardContent { padding: 20px; }
 }
 @media (prefers-reduced-motion: reduce) { .clear { transition: none; } }
+
+/* A slimmer panel than the other utility panels: notifications are short
+   lines, and a narrow column keeps them scannable. Phones keep the shared
+   full-width panel. */
+@media (min-width: 601px) {
+  .panel[data-notification-center] { width: min(400px, calc(100vw - 48px)); }
+  .cardContent { padding: 18px 20px 19px; }
+  .questionReply { padding: 0 20px 19px; }
+}

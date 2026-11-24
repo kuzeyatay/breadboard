@@ -34,7 +34,6 @@ import db from "../db.ts";
 import { conversationIsSameDay } from "../conversations/messaging-days.ts";
 import {
   explainSelfTargetFailure,
-  resolveTelegramSelfTarget,
   resolveWhatsAppSelfTarget,
   type SelfTarget,
 } from "../messaging/self-target.ts";
@@ -251,15 +250,15 @@ async function telegramTarget(userId?: number): Promise<{ target: SelfTarget; to
       "Telegram is linked to a different Breadboard account.",
     );
   }
-  const resolved = resolveTelegramSelfTarget({
-    linked: Boolean(token) && Boolean(settings.botId),
-    ownerUserId: settings.ownerUserId,
-    chats: settings.ownerUserId === null ? [] : store.listChats(settings.ownerUserId, 100),
-  });
-  if (!resolved.ok || !token) {
+  if (!token || !settings.ownerUserId) {
+    throw new MessagingServiceError("messaging_not_linked", explainSelfTargetFailure("telegram_not_linked"));
+  }
+  const { getMessagingNotificationStore } = await import("../messaging-notifications/instance.ts");
+  const resolved = getMessagingNotificationStore().telegramOwnerTarget(settings.ownerUserId);
+  if (!resolved.ok) {
     throw new MessagingServiceError(
       "messaging_not_linked",
-      explainSelfTargetFailure(resolved.ok ? "telegram_not_linked" : resolved.reason),
+      explainSelfTargetFailure(resolved.reason),
     );
   }
   return { target: resolved.target, token };

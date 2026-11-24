@@ -33,6 +33,8 @@ const historyStubs = {
   "@/lib/conversations/store": "export const {ensureConversationForLegacyChatSession, failStaleGardenPreDispatchTurns, summarizeConversationMessages} = globalThis.thinkingRestoreFixture.store;",
   "./store.ts": "export const {ConversationStoreError, getConversationMessageById} = globalThis.thinkingRestoreFixture.store;",
   "@/lib/max-research/conversation-persistence.ts": "export const reconcileMaxResearchConversation = async () => {};",
+  "@/lib/vibe-trading/conversation-persistence.ts": "export const reconcileVibeTradingConversation = async () => {};",
+  "@/lib/conversations/settle-delegated-work.ts": "export const settleDelegatedWork = () => {};",
   "@/lib/hermes/chat-runtime-control.ts": "export const readChatRuntimeControl = () => null;",
 };
 const historyBundle = await esbuild.build({

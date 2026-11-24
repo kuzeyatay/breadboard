@@ -153,7 +153,7 @@ test("orchestration labels are gated by the captured per-message mode", () => {
     presentation,
     /superAgent: dispatch\.capabilities\?\.superAgent === true/,
   );
-  assert.match(session, /superAgent: restoredRun\.superAgent === true/);
+  assert.match(session, /superAgent: run\.superAgent === true/);
   assert.match(session, /runToResume\.superAgent/);
 });
 

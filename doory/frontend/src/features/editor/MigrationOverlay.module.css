@@ -18,6 +18,7 @@
   height: 8px;
   border: 0;
   border-radius: var(--radius-full);
+  corner-shape: round;
   background: var(--color-bg-muted);
   overflow: hidden;
 }
@@ -29,12 +30,14 @@
 .progress::-webkit-progress-value {
   background: var(--color-brand-fill);
   border-radius: var(--radius-full);
+  corner-shape: round;
   transition: width var(--duration-base) var(--ease-out);
 }
 
 .progress::-moz-progress-bar {
   background: var(--color-brand-fill);
   border-radius: var(--radius-full);
+  corner-shape: round;
 }
 
 /* High contrast: the pale track gets an outline, so the full length of the bar shows. */

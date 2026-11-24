@@ -63,6 +63,7 @@
   bottom: 6px;
   padding: 2px 7px;
   border-radius: 999px;
+  corner-shape: round;
   background: var(--color-overlay);
   color: var(--color-on-brand);
   font: 600 10px / 1.5 var(--font-sans);

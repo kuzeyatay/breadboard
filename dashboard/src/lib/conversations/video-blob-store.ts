@@ -213,6 +213,17 @@ export function findVideoBlob(input: {
   return null;
 }
 
+/**
+ * Where the browser-playable MP4 of a stored video lives (see video-playback.ts).
+ * Kept under `playback/u<userId>/` so ownership stays a property of the path.
+ */
+export function playbackCopyPath(userId: number, blobId: string, root?: string): string {
+  if (!isVideoBlobId(blobId)) {
+    throw new VideoBlobError(400, "invalid_video_blob_id", "That video id is not valid.");
+  }
+  return path.join(videoBlobRoot(root), "playback", `u${userId}`, `${blobId}.mp4`);
+}
+
 export function removeVideoBlob(input: {
   userId: number;
   blobId: string;
@@ -222,6 +233,8 @@ export function removeVideoBlob(input: {
   if (!blob) return false;
   try {
     fs.rmSync(blob.path, { force: true });
+    // The MP4 made for playing a Matroska or AVI file goes with it.
+    fs.rmSync(playbackCopyPath(input.userId, input.blobId, input.root), { force: true });
     return true;
   } catch {
     return false;

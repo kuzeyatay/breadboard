@@ -137,7 +137,7 @@ test("Hermes can explicitly author a workflow into the capability-page store", (
   const manifest = source("../../hermes-agent/plugins/breadboard/plugin.yaml");
   const listRoute = source("../src/app/api/workflows/local/route.ts");
 
-  assert.match(route, /explicitlyRequestsWorkflowCreation\(run\.instruction\)/);
+  assert.match(route, /explicitlyRequestsWorkflowCreation\(run\.instruction, previousAssistant\)/);
   assert.match(route, /buildAuthoredWorkflowState\(definition\)/);
   assert.match(route, /createWorkflow\(session\.user_id/);
   assert.match(route, /workflow\.tool\.create/);
@@ -187,7 +187,8 @@ test("leaving the workflows page cannot restore a click-blocking capability over
   assert.match(panel, /onNavigate\?: \(\) => void/);
   assert.match(panel, /rememberWorkflowReturnPath\(\)/);
   assert.match(hub, /onNavigate=\{\(\) => onOpenChange\(false\)\}/);
-  assert.match(client, /function leaveWorkflows\(\)[\s\S]*startNavigationProgress\(\);[\s\S]*router\.replace\(returnPath \?\? "\/dashboard"/);
+  // Every workflow lives in Spaces; leaving one goes back there.
+  assert.match(client, /const backToSpaces = useCallback\(\(\) => \{[\s\S]*startNavigationProgress\(\);[\s\S]*router\.push\("\/spaces"\)/);
   assert.match(markdown, /target=\{isWorkflowLink \? undefined : '_blank'\}/);
   assert.match(markdown, /rememberWorkflowReturnPath\(\)/);
 });

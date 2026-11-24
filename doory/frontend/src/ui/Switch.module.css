@@ -28,6 +28,7 @@
   inset: 0;
   background: var(--color-border-strong);
   border-radius: var(--radius-full);
+  corner-shape: round;
   transition: background-color var(--duration-base) var(--ease-out);
 }
 
@@ -40,6 +41,7 @@
   height: calc(1.25rem - 4px);
   background: var(--color-bg);
   border-radius: 50%;
+  corner-shape: round;
   box-shadow: var(--shadow-sm);
   transition: transform var(--duration-base) var(--ease-out);
 }

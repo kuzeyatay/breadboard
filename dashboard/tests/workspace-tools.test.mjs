@@ -21,6 +21,7 @@ import {
   allowedToolsForSurface,
 } from "../src/lib/hermes/tool-scopes.ts";
 import { BROKERED_TOOLS } from "../src/lib/hermes/capability-broker.ts";
+import { prepareTurn } from "../src/lib/hermes/dispatch-core.ts";
 import {
   WorkspaceFileError,
   containedWorkspaceFile,
@@ -55,6 +56,28 @@ test("Windows extended runtime paths support the complete workspace file loop", 
 });
 
 // ── wiring ──────────────────────────────────────────────────────────────────
+
+for (const surface of ["dashboard_terminal", "garden_chat"]) {
+  test(`${surface} keeps workspace edits available across automatic goal turns`, () => {
+    const root = makeWorkspace();
+    const objective = "Create and verify a note in this workspace.";
+    try {
+      for (const automatic of [false, true]) {
+        const turn = prepareTurn({ request: automatic ? "Continue the active goal." : objective,
+          goalObjective: automatic ? objective : undefined, internalAgentContinuation: automatic,
+          goalMode: true, surface, userId: 7, grants: [], workspaceRoot: root });
+        for (const tool of ["workspace_read", "workspace_write", "workspace_patch", "terminal_execute_command"]) {
+          assert.equal(turn.grant.allowedTools[tool], true, tool);
+          assert.ok(turn.decision.allowedTools.includes(tool));
+        }
+        assert.ok(turn.decision.allowedOperations.includes("workspace_write"));
+        if (automatic) patchWorkspaceFile(root, { path: "note.txt", find: "draft", replace: "verified" });
+        else writeWorkspaceFile(root, { path: "note.txt", content: "draft" });
+      }
+      assert.deepEqual(readWorkspaceFile(root, { path: "note.txt" }).lines, ["verified"]);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  });
+}
 
 test("the family exposes exactly the intended tools", () => {
   assert.deepEqual([...WORKSPACE_TOOLS].sort(), [

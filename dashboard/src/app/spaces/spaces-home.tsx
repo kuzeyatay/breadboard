@@ -2,19 +2,22 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Clock, Folder, FolderOpen, PenLine, Search, Sparkles, Star, Trash2, Upload } from "lucide-react";
+import { Clock, Folder, FolderOpen, Hand, PenLine, Search, Sparkles, Star, Trash2, Upload, Workflow } from "lucide-react";
 import SpotifyAmbientBackground from "@/app/components/spotify-ambient-background";
 import { SpotifyAmbientProvider } from "@/app/components/spotify-ambient-context";
 import { usePageAppearance } from "@/app/components/use-page-appearance";
 import { gardenFileApi, type GardenFileEntry } from "@/lib/garden-files/types";
 import { OFFICE_FOLDER, OFFICE_KINDS, officeKind, spacesEditHref, spacesKindForPath, type OfficeFile, type OfficeKindInfo, type OfficeTab, type OfficeWorkspace } from "@/lib/office/types";
+import { WorkflowProposals } from "@/app/workflows/components/workflow-proposals";
+import { loadTeachAvailability, type TeachAvailabilityView } from "@/app/workflows/teach/teach-client";
 import SpacesFileBadge from "./spaces-file-badge";
 import styles from "./spaces.module.css";
 
-const TABS: { id: "all" | OfficeTab; label: string }[] = [
+type SpacesTab = "all" | OfficeTab | "workflows";
+const TABS: { id: SpacesTab; label: string }[] = [
   { id: "all", label: "All" }, { id: "docs", label: "Docs" }, { id: "sheets", label: "Sheets" }, { id: "slides", label: "Slides" },
   { id: "pages", label: "Pages" }, { id: "designs", label: "Designs" }, { id: "videos", label: "Videos" },
-  { id: "pdf", label: "PDF" }, { id: "markdown", label: "Markdown" }, { id: "html", label: "HTML" },
+  { id: "pdf", label: "PDF" }, { id: "markdown", label: "Markdown" }, { id: "html", label: "HTML" }, { id: "workflows", label: "Workflows" },
 ];
 const STAR_KEY = "breadboard:office:starred";
 const WORKSPACE_KEY = "breadboard:office:workspace";
@@ -35,6 +38,18 @@ const TILES: Tile[] = [
   { id: "md", info: kind("md"), label: "Markdown", detail: ".md" },
   { id: "html", info: kind("html"), label: "HTML", detail: ".html" },
 ];
+
+/** Workflows belong to the account, not to a workspace: they are listed beside the files in every view but a workspace's own. */
+interface WorkflowItem { id: string; name: string; description?: string; source?: "canvas" | "demonstration"; nodeCount?: number; stepCount?: number; updatedAt: string | null }
+const WORKFLOW_COLOR = "#b4691f";
+const workflowHref = (id: string) => `/workflows?workflow=${encodeURIComponent(id)}`;
+/** SQLite writes "YYYY-MM-DD HH:MM:SS" in UTC; read it as UTC so it sorts and prints beside ISO file times. */
+const sqlTime = (value: string) => /^\d{4}-\d\d-\d\d \d/.test(value) ? `${value.replace(" ", "T")}Z` : value;
+
+function WorkflowBadge({ teach, size = 30 }: { teach?: boolean; size?: number }) {
+  const Icon = teach ? Hand : Workflow;
+  return <span aria-hidden="true" className={styles.badge} style={{ backgroundColor: WORKFLOW_COLOR, width: size, height: size }}><Icon size={Math.round(size * 0.52)} strokeWidth={2.2} /></span>;
+}
 
 function readStorage(key: string): string | null { try { return localStorage.getItem(key); } catch { return null; } }
 function writeStorage(key: string, value: string): void { try { localStorage.setItem(key, value); } catch { /* starring still works for this visit */ } }
@@ -61,6 +76,8 @@ function ShiftingBackground({ ownerKey }: { ownerKey: string }) {
   </div>;
 }
 
+type Entry = { kind: "file"; file: OfficeFile; updatedAt: string } | { kind: "workflow"; workflow: WorkflowItem; updatedAt: string };
+
 const ROOT_NAME = "Root", NO_WORKSPACE = "none";
 const LOAD_ERROR = "Your files could not be loaded yet. Trying again…";
 const isRoot = (garden: OfficeWorkspace) => garden.name === ROOT_NAME;
@@ -71,7 +88,9 @@ export default function SpacesHome({ ownerKey }: { ownerKey: string }) {
   const [workspaces, setWorkspaces] = useState<OfficeWorkspace[]>([]);
   const [workspace, setWorkspace] = useState("");
   const [view, setView] = useState<"recent" | "starred" | { garden: string }>("recent");
-  const [tab, setTab] = useState<"all" | OfficeTab>("all");
+  const [tab, setTab] = useState<SpacesTab>("all");
+  const [workflows, setWorkflows] = useState<WorkflowItem[] | null>(null);
+  const [teachAvailability, setTeachAvailability] = useState<TeachAvailabilityView | null>(null);
   const [query, setQuery] = useState("");
   const [starred, setStarred] = useState<Set<string>>(new Set());
   const [error, setError] = useState("");
@@ -103,13 +122,22 @@ export default function SpacesHome({ ownerKey }: { ownerKey: string }) {
   }, []);
   useEffect(() => () => window.clearTimeout(retry.current.timer), []);
 
+  const loadWorkflows = useCallback(async () => {
+    try {
+      const body = await request<{ workflows: WorkflowItem[] }>("/api/workflows/local");
+      setWorkflows(body.workflows);
+    } catch { setWorkflows(current => current ?? []); }
+  }, []);
+
   useEffect(() => {
-    void load();
+    void load(); void loadWorkflows();
+    const teachCheck = new AbortController();
+    loadTeachAvailability(teachCheck.signal).then(setTeachAvailability).catch(() => { /* starting a session reports the real reason */ });
     try { setStarred(new Set(JSON.parse(readStorage(STAR_KEY) ?? "[]") as string[])); } catch { /* no stars yet */ }
-    const refresh = () => { if (document.visibilityState === "visible") void load(); };
+    const refresh = () => { if (document.visibilityState === "visible") { void load(); void loadWorkflows(); } };
     document.addEventListener("visibilitychange", refresh);
-    return () => document.removeEventListener("visibilitychange", refresh);
-  }, [load]);
+    return () => { teachCheck.abort(); document.removeEventListener("visibilitychange", refresh); };
+  }, [load, loadWorkflows]);
 
   const chooseWorkspace = (slug: string) => { setWorkspace(slug); writeStorage(WORKSPACE_KEY, slug || NO_WORKSPACE); };
 
@@ -182,6 +210,23 @@ export default function SpacesHome({ ownerKey }: { ownerKey: string }) {
     finally { setBusy(false); if (upload.current) upload.current.value = ""; }
   };
 
+  const openWorkflow = (id: string) => router.push(workflowHref(id));
+  const createWorkflow = async () => {
+    if (busy) return;
+    setBusy(true); setError("");
+    try {
+      const { id } = await request<{ id: string }>("/api/workflows/local", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "Untitled workflow" }) });
+      openWorkflow(id);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "The workflow could not be created."); setBusy(false); }
+  };
+  const deleteWorkflow = async (workflow: WorkflowItem) => {
+    if (!window.confirm(`Delete the workflow ${workflow.name}?`)) return;
+    try {
+      await request(`/api/workflows/${encodeURIComponent(workflow.id)}`, { method: "DELETE" });
+      setWorkflows(current => current?.filter(entry => entry.id !== workflow.id) ?? null);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "The workflow could not be deleted."); }
+  };
+
   const trash = async (file: OfficeFile) => {
     if (!window.confirm(`Move ${file.name} to the Garden's trash?`)) return;
     try {
@@ -190,22 +235,29 @@ export default function SpacesHome({ ownerKey }: { ownerKey: string }) {
     } catch (cause) { setError(cause instanceof Error ? cause.message : "The file could not be moved to trash."); }
   };
 
-  const visible = useMemo(() => {
+  const visible = useMemo<Entry[]>(() => {
     const needle = query.trim().toLowerCase();
-    return (files ?? []).filter(file =>
+    const fileEntries: Entry[] = (files ?? []).filter(file =>
       (view === "recent" || (view === "starred" ? starred.has(file.id) : file.gardenId === view.garden)) &&
       (tab === "all" || file.tab === tab) &&
-      (!needle || file.name.toLowerCase().includes(needle) || file.gardenName.toLowerCase().includes(needle)));
-  }, [files, view, tab, query, starred]);
+      (!needle || file.name.toLowerCase().includes(needle) || file.gardenName.toLowerCase().includes(needle)))
+      .map(file => ({ kind: "file", file, updatedAt: file.updatedAt }));
+    const workflowEntries: Entry[] = typeof view === "object" || (tab !== "all" && tab !== "workflows") ? [] : (workflows ?? [])
+      .filter(workflow => (view === "recent" || starred.has(workflow.id)) && (!needle || workflow.name.toLowerCase().includes(needle)))
+      .map(workflow => ({ kind: "workflow", workflow, updatedAt: sqlTime(workflow.updatedAt ?? "") }));
+    if (!workflowEntries.length) return fileEntries;
+    const time = (value: string) => new Date(value).getTime() || 0;
+    return [...fileEntries, ...workflowEntries].sort((a, b) => time(b.updatedAt) - time(a.updatedAt));
+  }, [files, workflows, view, tab, query, starred]);
 
-  const starCount = files?.filter(file => starred.has(file.id)).length ?? 0;
+  const starCount = (files?.filter(file => starred.has(file.id)).length ?? 0) + (workflows?.filter(workflow => starred.has(workflow.id)).length ?? 0);
 
   return <div className={styles.home}>
     <ShiftingBackground ownerKey={ownerKey} />
     <div className={styles.page}>
       <aside className={styles.sidebar} aria-label="Spaces">
         <nav className={styles.nav}>
-          <button type="button" aria-pressed={view === "recent"} onClick={() => setView("recent")}><Clock size={15} />Recent<span>{files?.length ?? ""}</span></button>
+          <button type="button" aria-pressed={view === "recent"} onClick={() => setView("recent")}><Clock size={15} />Recent<span>{files ? files.length + (workflows?.length ?? 0) : ""}</span></button>
           <button type="button" aria-pressed={view === "starred"} onClick={() => setView("starred")}><Star size={15} />Starred<span>{starCount || ""}</span></button>
         </nav>
         <h2 className={styles.sideHeading}>Workspaces</h2>
@@ -235,6 +287,18 @@ export default function SpacesHome({ ownerKey }: { ownerKey: string }) {
             <span className={styles.tileExt}>docx, xlsx, pptx, pdf, md, html, csv, odt, png, jpg, mp4, webm</span>
           </button>
           <input ref={upload} type="file" multiple accept={ACCEPT} hidden onChange={event => void uploadFiles(event.target.files)} />
+          <button type="button" className={styles.tile} onClick={() => void createWorkflow()} disabled={busy}>
+            <WorkflowBadge />
+            <span className={styles.tileName}>Create workflow</span>
+            <span className={styles.tileExt}>Blocks on a canvas</span>
+          </button>
+          <button type="button" className={styles.tile} onClick={() => router.push("/workflows?teach=1")}
+            disabled={teachAvailability !== null && !teachAvailability.available}
+            title={teachAvailability && !teachAvailability.available ? teachAvailability.reason : "Show Breadboard the task once, out loud, and it builds the workflow"}>
+            <WorkflowBadge teach />
+            <span className={styles.tileName}>Teach workflow</span>
+            <span className={styles.tileExt}>Show it once, by demonstration</span>
+          </button>
         </div>
 
         <label className={styles.workspacePick}>New files go to
@@ -243,19 +307,35 @@ export default function SpacesHome({ ownerKey }: { ownerKey: string }) {
 
         {error && <p role="alert" className={styles.error}>{error} <button type="button" onClick={() => { setError(""); void load(); }}>Retry</button></p>}
 
+        <div className={styles.proposals}><WorkflowProposals onOpen={openWorkflow} /></div>
+
         <section className={styles.library} aria-label="Files">
           <div className={styles.toolbar}>
             <div className={styles.tabs} role="tablist">
               {TABS.map(item => <button key={item.id} type="button" role="tab" aria-selected={tab === item.id} onClick={() => setTab(item.id)}>{item.label}</button>)}
             </div>
             <label className={styles.search}><Search size={14} /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search file names" aria-label="Search files" /></label>
-            {files && <span className={styles.count}>{visible.length} {visible.length === 1 ? "file" : "files"}</span>}
+            {files && <span className={styles.count}>{visible.length} {visible.length === 1 ? "item" : "items"}</span>}
           </div>
           <div className={styles.table} role="table">
             <div className={styles.head} role="row"><span role="columnheader">Name</span><span role="columnheader">Workspace</span><span role="columnheader">Modified</span><span /></div>
             {files === null && <p className={styles.empty}>Loading your files…</p>}
-            {files && !visible.length && <p className={styles.empty}>{files.length ? "No files match." : "Nothing here yet. Create something above, or ask Bread to make it."}</p>}
-            {visible.map(file => {
+            {files && !visible.length && <p className={styles.empty}>{files.length || workflows?.length ? "Nothing matches." : "Nothing here yet. Create something above, or ask Bread to make it."}</p>}
+            {visible.map(entry => {
+              if (entry.kind === "workflow") {
+                const workflow = entry.workflow;
+                return <div key={`workflow:${workflow.id}`} className={styles.row} role="row">
+                  <button type="button" className={styles.name} onClick={() => openWorkflow(workflow.id)} role="cell" title={workflow.description || undefined}><WorkflowBadge teach={workflow.source === "demonstration"} size={22} /><span>{workflow.name}</span></button>
+                  <span role="cell" className={styles.muted}>{workflow.source === "demonstration" ? `Workflow · ${workflow.stepCount ?? 0} steps` : `Workflow · ${workflow.nodeCount ?? 0} blocks`}</span>
+                  <span role="cell" className={styles.muted}>{entry.updatedAt ? modified(entry.updatedAt) : ""}</span>
+                  <span role="cell" className={styles.actionsCell}>
+                    <button type="button" title="Ask Bread about this workflow" aria-label={`Ask Bread about ${workflow.name}`} onClick={() => openWorkflow(workflow.id)}><Sparkles size={14} /></button>
+                    <button type="button" title={starred.has(workflow.id) ? "Unstar" : "Star"} aria-label={`${starred.has(workflow.id) ? "Unstar" : "Star"} ${workflow.name}`} aria-pressed={starred.has(workflow.id)} onClick={() => toggleStar(workflow.id)}><Star size={14} /></button>
+                    <button type="button" title="Delete workflow" aria-label={`Delete ${workflow.name}`} onClick={() => void deleteWorkflow(workflow)}><Trash2 size={14} /></button>
+                  </span>
+                </div>;
+              }
+              const file = entry.file;
               const info = spacesKindForPath(file.path) ?? kind("docx");
               return <div key={file.id} className={styles.row} role="row">
                 <button type="button" className={styles.name} onClick={() => open(file)} role="cell"><SpacesFileBadge info={info} size={22} /><span>{file.name}</span></button>

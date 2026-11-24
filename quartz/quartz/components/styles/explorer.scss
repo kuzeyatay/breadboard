@@ -751,3 +751,28 @@ html.explorer-modal-open {
 .sb-source-pending:not(.garden-file-open):not(.sb-source-raw) :is(.center, .sidebar.right, footer) { visibility: hidden; animation: sb-source-wait 0s 12s both; }
 @keyframes sb-source-wait { to { visibility: visible; } }
 
+
+// A tree name ellipsises at rest and, when cut off, scrolls to its end and back while hovered (explorer.inline.ts).
+.explorer .explorer-ul li > a { min-width: 0; }
+.explorer-name {
+  display: block;
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.explorer-name[data-marquee="run"] {
+  overflow: visible;
+  text-overflow: clip;
+  width: max-content;
+  flex: none;
+  animation: bb-tree-marquee var(--bb-marquee-duration, 6s) ease-in-out infinite;
+}
+li > a:has(.explorer-name[data-marquee="run"]) { overflow: hidden; }
+@keyframes bb-tree-marquee {
+  0%, 8% { transform: translateX(0); }
+  44%, 56% { transform: translateX(calc(-1 * var(--bb-marquee-distance, 0px))); }
+  92%, 100% { transform: translateX(0); }
+}
+@media (prefers-reduced-motion: reduce) { .explorer-name[data-marquee="run"] { animation: none; } }

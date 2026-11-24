@@ -33,18 +33,21 @@
 .input::-webkit-slider-runnable-track {
   height: 4px;
   border-radius: var(--radius-full);
+  corner-shape: round;
   background: linear-gradient(to right, var(--color-brand-fill) var(--fill), var(--color-border-strong) var(--fill));
 }
 
 .input::-moz-range-track {
   height: 4px;
   border-radius: var(--radius-full);
+  corner-shape: round;
   background: var(--color-border-strong);
 }
 
 .input::-moz-range-progress {
   height: 4px;
   border-radius: var(--radius-full);
+  corner-shape: round;
   background: var(--color-brand-fill);
 }
 
@@ -54,6 +57,7 @@
   height: 1.125rem;
   margin-top: calc((4px - 1.125rem) / 2);
   border-radius: 50%;
+  corner-shape: round;
   background: var(--color-surface);
   border: 2px solid var(--color-brand-fill);
   box-shadow: var(--shadow-sm);
@@ -64,6 +68,7 @@
   width: 0.875rem;
   height: 0.875rem;
   border-radius: 50%;
+  corner-shape: round;
   background: var(--color-surface);
   border: 2px solid var(--color-brand-fill);
   box-shadow: var(--shadow-sm);

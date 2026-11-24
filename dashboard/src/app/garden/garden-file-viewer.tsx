@@ -278,7 +278,7 @@ export default function GardenFileViewer({ file, onChanged, onClose, onDirtyChan
 
   let viewer;
   // A Spaces video looks like an uploaded one (the player) until Edit video opens the editor here.
-  if (studio === "video" && !editing) viewer = <div className={styles.prose}><div className={styles.sourcePlayer}><video key={`${file.version}:${reload}`} controls src={source} preload="metadata" onError={() => setError("This video codec cannot be played here. Download it to open it in another app.")} /></div></div>;
+  if (studio === "video" && !editing) viewer = <div className={styles.prose}><div className={styles.sourcePlayer}><video key={`${file.version}:${reload}`} controls src={source} preload="metadata" onLoadedMetadata={event => { const v = event.currentTarget; if (v.videoWidth && v.videoHeight) v.style.setProperty("--video-ratio", `${v.videoWidth} / ${v.videoHeight}`); }} onError={() => setError("This video codec cannot be played here. Download it to open it in another app.")} /></div></div>;
   else if (studio) viewer = <iframe key={reload} className={styles.frame} title={`${studio === "design" ? "Design" : "Video"}: ${file.name}`} allow="clipboard-read; clipboard-write; fullscreen" src={`/spaces/edit?${new URLSearchParams({ garden: file.gardenId, file: file.id, embed: "1" })}`} />;
   else if (affine) viewer = <AffinePage key={reload} file={file} editing={editing && file.canEdit} onSaved={changed} onDirty={setNativeDirty} onError={nativeError} flush={affineFlush} />;
   else if (editing && office) viewer = <OfficeEditor key={reload} file={file} onSaved={changed} onError={nativeError} flush={officeFlush} />;

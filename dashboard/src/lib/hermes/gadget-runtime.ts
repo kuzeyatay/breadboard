@@ -20,6 +20,7 @@
 // responsive while the user takes a day to look at them.
 
 import type { GadgetBinding, GadgetPackage } from "./gadget-types.ts";
+import { keepFullRoundCorners, SQUIRCLE_DOCUMENT_CSS } from "../squircle-corner.ts";
 
 /** Escape a string for embedding inside a <script> block. */
 function jsonForScript(value: unknown): string {
@@ -140,10 +141,11 @@ export function renderGadgetDocument(gadget: GadgetPackage): string {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escapeHtml(gadget.manifest.title)}</title>
 <style>
+${SQUIRCLE_DOCUMENT_CSS}
 :root { color-scheme: light dark; }
 html, body { margin: 0; padding: 0; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
 body { padding: 16px; }
-${styles}
+${keepFullRoundCorners(styles)}
 </style>
 </head>
 <body>

@@ -239,6 +239,7 @@ strong {
   gap: 6px;
   padding: 4px 11px;
   border-radius: 999px;
+  corner-shape: round;
   font-family: var(--font-mono);
   font-size: 11.5px;
   font-weight: 500;
@@ -639,6 +640,7 @@ strong {
   width: 26px;
   height: 26px;
   border-radius: 999px;
+  corner-shape: round;
   display: grid;
   place-items: center;
   flex-shrink: 0;
@@ -738,6 +740,7 @@ strong {
   gap: 4px;
   padding: 5px;
   border-radius: 999px;
+  corner-shape: round;
   background: color-mix(in srgb, var(--bg) 45%, transparent);
   border: 1px solid var(--hair);
   box-shadow: inset 0 1px 3px color-mix(in srgb, var(--bg) 65%, transparent);
@@ -749,6 +752,7 @@ strong {
   cursor: pointer;
   padding: 9px 18px;
   border-radius: 999px;
+  corner-shape: round;
   font-family: var(--font-body);
   font-size: 15px;
   font-weight: 600;
@@ -765,6 +769,7 @@ strong {
   position: absolute;
   inset: 0;
   border-radius: 999px;
+  corner-shape: round;
   background: var(--accent);
   z-index: 0;
   box-shadow: 0 8px 22px -8px color-mix(in srgb, var(--primary) 65%, transparent);
@@ -824,6 +829,7 @@ strong {
   height: 20px;
   margin-top: 2px;
   border-radius: 50%;
+  corner-shape: round;
   background: var(--bg);
   border: 2px solid var(--primary);
   box-shadow: 0 0 0 4px var(--bg),
@@ -836,6 +842,7 @@ strong {
   width: 6px;
   height: 6px;
   border-radius: 50%;
+  corner-shape: round;
   background: var(--accent);
 }
 .tl-time {
@@ -882,6 +889,7 @@ strong {
   width: 11px;
   height: 11px;
   border-radius: 50%;
+  corner-shape: round;
   background: var(--hair);
 }
 .cw-title {
@@ -974,6 +982,7 @@ strong {
   width: 11px;
   height: 11px;
   border-radius: 50%;
+  corner-shape: round;
   background: var(--hair);
 }
 .bf-nav {
@@ -998,6 +1007,7 @@ strong {
   background: color-mix(in srgb, var(--bg) 60%, transparent);
   border: 1px solid var(--hair-2);
   border-radius: 999px;
+  corner-shape: round;
   padding: 6px 14px;
 }
 .bf-url svg {
@@ -1067,6 +1077,7 @@ strong {
   width: 9px;
   height: 9px;
   border-radius: 50%;
+  corner-shape: round;
   background: var(--primary);
   transform: translate(-50%, -50%) scale(0.3);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 22%, transparent),
@@ -1084,6 +1095,7 @@ strong {
   position: absolute;
   inset: -3px;
   border-radius: 50%;
+  corner-shape: round;
   border: 1px solid color-mix(in srgb, var(--primary) 60%, transparent);
   animation: chpulse 2.2s var(--ease) infinite;
 }
@@ -1253,6 +1265,7 @@ strong {
   width: 46px;
   height: 46px;
   border-radius: 50%;
+  corner-shape: round;
   overflow: hidden;
   display: grid;
   place-items: center;
@@ -1318,6 +1331,7 @@ strong {
   z-index: 3;
   padding: 5px 13px;
   border-radius: 999px;
+  corner-shape: round;
   white-space: nowrap;
   font-size: 10.5px;
   font-weight: 700;
@@ -1411,6 +1425,7 @@ strong {
   width: 40px;
   height: 40px;
   border-radius: 50%;
+  corner-shape: round;
   display: grid;
   place-items: center;
   flex-shrink: 0;
@@ -1670,6 +1685,7 @@ strong {
   width: 100%;
   height: 100%;
   border-radius: 50%;
+  corner-shape: round;
   background: radial-gradient(
     circle at 34% 30%,
     color-mix(in srgb, var(--fg) 22%, transparent),
@@ -1776,6 +1792,7 @@ strong {
   width: clamp(64px, 6vw, 84px);
   aspect-ratio: 1;
   border-radius: 50%;
+  corner-shape: round;
   overflow: hidden;
   display: grid;
   place-items: center;
@@ -2036,6 +2053,7 @@ strong {
   gap: 4px;
   padding: 7px 9px;
   border-radius: 999px;
+  corner-shape: round;
   background: rgba(28, 28, 30, 0.66);
   border: 1px solid rgba(255, 255, 255, 0.1);
   backdrop-filter: blur(22px) saturate(180%);
@@ -2049,6 +2067,7 @@ strong {
   place-items: center;
   border: none;
   border-radius: 999px;
+  corner-shape: round;
   background: transparent;
   color: #e8e8ea;
   font-size: 19px;
@@ -2329,6 +2348,7 @@ strong {
   gap: 4px;
   padding: 7px 9px;
   border-radius: 999px;
+  corner-shape: round;
   flex-wrap: wrap;
   max-width: 94vw;
   justify-content: center;
@@ -2346,6 +2366,7 @@ strong {
   place-items: center;
   border: none;
   border-radius: 999px;
+  corner-shape: round;
   background: transparent;
   color: #e8e8ea;
   cursor: pointer;
@@ -2372,6 +2393,7 @@ strong {
   width: 22px;
   height: 22px;
   border-radius: 50%;
+  corner-shape: round;
   border: 2px solid transparent;
   cursor: pointer;
   padding: 0;
@@ -2394,6 +2416,7 @@ strong {
 .ann-size span {
   display: block;
   border-radius: 50%;
+  corner-shape: round;
   background: #e8e8ea;
 }
 .ann-size.on {
@@ -2567,6 +2590,7 @@ strong {
   color: var(--primary);
   padding: 5px 11px;
   border-radius: 999px;
+  corner-shape: round;
   background: color-mix(in srgb, var(--primary) 10%, transparent);
   border: 1px solid color-mix(in srgb, var(--primary) 28%, transparent);
 }
@@ -2574,6 +2598,7 @@ strong {
   width: 6px;
   height: 6px;
   border-radius: 50%;
+  corner-shape: round;
   background: var(--primary);
   animation: pulse 1.6s ease-in-out infinite;
 }
@@ -2830,3 +2855,9 @@ strong {
     animation: none !important;
   }
 }
+
+/* Breadboard draws every rounded edge as a squircle (CSS `corner-shape:
+   squircle`). Zero specificity, so any explicit corner-shape wins; circles and
+   pills keep `corner-shape: round` beside their border-radius. */
+:where(*), :where(*)::before, :where(*)::after { corner-shape: squircle; }
+:where([style*="border-radius: 50%"], [style*="border-radius: 999px"], [style*="border-radius: 9999px"]) { corner-shape: round; }

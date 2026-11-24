@@ -11,6 +11,7 @@
 // tool.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { GOAL_TURN_EVENT, type GoalTurnSnapshot } from '@/lib/goal-turn-activity';
 
 export type GoalCardStatus =
   | 'active'
@@ -144,10 +145,15 @@ export default function GoalCard({
       const version = ++requestVersion.current;
       void fetch(endpoint, { cache: 'no-store', signal: controller.signal })
       .then(async (response) => (response.ok ? await response.json() : null))
-      .then((payload: { goal?: GoalCardState | null } | null) => {
+      .then((payload: { goal?: GoalCardState | null; turn?: GoalTurnSnapshot | null } | null) => {
         if (!payload || controller.signal.aborted || version !== requestVersion.current) return;
         setGoal(payload.goal ?? null);
         setError(null);
+        if (payload.turn) {
+          window.dispatchEvent(new CustomEvent(GOAL_TURN_EVENT, {
+            detail: { sessionId, turn: payload.turn },
+          }));
+        }
       })
       .catch((cause: unknown) => {
         // An aborted read is this effect being replaced, not a failure. Any
@@ -161,17 +167,22 @@ export default function GoalCard({
       })
       .finally(() => { reading = false; });
     };
-    refresh();
+    // A finished turn releases the run slot before the scheduler reserves its
+    // successor. Read just after that handoff, then keep the normal poll for
+    // slower dispatches and goals resumed from another viewer.
+    const handoff = refreshKey === 'completed' ? window.setTimeout(refresh, 250) : null;
+    if (handoff === null) refresh();
     // Goals also change through tools, API clients and detached continuation;
     // none of those necessarily changes this viewer's run-state refresh key.
     const timer = window.setInterval(refresh, 5_000);
     window.addEventListener('focus', refresh);
     return () => {
       controller.abort();
+      if (handoff !== null) window.clearTimeout(handoff);
       window.clearInterval(timer);
       window.removeEventListener('focus', refresh);
     };
-  }, [endpoint, refreshKey]);
+  }, [endpoint, refreshKey, sessionId]);
 
   // A goal that is not moving does not need a ticking clock, and a complete one
   // has stopped counting for good.
@@ -265,7 +276,7 @@ export default function GoalCard({
   };
 
   return (
-    <div className="border-b border-[var(--line)]">
+    <div className="mb-2 border-b border-[var(--line)]" data-goal-card>
         <div className="flex min-h-9 items-center gap-1.5 px-2">
           <span className={`shrink-0 ${tone}`}>
             <GoalIcon status={goal.status} />

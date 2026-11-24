@@ -13,6 +13,14 @@ const SAVE_DEBOUNCE_MS = 1000;
 
 export type SaveStatus = "idle" | "pending" | "saving" | "saved" | "error";
 
+/**
+ * What this canvas last sent for each workflow, as the server will hand it back
+ * (name + state, JSON). The editor uses it to tell its own save apart from a
+ * version Bread saved from the assistant.
+ */
+export const lastSentVersion = new Map<string, string>();
+export const workflowVersionKey = (name: unknown, state: unknown) => JSON.stringify({ name, state });
+
 export function useWorkflowPersistence(workflowId: string | null) {
   const hydrated = useWorkflowStore((state) => state.hydrated);
   const graphRevision = useWorkflowStore((state) => state.revision);
@@ -42,6 +50,7 @@ export function useWorkflowPersistence(workflowId: string | null) {
       setStatus("saving");
       try {
         const state = useWorkflowStore.getState().serialize();
+        lastSentVersion.set(workflowId, workflowVersionKey(name, JSON.parse(JSON.stringify(state))));
         const response = await fetch(`/api/workflows/${encodeURIComponent(workflowId)}`, {
           method: "PUT",
           headers: { "content-type": "application/json" },

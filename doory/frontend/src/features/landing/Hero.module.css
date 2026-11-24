@@ -39,6 +39,7 @@
   height: 1.125rem;
   margin-top: -1.1rem;
   border-radius: 50%;
+  corner-shape: round;
   background: color-mix(in srgb, var(--accent-lilac) 20%, transparent);
   animation: squish 4.5s ease-in-out infinite;
 }
@@ -234,6 +235,7 @@
   background: var(--color-surface);
   border: 1.5px solid var(--color-border-strong);
   border-radius: var(--radius-full);
+  corner-shape: round;
   color: var(--color-text);
   font-size: var(--text-sm);
   font-weight: 700;

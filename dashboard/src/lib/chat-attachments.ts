@@ -679,6 +679,51 @@ export function reusableChatAttachments(
 }
 
 /**
+ * Inline attachment text one send may carry before stored files go as pointers.
+ * The message routes refuse bodies over 16 MB; this leaves room for images,
+ * JSON escaping and the rest of the payload.
+ */
+export const INLINE_ATTACHMENT_TEXT_BUDGET = 4 * 1024 * 1024;
+
+/**
+ * The attachments as one send should carry them.
+ *
+ * A turn with a stack of documents — or one long model dump — used to inline
+ * every file's extracted text and be turned away with "Request body exceeds
+ * the size limit". Documents and stored files already have their bytes on the
+ * server, which reads their text back from the blob exactly as it does for a
+ * regenerated turn (`resolveDocumentAttachments`). So once the inline text
+ * passes the budget, those travel as pointers; files with no stored copy keep
+ * their text, because nothing else could supply it.
+ */
+export function attachmentsForRequest<T extends readonly ChatAttachment[] | undefined>(
+  attachments: T,
+  budget = INLINE_ATTACHMENT_TEXT_BUDGET,
+): T {
+  if (!attachments?.length) return attachments;
+  let inline = 0;
+  for (const attachment of attachments) {
+    if (attachment.type === 'text' || attachment.type === 'document') inline += attachment.text?.length ?? 0;
+    else if (attachment.type === 'image') inline += attachment.dataUrl.length;
+  }
+  if (inline <= budget) return attachments;
+  return attachments.map((attachment) => {
+    if (attachment.type === 'document' && isDocumentBlobId(attachment.blobId) && attachment.text) {
+      return { ...attachment, text: '' };
+    }
+    if (
+      attachment.type === 'text' &&
+      attachment.text &&
+      isStoredFileBlobId(attachment.blobId) &&
+      isStoredFileAttachmentFormat(attachment.format)
+    ) {
+      return { ...attachment, text: '' };
+    }
+    return attachment;
+  }) as unknown as T;
+}
+
+/**
  * The files a regenerated turn cannot take with it.
  *
  * Older messages kept only the name of a file the registry had no format for,

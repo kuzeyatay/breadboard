@@ -58,6 +58,7 @@
   width: 40px;
   height: 30px;
   border-radius: 999px;
+  corner-shape: round;
   transition:
     background var(--ed-dur),
     color var(--ed-dur);

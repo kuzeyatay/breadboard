@@ -7,6 +7,7 @@ import type {
   InteractiveVisualizerMode,
 } from "./interactive-visualizer-types.ts";
 import { interactiveVisualizerConfig } from "./interactive-visualizer-config.ts";
+import { keepFullRoundCorners, SQUIRCLE_DOCUMENT_CSS } from "../squircle-corner.ts";
 
 // Runtime V2 launches each job from a private attempt directory. Resolve
 // browser dependencies from the trusted dashboard module tree instead of that
@@ -263,7 +264,7 @@ export async function bundleInteractiveVisualizer(input: {
     '<meta name="color-scheme" content="light dark">',
     `<meta http-equiv="Content-Security-Policy" content="${csp}">`,
     `<title>${escapeHtml(input.manifest.title)}</title>`,
-    `<style>${scriptSafe(BASE_STYLE)}\n${scriptSafe(input.css)}</style>`,
+    `<style>${scriptSafe(SQUIRCLE_DOCUMENT_CSS + keepFullRoundCorners(BASE_STYLE))}\n${scriptSafe(keepFullRoundCorners(input.css))}</style>`,
     "</head>",
     `<body>${bodyShell(input.html)}`,
     `<script>globalThis.__BREADBOARD_INTERACTIVE_VISUALIZER__=Object.freeze(${definition});</script>`,

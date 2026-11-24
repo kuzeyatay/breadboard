@@ -10,7 +10,8 @@ const {createConversation,reserveConversationTurn,completeAssistantMessage}=awai
 const {createRuntimeSession}=await import('../src/lib/hermes/runtime-store.ts');
 const {beginRuntimeRun,finishRuntimeRun}=await import('../src/lib/hermes/run-store.ts');
 const {activateGoalMode,setGoalModeStatus,clearGoalModeState}=await import('../src/lib/goal-mode.ts');
-const {goalContinuationCurrent}=await import('../src/lib/goal-continuation.ts');
+const {goalContinuationCurrent,latestGoalTurn}=await import('../src/lib/goal-continuation.ts');
+const {presentHermesSessionDetail}=await import('../src/lib/hermes/session-presentation.ts');
 test.after(()=>{db.close();fs.rmSync(directory,{recursive:true,force:true});});
 db.prepare("INSERT INTO users(id,username,email,password_hash) VALUES(1,'test','goal@example.test','x')").run();
 function setup(){
@@ -22,6 +23,28 @@ function setup(){
   const run=beginRuntimeRun({runtimeSessionId:session.id,instruction:'Explain',dispatch:{goalMode:{enabled:true,goalId:goal.goal_id}}});
   return {conversation,session,goal,run,check:(own='')=>goalContinuationCurrent(conversation.id,run.id,goal.goal_id,own)};
 }
+test('reopening a long goal chat includes the latest user and automatic turn', () => {
+  const { conversation, goal } = setup();
+  const surface = 'dashboard_terminal';
+  db.transaction(() => {
+    for (let i = 0; i <= 100; i++) {
+      const clientMessageId = 'follow-up-' + i;
+      reserveConversationTurn({ conversation, clientMessageId, surface, content: 'Question ' + i });
+      completeAssistantMessage({ conversationId: conversation.id, clientMessageId, content: 'Answer ' + i });
+    }
+  })();
+  const clientMessageId = 'goal:' + goal.goal_id + ':next';
+  reserveConversationTurn({ conversation, surface, clientMessageId, content: 'Continue',
+    metadata: { internalAgentContinuation: true, goalContinuation: true } });
+  const messages = presentHermesSessionDetail(conversation).messages;
+  assert.equal(messages.length, 204);
+  assert.equal(messages.at(-4).content, 'Question 100');
+  assert.equal(messages.at(-2).goalContinuation, true);
+  assert.equal(messages.at(-1).pending, true);
+  assert.deepEqual(latestGoalTurn(conversation.id, goal.goal_id), { clientMessageId, status: 'pending' });
+  assert.equal(latestGoalTurn(conversation.id, 'another-goal'), null);
+});
+
 test('only an idle terminal run may start a continuation',()=>{
   const s=setup(); assert.equal(s.check(),false);
   finishRuntimeRun(s.run.id,'completed'); assert.equal(s.check(),true);

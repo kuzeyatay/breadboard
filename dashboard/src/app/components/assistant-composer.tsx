@@ -147,7 +147,7 @@ import {
 } from '@/lib/chat-attachments';
 import { composerSegments } from '@/lib/composer-links';
 import { modelAttachmentHref } from '@/lib/model-attachments';
-import { isPlayableVideoFormat } from '@/lib/video-attachments';
+import { chatVideoPlaybackHref } from '@/lib/video-attachments';
 import ModelCubeIcon from '@/app/components/model-cube-icon';
 import SignInRequiredCard from '@/app/components/sign-in-required-card';
 
@@ -1862,8 +1862,7 @@ export default function AssistantComposer({
                       source={{
                         kind: 'video',
                         name: attachment.name,
-                        href: `/api/chat-attachments/videos/${attachment.blobId}`,
-                        playable: isPlayableVideoFormat(attachment.format),
+                        href: chatVideoPlaybackHref(attachment.blobId, attachment.format),
                       }}
                       className="truncate underline decoration-dotted underline-offset-2"
                       title={`Play ${attachment.name}`}

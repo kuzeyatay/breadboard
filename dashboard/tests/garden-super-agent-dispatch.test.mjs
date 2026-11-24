@@ -8,6 +8,7 @@ import fs from "node:fs";
 import test from "node:test";
 import ts from "typescript";
 import { prepareTurn, mergeSelectedTools } from "../src/lib/hermes/dispatch-core.ts";
+import { shouldAutoSelectGoal, goalCommandText } from "../src/lib/hermes/goal-intent.ts";
 import { turnCapabilitySelection } from "../src/lib/hermes/capability-usage.ts";
 import { RUNTIME_AGENT_PROFILES, modelLaunchableRuntimeAgents } from "../src/lib/hermes/capability-combinations.ts";
 import { codeWithoutRepositoryDirective, codexDriveDirective, isCodeWritingRequest } from "../src/lib/hermes/codex-drive.ts";
@@ -96,6 +97,7 @@ async function dispatch(payload, { title = 'New chat', orderIndex = 0, commandRe
   const noop = () => {};
   const empty = () => "";
   const scope = { hermesPromptText, normalizeChatTextSelectionReference, parseBrowserTerminalAccess,
+    answerFeedbackContext: empty, codeOriginPrompt: empty,
     browserTerminalPrompt: () => "", setBrowserTerminalContext: () => {},
     resolveUnifiedWorkflowContinuation: () => workflowContinuation,
     selectedGardenDocumentQuestionPrompt: functions("lib/hermes/garden-reader.ts", ["selectedGardenDocumentQuestionPrompt"], {}, "selectedGardenDocumentQuestionPrompt"),
@@ -142,7 +144,7 @@ async function dispatch(payload, { title = 'New chat', orderIndex = 0, commandRe
     retrieveTerminalGardenGrounding: async () => ({ context: "" }),
     suppliedEvidenceText: empty, gardenInstructionsContext: empty, gardenSourceInventoryContext: async () => "",
     composeMemoryContext: empty, renderSkillShortlistDirective, renderConnectionShortlistDirective, shortlistConnections, codexDriveDirective, codeWithoutRepositoryDirective, isCodeWritingRequest, gardenHasRepository: () => false, modelLaunchableRuntimeAgents, renderWatchVideoContext: empty,
-    gardenTurnContext: empty, ...quartzSelection,
+    gardenTurnContext: empty, openWorkflowContext: empty, ...quartzSelection,
     composeHermesSystemPrompt: ({ stableAdditional, additional }) => [stableAdditional, additional].filter(Boolean).join("\n\n"),
     beginRuntimeRun: (input) => { captured.run = input; return { id: "run_regression" }; },
     hermesMessageId: (id) => id,
@@ -169,10 +171,24 @@ async function dispatch(payload, { title = 'New chat', orderIndex = 0, commandRe
   }
   const openGardenAgentChat = functions("lib/hermes/garden-chat-adapter.ts", [
     "openGardenAgentChat", "parseMessages", "parseActivePage", "parseSelectedDocumentSlugs",
-  ], scope, "openGardenAgentChat");
+  ], { ...scope, readGoalModeState: () => null, goalCommandText, shouldAutoSelectGoal,
+      GOAL_MODE_SKILL: "goal", GOAL_MODE_CONNECTION: "goal" }, "openGardenAgentChat");
   await openGardenAgentChat(payload, new AbortController().signal);
   return captured;
 }
+
+test("Garden enrolls a goal with its workspace tools and Garden context", async () => {
+  const payload = request(false);
+  const text = "/goal Keep working until the verification passes";
+  payload.messages = [{ role: "user", content: text }];
+  const result = await dispatch(payload, { commandResolution: { text, userText: text, invocations: [{ kind: "skill", slug: "goal" }] } });
+  assert.equal(result.run.dispatch.goalMode.enabled, true);
+  assert.equal(result.run.dispatch.goalMode.context.activeGardenSlug, "fitness");
+  assert.equal(result.run.dispatch.taskRecovery, undefined);
+  for (const tool of ["workspace_read", "workspace_write", "workspace_patch", "terminal_execute_command", "mcp_call"]) {
+    assert.equal(result.run.dispatch.tools[tool], true, tool);
+  }
+});
 
 test("a selected workflow survives Garden dispatch and recovery without broader agent privileges", async () => {
   const command = "/master-agent:research Find reliable evidence";

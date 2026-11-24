@@ -37,6 +37,7 @@ test("messaging switches save independently, survive reload, and retain their st
           const patch = JSON.parse(body); writes.push(patch);
           if (failSave) { res.statusCode = 500; res.end(JSON.stringify({ error: "Couldn’t save notification settings." })); return; }
           Object.assign(saved[patch.channel], { enabled: patch.enabled, recipient: patch.recipient });
+          if (typeof patch.includeChatCompletions === "boolean") saved[patch.channel].includeChatCompletions = patch.includeChatCompletions;
           res.end(JSON.stringify({ settings: saved[patch.channel] }));
         } else res.end(JSON.stringify({ settings: saved[url.searchParams.get("channel")] }));
         return;
@@ -76,6 +77,15 @@ test("messaging switches save independently, survive reload, and retain their st
   await telegramSwitch.click();
   await page.waitForFunction(() => document.getElementById("telegram-notification-switch").getAttribute("aria-checked") === "true");
   assert.equal(saved.whatsapp.enabled, true);
+  const chatCompletions = page.getByRole("checkbox", { name: "Notify me when a chat finishes" });
+  await chatCompletions.click();
+  await page.waitForFunction(() => !document.querySelector("section[aria-label='Telegram notifications'] input[type=checkbox]").checked);
+  assert.equal(saved.telegram.includeChatCompletions, false);
+  assert.equal(saved.telegram.enabled, true);
+  await page.reload();
+  await page.getByRole("tab", { name: "Telegram" }).click();
+  await chatCompletions.waitFor();
+  assert.equal(await chatCompletions.isChecked(), false);
   const output = path.join(root, ".tmp-messaging-notifications-qa"); fs.mkdirSync(output, { recursive: true });
   await page.screenshot({ path: path.join(output, "telegram-light.png"), fullPage: true });
   failSave = true;

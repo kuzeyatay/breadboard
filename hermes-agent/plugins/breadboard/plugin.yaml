@@ -56,6 +56,7 @@ provides_tools:
   - memory_query
   - workflow_propose
   - workflow_create
+  - workflow_update
   - document_skill_read
   - skill_open
   - workflow_run

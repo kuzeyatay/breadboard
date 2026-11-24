@@ -161,6 +161,7 @@
   color: #09221e;
   background: var(--replace-accent);
   border-radius: 50%;
+  corner-shape: round;
 }
 .replacement-scrollbar {
   position: relative;

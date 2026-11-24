@@ -31,8 +31,11 @@ html:is([saved-theme=dark],[data-theme=dark]) :is(.graph, .knowledge-map-explore
   --topology-topic-7: #FF6BD6;
 }
 /* Shared by the published Garden, workspace embed and Knowledge tab. */
+/* The map sits on the page background the enlarged view shows: Quartz's
+   --light (grey in dark, the old green in light), or Breadboard's paper inside
+   the dashboard, where --light is not defined. */
 .graph :is(.graph-outer,.global-graph-outer):has(> [data-map-ready="true"]) {
-  --map-paper: #fff;
+  --map-paper: var(--light, #e6f0e6);
   --map-ink: #111;
   --map-border: color-mix(in srgb,var(--map-ink) 20%,var(--map-paper));
   --map-accent: var(--secondary,var(--botanical,#6bac88));
@@ -42,7 +45,7 @@ html:is([saved-theme=dark],[data-theme=dark]) :is(.graph, .knowledge-map-explore
   isolation: isolate;
 }
 html:is([saved-theme=dark],[data-theme=dark]) .graph :is(.graph-outer,.global-graph-outer):has(> [data-map-ready="true"]) {
-  --map-paper:#000; --map-ink:#fff;
+  --map-paper:var(--light, var(--paper-surface, #18181a)); --map-ink:#fff;
 }
 .graph :is(.graph-outer,.global-graph-outer) > [data-map-ready="true"] {background:var(--map-paper);background-image:none;touch-action:none}
 .graph :is(.graph-outer,.global-graph-outer):has(> [data-map-ready="true"]) {border-radius:0;background:var(--map-paper)}
@@ -137,7 +140,7 @@ html.quartz-graph-preview .graph .map-overview span {display:none}
 .graph .thought-topology-filter .thought-topology-filter-panel {border-radius:0;background:var(--map-paper)}
 
 html:not([data-theme=dark]):not([saved-theme=dark]) .graph :is(.graph-outer,.global-graph-outer):has(> [data-map-ready]) {
-  --map-paper:var(--paper-surface,#faf7ef);
+  --map-paper:var(--light,#e6f0e6);
   --map-sheet:var(--paper-raised,#fffefb);
   --map-ink:var(--ink-heading,#0f1a16);
   --map-border:var(--line,#bccfc2);

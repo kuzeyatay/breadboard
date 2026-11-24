@@ -77,7 +77,9 @@
 @media(max-width:600px) { .toolbar { gap:3px; padding:7px; } .labeled { font-size:11px; } .title span { max-width:180px; } .action { flex-wrap:wrap; } .prose { padding:16px; } }
 
 .sourcePlayer { display:grid; place-items:center; margin:0 auto 20px; max-width:960px; }
-.sourcePlayer video { width:100%; max-height:70vh; border-radius:6px; background:#000; }
+/* A 16:9 black frame while loading (as YouTube does), then the video's own shape (set on loadedmetadata). */
+.sourcePlayer { width:100%; }
+.sourcePlayer video { display:block; width:100%; aspect-ratio:var(--video-ratio, 16 / 9); max-height:70vh; object-fit:contain; border-radius:6px; background:#000; }
 .sourcePlayer audio { width:min(600px,100%); }
 
 .mediaSource { position:relative; height:100%; overflow:hidden; }

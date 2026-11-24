@@ -57,7 +57,10 @@ test("selected and sent chat files use the same preview dialog", () => {
   assert.match(sentAttachments, /sourceAttachments\s*=\s*\[\]/);
   assert.match(sentAttachments, /attachment\.format === "pdf"/);
   assert.match(sentAttachments, /kind: "audio"/);
-  assert.match(sentAttachments, /kind: "video"/);
+  // A sent video is an inline card like a pasted YouTube link, playing every
+  // format: Matroska and AVI through their converted MP4 copy.
+  assert.match(sentAttachments, /<ChatVideoAttachmentCard/);
+  assert.match(sentAttachments, /playbackHref=\{chatVideoPlaybackHref\(/);
 });
 
 test("Garden focus chips reconnect saved source slugs to PDF and media URLs", () => {

@@ -204,6 +204,8 @@ export function installCanonicalQuartzReader() {
       const request = pending.get(data.requestId);
       if (!request || request.slug !== data.slug) return;
       clearTimeout(request.timer); clearInterval(request.retry); pending.delete(data.requestId);
+      // The host skips the live render of a very large page (it would stall the server): the published copy stands.
+      if (data.ok && data.renderSkipped) { request.resolve(); return; }
       if (!data.ok || typeof data.reader?.html !== 'string' || (data.reader.slug !== request.slug &&
           !(data.reader.kind === 'folder' && data.reader.slug === request.slug + '/index'))) {
         request.reject(Object.assign(new Error(data.error || 'Could not load the saved page.'), { status: data.status })); return;

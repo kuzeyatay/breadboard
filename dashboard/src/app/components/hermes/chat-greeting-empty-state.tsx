@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNod
 
 import type { ChatGreeting } from "@/lib/hermes/chat-greeting";
 import { SKETCH_MARGIN, sketchRectOutlines, type SketchBox } from "@/lib/hermes/sketch-outline";
+import { hasSquircleCorners } from "@/lib/squircle-corner";
 import { useSuggestionCardText, type SuggestionCardContent } from './use-suggestion-card-text';
 import { usePersonalize } from '../use-personalize';
 import { AUTH_CHANGED_EVENT } from '@/lib/auth-events';
@@ -151,17 +152,20 @@ function SuggestionCard({
     const measure = () => {
       const bounds = button.getBoundingClientRect();
       // The card's own corner radius, read from the one place it is stated.
-      const radius = Number.parseFloat(getComputedStyle(button).borderTopLeftRadius) || 8;
+      const style = getComputedStyle(button);
+      const radius = Number.parseFloat(style.borderTopLeftRadius) || 8;
       const next: SketchBox = {
         width: Math.round(bounds.width),
         height: Math.round(bounds.height),
         radius,
+        squircle: hasSquircleCorners(style),
       };
       setBox((previous) =>
         previous &&
         previous.width === next.width &&
         previous.height === next.height &&
-        previous.radius === next.radius
+        previous.radius === next.radius &&
+        previous.squircle === next.squircle
           ? previous
           : next,
       );

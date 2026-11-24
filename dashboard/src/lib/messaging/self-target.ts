@@ -24,7 +24,8 @@ export type SelfTargetFailure =
   | "whatsapp_not_linked"
   | "whatsapp_self_chat_unknown"
   | "telegram_not_linked"
-  | "telegram_no_owner_chat";
+  | "telegram_no_owner_chat"
+  | "telegram_choose_owner_chat";
 
 export type SelfTargetResult =
   | { ok: true; target: SelfTarget }
@@ -122,21 +123,26 @@ export function resolveTelegramSelfTarget(input: {
   linked: boolean;
   ownerUserId: number | null;
   chats: readonly TelegramChatCandidate[];
+  selectedChatId?: string;
 }): SelfTargetResult {
   if (!input.linked) return { ok: false, reason: "telegram_not_linked" };
   if (input.ownerUserId === null) return { ok: false, reason: "telegram_no_owner_chat" };
 
-  const owned = newestFirst(input.chats).find(
+  const candidates = input.chats.filter(
     (chat) =>
-      chat.is_group !== 1 &&
+      chat.is_group === 0 &&
       chat.user_id === input.ownerUserId &&
-      Boolean(chat.chat_id) &&
-      // A private chat id is Telegram's positive user id; the negative ids are
-      // groups and supergroups, which `is_group` should already have excluded.
-      !chat.chat_id.startsWith("-"),
+      /^[1-9]\d*$/.test(chat.chat_id) &&
+      (!input.selectedChatId || chat.chat_id === input.selectedChatId),
   );
-  if (!owned) return { ok: false, reason: "telegram_no_owner_chat" };
+  if (candidates.length !== 1) {
+    return {
+      ok: false,
+      reason: input.selectedChatId || candidates.length > 1 ? "telegram_choose_owner_chat" : "telegram_no_owner_chat",
+    };
+  }
 
+  const [owned] = candidates;
   return {
     ok: true,
     target: {
@@ -158,5 +164,7 @@ export function explainSelfTargetFailure(reason: SelfTargetFailure): string {
       return "Telegram is not linked yet. Open Settings → Messaging → Telegram and link your bot with its BotFather token.";
     case "telegram_no_owner_chat":
       return "Telegram bots cannot start a conversation, so there is no chat to send to yet. Message your bot once from Telegram and try again.";
+    case "telegram_choose_owner_chat":
+      return "Choose your private chat in Settings → Messaging → Telegram so Breadboard knows where to send reminders.";
   }
 }

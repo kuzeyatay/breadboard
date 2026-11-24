@@ -4,6 +4,7 @@ import test from 'node:test';
 
 import {
   attachmentOnlyMessageText,
+  attachmentsForRequest,
   chatMessageAttachments,
   extractChatAttachments,
   imageFilesFromClipboard,
@@ -493,4 +494,26 @@ test('the viewed web page travels as hidden context and keeps its title for the 
   assert.deepEqual(stored.webPage, { title: "Shannon's blueprint" });
   assert.equal(visibleChatMessageAttachments([stored], ['Current page.jpg']).attachments.length, 0);
   assert.equal(visibleChatMessageText('explain type B', [stored], ['Current page.jpg']), 'explain type B');
+});
+
+test('a send over the inline budget carries stored files as pointers, keeping text nothing else holds', () => {
+  const doc = { type: 'document', name: 'brief.pdf', blobId: `doc_${'a'.repeat(32)}`, format: 'pdf', text: 'x'.repeat(60) };
+  const stored = { type: 'text', name: 'dump.txt', blobId: `fil_${'b'.repeat(32)}`, format: 'bin', text: 'y'.repeat(60) };
+  const pasted = { type: 'text', name: 'note.txt', text: 'z'.repeat(60) };
+  const video = { type: 'video', name: 'clip.mp4', blobId: `vid_${'c'.repeat(32)}`, format: 'mp4' };
+  const small = [doc, stored, pasted, video];
+  assert.equal(attachmentsForRequest(small, 1000), small);
+  const sent = attachmentsForRequest(small, 100);
+  assert.equal(sent[0].text, '');
+  assert.equal(sent[1].text, '');
+  assert.equal(sent[1].blobId, stored.blobId);
+  assert.equal(sent[2].text, pasted.text);
+  assert.equal(sent[3], video);
+  assert.equal(doc.text.length, 60, 'the composer copy is not mutated');
+  // What goes out still parses as the pointer the server rehydrates.
+  assert.deepEqual(parseChatAttachments([sent[0], sent[1]]).map((a) => [a.type, a.blobId, a.text]), [
+    ['document', doc.blobId, ''],
+    ['text', stored.blobId, ''],
+  ]);
+  assert.equal(attachmentsForRequest(undefined), undefined);
 });

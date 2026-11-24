@@ -476,6 +476,7 @@
   width: 6px;
   height: 6px;
   border-radius: 999px;
+  corner-shape: round;
   flex-shrink: 0;
   /* A 6px graphic still has to be seen: `faint` is for rules, not for the mark
      that tells you a chat finished. */
@@ -1317,6 +1318,7 @@
   height: 20px;
   padding: 0 7px;
   border-radius: 999px;
+  corner-shape: round;
   font-size: 10.5px;
   letter-spacing: 0.01em;
   color: var(--ws-ink-soft);
@@ -1789,6 +1791,7 @@
   width: 32px;
   height: 32px;
   border-radius: 9999px;
+  corner-shape: round;
   color: var(--ws-ink-mute);
   transition:
     background-color 160ms var(--ws-ease),

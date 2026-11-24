@@ -489,7 +489,7 @@ export function brokerCapabilities(input: BrokerInput): CapabilityGrant {
   const allowedTools = buildToolMap(
     granted,
     input.surface,
-    input.userId !== null,
+    !isolated,
     {
       superAgent: input.superAgent === true && !isolated,
       researchPipeline: input.researchPipeline === true && !isolated,
@@ -1093,7 +1093,7 @@ function buildPermissionRules(
     rules.push({ permission, pattern, action: "allow" });
 
   // The session's own workspace is always available for scratch work.
-  const workspaceGlob = `${portable(workspaceRoot)}/**`;
+  const workspaceGlob = `${portable(workspaceRoot).replace(/\/+$/, "")}/**`;
   for (const permission of ["read", "glob", "grep", "edit", "write", "patch"]) {
     allow(permission, workspaceGlob);
   }
@@ -1108,7 +1108,8 @@ function buildPermissionRules(
   const canWrite = granted.has("filesystem_write") || granted.has("coding");
 
   for (const root of roots) {
-    const glob = `${portable(root.canonicalPath)}/**`;
+    // A drive root ("C:\\") must become "C:/**", not "C://**".
+    const glob = `${portable(root.canonicalPath).replace(/\/+$/, "")}/**`;
     if (canRead && root.permissions.read) {
       // Hermes checks external_directory before it checks the read tool's
       // own permission. Both rules must cover the approved root or an otherwise

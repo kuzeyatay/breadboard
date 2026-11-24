@@ -10,6 +10,8 @@ export type CapabilityMode =
 
 export type CapabilityOperation =
   | "knowledge_work"
+  | "workspace_read"
+  | "workspace_write"
   | "garden_read"
   | "proposal_write"
   | "web_research"
@@ -97,6 +99,7 @@ const KNOWLEDGE_TOOLS = [
   "garden_propose_visualization",
   "garden_run_proposal_validation",
   "workflow_create",
+  "workflow_update",
 ] as const;
 
 const TECHNICAL_READ_TOOLS = ["read", "glob", "grep"] as const;

@@ -50,7 +50,7 @@ import {
 import { getResearchState } from "../research/store.ts";
 import { finishActiveRuntimeRun } from "./run-store.ts";
 import { scheduleLoopxTickForConversation } from "../loopx/conversation-tick.ts";
-import { accountGoalModeTurn, readGoalModeState, goalModeSection, goalTokensForUsage } from "../goal-mode.ts";
+import { accountGoalModeTurn, goalCanContinue, readGoalModeState, goalModeSection, goalTokensForUsage } from "../goal-mode.ts";
 import { scheduleGoalContinuation } from "../goal-continuation.ts";
 import { recordTaskRecoveryOutcome, scheduleTaskRecovery } from "./task-recovery.ts";
 import { recoveryToolFailure } from "./task-recovery-policy.ts";
@@ -467,6 +467,7 @@ function driveSessionEventPump(
   };
 
   return (async () => {
+    let goalContinues = false;
     const emit = (
       event: NormalizedAgentEvent | { type: string; [k: string]: unknown },
     ) => {
@@ -474,7 +475,7 @@ function driveSessionEventPump(
         const payload = event.payload as { code?: string; message?: string; recoverable?: boolean } | undefined;
         if (payload?.message) failure = { code: payload.code ?? "runtime_error", message: payload.message, recoverable: payload.recoverable };
       }
-      sink.emit(encoder.encode(encodeSseEvent(event)));
+      sink.emit(encoder.encode(encodeSseEvent(event.type === "done" && goalContinues ? { ...event, goalContinues: true } : event)));
       // The turn is complete even while the upstream iterator is unwinding.
       // Retire its replay buffer now so a quick spoken follow-up cannot attach
       // to the previous answer. The pump still owns its asynchronous cleanup.
@@ -898,7 +899,7 @@ function driveSessionEventPump(
                 : null);
             if (conversation?.public_id && goalId) {
               try {
-                accountGoalModeTurn({
+                const accounted = accountGoalModeTurn({
                   conversationPublicId: conversation.public_id,
                   goalId,
                   startedAt: streamRun.started_at,
@@ -911,6 +912,7 @@ function driveSessionEventPump(
                   outcome: status === "idle" ? "completed" : status === "aborted" ? "cancelled" :
                     /usage.limit|quota|rate.limit/i.test(failure?.code ?? "") ? "usage_limited" : "error",
                 });
+                goalContinues = accounted?.goal_id === goalId && goalCanContinue(accounted);
               } catch {
                 recordAuditEvent({
                   eventType: "goal_mode.accounting_failed",

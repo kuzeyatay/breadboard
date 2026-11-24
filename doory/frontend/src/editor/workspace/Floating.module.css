@@ -13,6 +13,7 @@
   height: 40px;
   border: 1px solid var(--ed-border);
   border-radius: 999px;
+  corner-shape: round;
   background: var(--ed-surface);
   color: var(--ed-text-dim);
   box-shadow: 0 4px 14px rgb(0 0 0 / 0.08);
@@ -168,6 +169,7 @@
   padding: 6px 12px;
   border: 1px solid var(--ed-border);
   border-radius: 999px;
+  corner-shape: round;
   background: var(--ed-surface);
   box-shadow: 0 4px 14px rgb(0 0 0 / 0.08);
 }
@@ -180,6 +182,7 @@
   padding: 0;
   border: none;
   border-radius: 999px;
+  corner-shape: round;
   background: transparent;
   color: var(--ed-text-dim);
   cursor: pointer;
@@ -221,6 +224,7 @@
   margin-top: -5.5px;
   border: 2px solid var(--ed-surface);
   border-radius: 999px;
+  corner-shape: round;
   background: var(--ed-accent);
   cursor: pointer;
 }
@@ -229,6 +233,7 @@
   height: 10px;
   border: 2px solid var(--ed-surface);
   border-radius: 999px;
+  corner-shape: round;
   background: var(--ed-accent);
 }
 .slider:focus-visible {
@@ -269,6 +274,7 @@
   padding: 4px 8px;
   border: 1px solid var(--ed-border);
   border-radius: 999px;
+  corner-shape: round;
   background: var(--ed-surface);
   box-shadow: 0 4px 14px rgb(0 0 0 / 0.08);
 }

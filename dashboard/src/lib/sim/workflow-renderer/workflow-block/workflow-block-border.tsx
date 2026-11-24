@@ -7,6 +7,11 @@ import {
   type WorkflowConnectionSide,
 } from '../workflow-types'
 import { BLOCK_DIMENSIONS } from '../dimensions'
+import {
+  squircleCornerSample,
+  squircleRectPath,
+  SQUIRCLE_QUARTER_LENGTH,
+} from '../../../squircle-corner'
 
 /**
  * Resolves a point on the card's top or bottom edge into the connection half
@@ -418,7 +423,9 @@ const buildRoundedRectPerimeter = (width: number, height: number, requestedRadiu
   const radius = Math.min(requestedRadius, width / 2, height / 2)
   const horizontal = Math.max(0, width - radius * 2)
   const vertical = Math.max(0, height - radius * 2)
-  const quarterArc = (Math.PI * radius) / 2
+  // Corners are squircles, matching CSS `corner-shape: squircle` on every
+  // other rounded edge in Breadboard.
+  const quarterArc = SQUIRCLE_QUARTER_LENGTH * radius
   const segments: PerimeterSegment[] = []
   let s = 0
 
@@ -454,15 +461,14 @@ const buildRoundedRectPerimeter = (width: number, height: number, requestedRadiu
       length: quarterArc,
       radius,
       pointAt: (distance) => {
-        const angle = startAngle + distance / radius
-        return {
-          x: centerX + Math.cos(angle) * radius,
-          y: centerY + Math.sin(angle) * radius,
-          nx: Math.cos(angle),
-          ny: Math.sin(angle),
-          tx: -Math.sin(angle),
-          ty: Math.cos(angle),
-        }
+        const point = squircleCornerSample(
+          centerX,
+          centerY,
+          radius,
+          startAngle,
+          quarterArc > 0 ? distance / quarterArc : 0
+        )
+        return { ...point, tx: -point.ny, ty: point.nx }
       },
     })
     s += quarterArc
@@ -742,12 +748,17 @@ const appendExactInterval = (
       cursor = Math.min(to, cursor + PERIMETER_CURSOR_EPSILON_PX)
       continue
     }
-    const end = located.segment.pointAt(located.local + step)
-    commands.push(
-      located.segment.kind === 'line'
-        ? `L${end.x.toFixed(2)} ${end.y.toFixed(2)}`
-        : `A${located.segment.radius} ${located.segment.radius} 0 0 1 ${end.x.toFixed(2)} ${end.y.toFixed(2)}`
-    )
+    if (located.segment.kind === 'line') {
+      const end = located.segment.pointAt(located.local + step)
+      commands.push(`L${end.x.toFixed(2)} ${end.y.toFixed(2)}`)
+    } else {
+      // A squircle corner has no SVG arc command; trace it in short chords.
+      const chords = Math.max(1, Math.ceil(step / 1.5))
+      for (let chord = 1; chord <= chords; chord++) {
+        const point = located.segment.pointAt(located.local + (step * chord) / chords)
+        commands.push(`L${point.x.toFixed(2)} ${point.y.toFixed(2)}`)
+      }
+    }
     cursor = nextCursor
   }
 }
@@ -1792,12 +1803,14 @@ export function WorkflowBlockBorder({
               />
             </>
           )}
-          <rect
-            x='0.75'
-            y='0.75'
-            width={Math.max(0, size.width - 1.5)}
-            height={Math.max(0, size.height - 1.5)}
-            rx={Math.max(0, radius - 0.75)}
+          <path
+            d={squircleRectPath(
+              0.75,
+              0.75,
+              Math.max(0, size.width - 1.5),
+              Math.max(0, size.height - 1.5),
+              Math.max(0, radius - 0.75)
+            )}
             fill={bodyFill}
           />
         </>

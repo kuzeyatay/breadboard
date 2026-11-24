@@ -5,8 +5,8 @@ import { renderSystemPrompt } from "../system-prompts/service.ts";
 // This is the half that makes the feature worth having: a garden that only asks
 // when you visit it is still something you have to remember to do. The channel is
 // a single per-user choice made on the profile page — see ./types.ts — and the
-// message goes to the most recent one-to-one thread on that channel, which is the
-// thread the person actually reads.
+// Telegram uses the owner's selected private chat and WhatsApp uses the most
+// recent one-to-one thread on its channel.
 //
 // Grading accepts two shapes. A bare 1-4 (or again/hard/good/easy) is taken at
 // face value, which keeps the loop usable when the provider is down and lets
@@ -25,7 +25,7 @@ export interface ChannelTarget {
 }
 
 /**
- * The thread a review goes to: the most recently active one-to-one chat.
+ * The private thread that receives a review on the chosen channel.
  *
  * Group chats are excluded outright. A review question is addressed to one
  * person and expects a reply that gets graded; posting that into a group would
@@ -36,21 +36,20 @@ export async function resolveChannelTarget(
   channel: ReviewChannel,
 ): Promise<ChannelTarget | null> {
   if (channel === "telegram") {
-    const [{ getTelegramStore }, { readBotToken }, { sendMessage }] = await Promise.all([
-      import("../telegram/instance.ts"),
+    const [{ getMessagingNotificationStore }, { readBotToken }, { sendMessage }] = await Promise.all([
+      import("../messaging-notifications/instance.ts"),
       import("../telegram/credentials.ts"),
       import("../telegram/client.ts"),
     ]);
     const token = readBotToken();
     if (!token) return null;
-    const chat = getTelegramStore()
-      .listChats(userId, 25)
-      .find((row) => row.is_group === 0);
-    if (!chat) return null;
+    const result = getMessagingNotificationStore().telegramOwnerTarget(userId);
+    if (!result.ok) return null;
+    const { chatId, label } = result.target;
     return {
-      chatId: chat.chat_id,
-      label: chat.contact_label || chat.contact_handle || "Telegram",
-      send: (text: string) => sendMessage(token, chat.chat_id, text),
+      chatId,
+      label,
+      send: (text: string) => sendMessage(token, chatId, text),
     };
   }
 

@@ -511,6 +511,11 @@ export function listConversationMessages(
   `).all(conversationId, after, limit) as ConversationMessageRow[];
 }
 
+export function listConversationTranscript(conversationId: number, database: Database.Database = db): ConversationMessageRow[] {
+  return database.prepare(`SELECT * FROM conversation_message_reads
+    WHERE conversation_id = ? ORDER BY order_index ASC`).all(conversationId) as ConversationMessageRow[];
+}
+
 export interface ConversationMessageSummary {
   messageCount: number;
   externalAgentActive: boolean;

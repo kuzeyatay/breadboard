@@ -42,6 +42,7 @@
   .sound-library-categories::-webkit-scrollbar-track { background: transparent; }
   .sound-library-categories::-webkit-scrollbar-thumb {
     border-radius: 999px;
+    corner-shape: round;
     background: #40545c;
   }
 }

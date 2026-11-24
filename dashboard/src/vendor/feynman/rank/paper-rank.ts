@@ -6219,6 +6219,8 @@ function renderGraphExplorerCss(): string {
 	return `
 :root { color-scheme: light; --ink: #17211b; --muted: #5f6d65; --line: #d7ded8; --paper: #ffffff; --soft: #f4f7f4; --accent: #1f7a5a; --accent-2: #2d5f89; --expanded: #7b8790; --edge: #b9c5bc; }
 * { box-sizing: border-box; }
+/* Breadboard draws every rounded edge as a squircle; pills stay round. */
+:where(*), :where(*)::before, :where(*)::after { corner-shape: squircle; }
 body { margin: 0; background: #fbfcfb; color: var(--ink); font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; line-height: 1.45; }
 header { display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 560px); gap: 28px; align-items: end; padding: 30px clamp(18px, 4vw, 56px); background: var(--paper); border-bottom: 1px solid var(--line); }
 .eyebrow { margin: 0 0 8px; color: var(--accent); font-size: 12px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
@@ -6257,7 +6259,7 @@ button.active, button:hover { border-color: var(--accent); color: var(--accent);
 .detail-row, .edge-row, .cluster-row { border-top: 1px solid var(--line); padding-top: 8px; }
 .detail-row span, .edge-row span, .cluster-row span { display: block; color: var(--muted); font-size: 12px; }
 .pill-row { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
-.pill { border: 1px solid var(--line); border-radius: 999px; padding: 3px 8px; font-size: 12px; color: var(--muted); }
+.pill { border: 1px solid var(--line); border-radius: 999px; corner-shape: round; padding: 3px 8px; font-size: 12px; color: var(--muted); }
 a { color: var(--accent-2); text-decoration: none; }
 a:hover { text-decoration: underline; }
 @media (max-width: 1080px) { .explorer-shell { grid-template-columns: 1fr; } .graph-stage, #graph-svg { min-height: 520px; } header { grid-template-columns: 1fr; } }

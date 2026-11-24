@@ -5,6 +5,7 @@ import { getConversationForUser } from "@/lib/conversations/store.ts";
 import { loadSuperAgentInventory } from "@/lib/hermes/super-agent.ts";
 import { resolveConversationRuntime } from "@/lib/hermes/session-service.ts";
 import { buildSessionEventStream } from "@/lib/hermes/event-stream.ts";
+import { getActiveRuntimeRun } from "@/lib/hermes/run-store.ts";
 import { HERMES_SURFACES, type HermesSurface } from "@/lib/hermes/config.ts";
 
 export const dynamic = "force-dynamic";
@@ -36,6 +37,10 @@ export async function GET(
     // contacts optional account servers. Per-turn tool authorization stays live.
     if (prepareVoice && !request.signal.aborted) {
       await loadSuperAgentInventory({ userId, surface, voice: true }).catch(() => undefined);
+    }
+    const expectedRunId = url.searchParams.get("runId");
+    if (expectedRunId && getActiveRuntimeRun(runtime.row.id)?.id !== expectedRunId) {
+      throw new ApiError(409, "run_settled", "This run is no longer active.");
     }
     return buildSessionEventStream(runtime, request.signal);
   } catch (error) {

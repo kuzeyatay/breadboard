@@ -2,8 +2,9 @@ import { Readable } from "node:stream";
 import { externalRuntimeFilesystem as fs } from "@/lib/external-runtime-filesystem";
 import { requireUserId } from "@/lib/server-auth";
 import { ApiError, apiErrorResponse } from "@/lib/hermes/route-helpers.ts";
-import { isVideoBlobId, videoFormatMimeType } from "@/lib/video-attachments.ts";
+import { isPlayableVideoFormat, isVideoBlobId, videoFormatMimeType } from "@/lib/video-attachments.ts";
 import { findVideoBlob } from "@/lib/conversations/video-blob-store.ts";
+import { ensurePlaybackCopy, VideoPlaybackError } from "@/lib/conversations/video-playback.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -30,6 +31,10 @@ function requestedRange(
  * level in the store, so a video somebody else uploaded reads as missing. Range
  * requests are honoured because a <video> element issues them to seek, and a
  * two-gigabyte file answered whole for every scrub is not a player.
+ *
+ * `?playback=mp4` asks for a copy the browser can decode. For MP4, MOV and the
+ * other native formats that is the file itself; for Matroska, AVI, MPEG and
+ * WMV it is an MP4 converted on first request and cached beside the store.
  */
 export async function GET(
   request: Request,
@@ -45,17 +50,31 @@ export async function GET(
     const blob = findVideoBlob({ userId, blobId });
     if (!blob) throw new ApiError(404, "video_not_found", "That video was not found.");
 
+    const wantsPlayback =
+      new URL(request.url).searchParams.get("playback") === "mp4" &&
+      !isPlayableVideoFormat(blob.format);
+    let served = { path: blob.path, byteSize: blob.byteSize, extension: blob.format as string, mimeType: videoFormatMimeType(blob.format) };
+    if (wantsPlayback) {
+      try {
+        const copy = await ensurePlaybackCopy(userId, blob);
+        served = { path: copy, byteSize: fs.statSync(copy).size, extension: "mp4", mimeType: "video/mp4" };
+      } catch (error) {
+        if (error instanceof VideoPlaybackError) throw new ApiError(error.status, error.code, error.message);
+        throw error;
+      }
+    }
+
     const headers: Record<string, string> = {
-      "Content-Type": videoFormatMimeType(blob.format),
+      "Content-Type": served.mimeType,
       "Accept-Ranges": "bytes",
       // Immutable: a blob id names one file and is never rewritten.
       "Cache-Control": "private, max-age=3600, immutable",
       "X-Content-Type-Options": "nosniff",
-      "Content-Disposition": `inline; filename="${blobId}.${blob.format}"`,
+      "Content-Disposition": `inline; filename="${blobId}.${served.extension}"`,
     };
 
-    const range = requestedRange(request.headers.get("range"), blob.byteSize);
-    const stream = fs.createReadStream(blob.path, range ?? undefined);
+    const range = requestedRange(request.headers.get("range"), served.byteSize);
+    const stream = fs.createReadStream(served.path, range ?? undefined);
     const body = Readable.toWeb(stream) as ReadableStream<Uint8Array>;
 
     return range
@@ -63,12 +82,12 @@ export async function GET(
           status: 206,
           headers: {
             ...headers,
-            "Content-Range": `bytes ${range.start}-${range.end}/${blob.byteSize}`,
+            "Content-Range": `bytes ${range.start}-${range.end}/${served.byteSize}`,
             "Content-Length": String(range.end - range.start + 1),
           },
         })
       : new Response(body, {
-          headers: { ...headers, "Content-Length": String(blob.byteSize) },
+          headers: { ...headers, "Content-Length": String(served.byteSize) },
         });
   } catch (error) {
     return apiErrorResponse(error);

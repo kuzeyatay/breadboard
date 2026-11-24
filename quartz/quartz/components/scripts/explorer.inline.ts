@@ -1036,7 +1036,21 @@ function toggleFolder(evt: MouseEvent) {
   localStorage.setItem("fileTree", stringifiedFileTree)
 }
 
+// A row's name sits in its own span after the type chip: a bare text node in the flex row cannot show "…",
+// so a long name was cut off under the viewer. The span ellipsises and scrolls on hover (nameMarquee).
 function createFileNode(currentSlug: FullSlug, node: FileTrieNode): HTMLLIElement {
+  const li = buildFileNode(currentSlug, node)
+  const link = li.querySelector("a")
+  if (link && !link.querySelector(".explorer-name")) {
+    const name = document.createElement("span")
+    name.className = "explorer-name"
+    for (const child of [...link.childNodes]) if (child.nodeType === Node.TEXT_NODE) name.append(child)
+    if (name.textContent) link.append(name)
+  }
+  return li
+}
+
+function buildFileNode(currentSlug: FullSlug, node: FileTrieNode): HTMLLIElement {
   const template = document.getElementById("template-file") as HTMLTemplateElement
   const clone = template.content.cloneNode(true) as DocumentFragment
   const li = clone.querySelector("li") as HTMLLIElement
@@ -1647,3 +1661,31 @@ function setFolderState(folderElement: HTMLElement, collapsed: boolean) {
   }
   return collapsed ? folderElement.classList.remove("open") : folderElement.classList.add("open")
 }
+
+
+// Hovering or focusing a cut-off name scrolls it to show its end and back, like a long chat name in the
+// Terminal rail (same delay, speed and timing as the dashboard's overflow marquee).
+function nameMarquee() {
+  const run = (target: EventTarget | null) => {
+    const name = (target as Element | null)?.closest?.("li")?.querySelector<HTMLElement>(":scope > a .explorer-name")
+    if (!name || name.dataset.marquee === "run") return
+    window.setTimeout(() => {
+      if (!name.closest("li")?.matches(":hover, :focus-within")) return
+      const distance = name.scrollWidth - name.clientWidth
+      if (distance < 2) return
+      name.style.setProperty("--bb-marquee-distance", `${distance}px`)
+      name.style.setProperty("--bb-marquee-duration", `${distance / 42 / 0.36}s`)
+      name.dataset.marquee = "run"
+    }, 350)
+  }
+  const stop = (target: EventTarget | null) => {
+    const li = (target as Element | null)?.closest?.("li")
+    const name = li?.querySelector<HTMLElement>(":scope > a .explorer-name")
+    if (name && !li!.matches(":hover, :focus-within")) delete name.dataset.marquee
+  }
+  document.addEventListener("pointerover", event => run(event.target), { passive: true })
+  document.addEventListener("focusin", event => run(event.target))
+  document.addEventListener("pointerout", event => window.setTimeout(() => stop(event.target), 0), { passive: true })
+  document.addEventListener("focusout", event => window.setTimeout(() => stop(event.target), 0))
+}
+nameMarquee()

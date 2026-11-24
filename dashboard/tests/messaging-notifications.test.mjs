@@ -16,12 +16,14 @@ function fixture(t) {
     CREATE TABLE clusters (id INTEGER PRIMARY KEY, user_id INTEGER, slug TEXT, name TEXT);
     CREATE TABLE conversations (
       id INTEGER PRIMARY KEY, public_id TEXT, user_id INTEGER, title TEXT, surface TEXT,
-      default_garden_id INTEGER, legacy_chat_session_id INTEGER, temporary INTEGER DEFAULT 0, buzz_room_id INTEGER, origin_label TEXT
+      default_garden_id INTEGER, legacy_chat_session_id INTEGER, temporary INTEGER DEFAULT 0, buzz_room_id INTEGER, origin_label TEXT,
+      scheduled_chat_job_id INTEGER
     );
     CREATE TABLE conversation_messages (
       id INTEGER PRIMARY KEY, conversation_id INTEGER, client_message_id TEXT, role TEXT DEFAULT 'assistant',
       content TEXT, status TEXT DEFAULT 'complete', metadata TEXT, updated_at TEXT
     );
+    CREATE VIEW conversation_message_reads AS SELECT * FROM conversation_messages;
     CREATE TABLE hermes_runtime_sessions(id INTEGER PRIMARY KEY, user_id INTEGER, conversation_id INTEGER);
     CREATE TABLE hermes_runs(id TEXT PRIMARY KEY, runtime_session_id INTEGER, status TEXT, dispatch_json TEXT, started_at TEXT, heartbeat_at TEXT);
     CREATE TABLE learn_jobs (
@@ -61,6 +63,28 @@ test("channels default off and expose only private, account-owned recipients", t
   assert.throws(() => store.update(2, "telegram", { enabled: true, recipient: "123" }), /private chat/);
   for (const recipient of ["-100", "*", "999"]) assert.throws(() => store.update(1, "telegram", { enabled: true, recipient }), /private chat/);
   assert.throws(() => store.update(1, "telegram", { enabled: "true", recipient: "123" }), /switch/);
+});
+
+test("proactive Telegram sends use the selected private chat across callers and restarts", t => {
+  const { db, store, telegram, enable } = fixture(t);
+  assert.equal(store.telegramOwnerTarget(1).reason, "telegram_choose_owner_chat");
+  enable("telegram", "123");
+  db.prepare("UPDATE telegram_chats SET last_message_at = '2099-01-01' WHERE chat_id = '456'").run();
+  assert.equal(new MessagingNotificationStore(db).telegramOwnerTarget(1).target.chatId, "123");
+  store.update(1, "telegram", { enabled: false });
+  assert.equal(store.telegramOwnerTarget(1).target.chatId, "123");
+  telegram.updateSettings({ allowedUsers: "456" });
+  assert.equal(store.telegramOwnerTarget(1).reason, "telegram_choose_owner_chat");
+  telegram.updateSettings({ allowedUsers: "123,456" });
+  telegram.recordBot({ id: "second-bot", username: "other", name: "Other" });
+  assert.equal(store.telegramOwnerTarget(1).reason, "telegram_choose_owner_chat");
+  assert.equal(store.telegramOwnerTarget(2).ok, false);
+});
+
+test("one eligible private chat can still receive reminders without an inbox preference", t => {
+  const { store, telegram } = fixture(t);
+  telegram.updateSettings({ allowedUsers: "456" });
+  assert.equal(store.telegramOwnerTarget(1).target.chatId, "456");
 });
 
 test("enabled channels deliver a new question once and skip questions already answered", async t => {
@@ -110,6 +134,36 @@ test("each enabled channel sends new notifications once without replaying histor
   assert.equal(sent[0].recipient, "123");
   assert.equal(sent[1].recipient, "31612345678@s.whatsapp.net");
   assert.match(sent[0].text, /Response ready\n\nResearch\n\nThe answer is ready/);
+});
+
+test("muting Telegram chat completions keeps scheduled results, failures, questions and Learn updates", async t => {
+  const { db, store, answer, enable } = fixture(t);
+  enable();
+  assert.equal(store.settings(1, "telegram").includeChatCompletions, true);
+  store.update(1, "telegram", { enabled: true, includeChatCompletions: false });
+  // Existing settings clients omit the field when changing other settings.
+  store.update(1, "telegram", { enabled: true, recipient: "123" });
+  const restored = new MessagingNotificationStore(db);
+  assert.equal(restored.settings(1, "telegram").includeChatCompletions, false);
+  assert.equal(restored.telegramOwnerTarget(1).target.chatId, "123");
+  assert.equal(store.settings(1, "whatsapp").includeChatCompletions, true);
+  db.exec("UPDATE conversations SET scheduled_chat_job_id = 7 WHERE id = 1");
+  answer(1, { text: "Ordinary reply" });
+  answer(2, { clientId: "schedule-7-12345", text: "Scheduled result" });
+  answer(3, { status: "failed", text: "Something failed" });
+  const at = new Date().toISOString();
+  db.exec("INSERT INTO hermes_runtime_sessions VALUES (1,1,1)");
+  db.prepare("INSERT INTO hermes_runs VALUES (1,1,'active','{}',?,?)").run(at, at);
+  recordQuestionNotification(db, { runtimeSessionId: 1, runId: "1", requestId: "question", question: "Which date?", choices: [] });
+  db.prepare("INSERT INTO learn_jobs (id,garden_id,status,updated_at) VALUES ('learn1','science','complete',?)").run(at);
+  const sent = [];
+  await restored.deliver(1, "telegram", async (_, text) => { sent.push(text); });
+  assert.equal(sent.length, 4);
+  assert.doesNotMatch(sent.join("\n"), /Ordinary reply/);
+  for (const detail of ["Scheduled result", "Something failed", "Which date?", "Learn complete"]) {
+    assert.ok(sent.some(text => text.includes(detail)), detail);
+  }
+  assert.ok(listPendingChatNotifications(db, 1).some(notice => notice.response === "Ordinary reply"));
 });
 
 test("concurrent workers claim one delivery and disabling cancels the remainder of a batch", async t => {

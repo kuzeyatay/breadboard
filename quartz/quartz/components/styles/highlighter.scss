@@ -340,6 +340,7 @@ article.popover-hint .katex-html {
   width: 0.875rem;
   height: 0.875rem;
   border-radius: 50%;
+  corner-shape: round;
   background: var(--bb-hl-dot-yellow);
   box-shadow: inset 0 0 0 1px rgb(0 0 0 / 18%);
 
@@ -431,6 +432,7 @@ article.popover-hint .katex-html {
   padding: 0.5rem;
   border: 1px solid var(--neu-q-border);
   border-radius: 50%;
+  corner-shape: round;
   background: var(--neu-q-surface);
   color: var(--gray);
   box-shadow: var(--neu-q-soft-shadow);

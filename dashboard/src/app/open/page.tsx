@@ -5,6 +5,7 @@ import { authOptions } from "@/lib/auth-options";
 import { findDocumentBlob, isMarkedWebBlob, touchWebPdfBlob } from "@/lib/conversations/document-blob-store.ts";
 import { findStoredFileBlob } from "@/lib/conversations/stored-file-blob-store.ts";
 import { findVideoBlob } from "@/lib/conversations/video-blob-store.ts";
+import { chatVideoPlaybackHref } from "@/lib/video-attachments.ts";
 import { openedImageMimeType } from "@/lib/local-document";
 import { getNavbarFlowers, getNavbarShortcuts } from "@/lib/profile/navbar-shortcuts-store.ts";
 import LocalDocumentViewer, { type StoredOpenedFile } from "./local-document-viewer";
@@ -18,7 +19,7 @@ function storedFile(userId: number, blobId: string, name: string): StoredOpenedF
   const pdf = findDocumentBlob({ userId, blobId });
   if (pdf?.format === "pdf") { touchWebPdfBlob(pdf); return { kind: "pdf", url: `/api/chat-attachments/documents/${id}` }; }
   const video = findVideoBlob({ userId, blobId });
-  if (video) { touchWebPdfBlob(video); return { kind: "video", url: `/api/chat-attachments/videos/${id}` }; }
+  if (video) { touchWebPdfBlob(video); return { kind: "video", url: chatVideoPlaybackHref(blobId, video.format) }; }
   const image = findStoredFileBlob({ userId, blobId });
   if (image && isMarkedWebBlob(image) && openedImageMimeType(name)) {
     return { kind: "image", url: `/api/chat-attachments/files?${new URLSearchParams({ blobId, name })}` };

@@ -140,7 +140,7 @@ export const WORKFLOW_PROPOSAL_TOOLS = ["workflow_propose"] as const;
 // rechecks the active user's instruction before it writes, so Hermes can obey
 // "create this workflow" while still being unable to turn its own suggestion
 // into a durable automation.
-export const WORKFLOW_AUTHORING_TOOLS = ["workflow_create"] as const;
+export const WORKFLOW_AUTHORING_TOOLS = ["workflow_create", "workflow_update"] as const;
 
 // A correction learned while using one reviewed skill, kept beside it for next
 // time. Scoped like memory — authenticated conversational surfaces only — and

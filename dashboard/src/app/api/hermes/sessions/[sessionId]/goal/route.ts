@@ -28,7 +28,7 @@ import {
 } from "@/lib/hermes/route-helpers.ts";
 import { authorizeRuntimeReference } from "@/lib/hermes/session-service.ts";
 import { ApiError } from "@/lib/hermes/route-core.ts";
-import { scheduleGoalContinuation } from "@/lib/goal-continuation.ts";
+import { latestGoalTurn, scheduleGoalContinuation } from "@/lib/goal-continuation.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -61,7 +61,10 @@ export async function GET(_request: Request, context: RouteContext) {
     const { sessionId } = await context.params;
     const { conversation } = authorizedSession(userId, sessionId);
     scheduleGoalContinuation(conversation.id);
-    return NextResponse.json(goalPayload(conversation.public_id));
+    const payload = goalPayload(conversation.public_id);
+    return NextResponse.json({ ...payload,
+      turn: payload.goal ? latestGoalTurn(conversation.id, payload.goal.goalId) : null,
+    });
   } catch (error) {
     return apiErrorResponse(error);
   }

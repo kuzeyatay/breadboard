@@ -11,6 +11,7 @@ import { videoAttachmentFormat } from "@/lib/video-attachments";
 import type { QuartzAssistantSelectionRequest } from "@/lib/quartz-assistant-selection";
 import type { GardenFileEntry } from "@/lib/garden-files/types";
 import styles from "./garden-files.module.css";
+import { usePageLoading } from "@/app/components/use-page-loading";
 
 const loadFileViewer = () => import("./garden-file-viewer");
 const loadPdfViewer = () => import("@/app/gardens/[clusterSlug]/pdf/[slug]/pdf-viewer-client");
@@ -45,6 +46,12 @@ export default function GardenSourceView({ iframeRef, quartzOrigin, onAsk }: { i
   // The video editor opens right here, over the player, with the reader's file tree and Assistant beside it.
   const [editing, setEditing] = useState(false);
   const [transcript, setTranscript] = useState("");
+  // A source note whose original is still being looked up: the viewer's frame stays up (Quartz's ground, the
+  // top progress bar) instead of dropping to the page and coming back, so switching sources is one change.
+  const [pending, setPending] = useState(false);
+  // Each new page resets Quartz's own "file view open"; this re-announces it for the page now showing.
+  const [noteTick, setNoteTick] = useState(0);
+  usePageLoading(pending);
   const documents = useRef(new Map<string, Promise<SourceDoc[]>>()), ticket = useRef(0), shown = useRef(false), shownNote = useRef("");
   const post = useCallback((message: object) => { if (quartzOrigin) iframeRef.current?.contentWindow?.postMessage(message, quartzOrigin); }, [iframeRef, quartzOrigin]);
 
@@ -66,9 +73,11 @@ export default function GardenSourceView({ iframeRef, quartzOrigin, onAsk }: { i
       if (shown.current && shownNote.current === `${cluster}/${slug}`) return;
       const mine = ++ticket.current;
       setSource(null); setRaw(false); setEditing(false); shown.current = false; shownNote.current = `${cluster}/${slug}`;
+      const sourceNote = Boolean(cluster && slug && /^sources\//i.test(slug));
+      setPending(sourceNote); setNoteTick(tick => tick + 1);
       if (!cluster || !slug) return;
       // Quartz hides every …/sources/<note> until answered; a note this view does not cover gets "none".
-      if (!/^sources\//i.test(slug)) { if (/(^|\/)sources\/[^/]+$/i.test(slug)) post({ type: "second-brain:source-none" }); return; }
+      if (!sourceNote) { if (/(^|\/)sources\/[^/]+$/i.test(slug)) post({ type: "second-brain:source-none" }); return; }
       const find = (list: SourceDoc[]) => list.find(entry => normal(gardenDocumentNoteSlug(entry)) === normal(slug));
       // The list is fetched once per Garden; a source added since then refetches it.
       void listFor(cluster).then(list => find(list) ? list : listFor(cluster, true)).then(list => {
@@ -77,8 +86,8 @@ export default function GardenSourceView({ iframeRef, quartzOrigin, onAsk }: { i
         const kind = doc && kindOf(doc);
         if (doc?.type === "source-document" && !kind && /\.docx$/i.test(doc.sourceFile)) { void openWord(cluster, doc, mine); return; }
         // Quartz keeps a source note's text hidden until told: no original here, so show the note.
-        if (!doc || !kind) { post({ type: "second-brain:source-none" }); return; }
-        setSource({ cluster, doc, kind }); shown.current = true;
+        if (!doc || !kind) { setPending(false); post({ type: "second-brain:source-none" }); return; }
+        setSource({ cluster, doc, kind }); setPending(false); shown.current = true;
         post({ type: "second-brain:file-view", open: true });
       });
     };
@@ -88,8 +97,8 @@ export default function GardenSourceView({ iframeRef, quartzOrigin, onAsk }: { i
       const response = await fetch(`/api/documents/${encodeURIComponent(doc.slug)}/word-file?clusterSlug=${encodeURIComponent(cluster)}`, { method: "POST", cache: "no-store" }).catch(() => null);
       const file = response?.ok ? (await response.json().catch(() => null))?.file as GardenFileEntry | undefined : undefined;
       if (mine !== ticket.current) return;
-      if (!file?.id) { post({ type: "second-brain:source-none" }); return; }
-      setSource({ cluster, doc, kind: "word", file }); shown.current = true;
+      if (!file?.id) { setPending(false); post({ type: "second-brain:source-none" }); return; }
+      setSource({ cluster, doc, kind: "word", file }); setPending(false); shown.current = true;
       post({ type: "second-brain:file-view", open: true });
     };
     const onMessage = (event: MessageEvent) => {
@@ -115,9 +124,12 @@ export default function GardenSourceView({ iframeRef, quartzOrigin, onAsk }: { i
   // Quartz trusts the pane request only once the files snapshot has named this window; on a fresh
   // load the lookup above can win that race, so ask again until Quartz answers with bounds.
   const [sized, setSized] = useState(false);
+  const framed = Boolean(source || pending), wasFramed = useRef(false);
   useEffect(() => {
-    setSized(false);
-    if (!source) return;
+    // Moving from one source to the next keeps the frame and its size; only a frame that goes away re-measures,
+    // and Quartz hears it closed (after this effect's own "open" retries have stopped).
+    if (!framed) { if (wasFramed.current) post({ type: "second-brain:file-view", open: false }); wasFramed.current = false; setSized(false); return; }
+    wasFramed.current = true;
     if (raw) { post({ type: "second-brain:file-view", open: false, raw: true }); return; }
     // Ask for the pane's size now (listening first), and again until the reader answers.
     let tries = 0;
@@ -133,7 +145,7 @@ export default function GardenSourceView({ iframeRef, quartzOrigin, onAsk }: { i
     post({ type: "second-brain:file-view", open: true });
     const timer = window.setInterval(() => { if (++tries > 40) window.clearInterval(timer); else post({ type: "second-brain:file-view", open: true }); }, 250);
     return () => { window.clearInterval(timer); window.removeEventListener("message", answered); };
-  }, [source, raw, post, iframeRef]);
+  }, [framed, raw, noteTick, post, iframeRef]);
 
   // A recording's note: its generated notes go under the player, its transcript into the tab.
   useEffect(() => {
@@ -146,7 +158,8 @@ export default function GardenSourceView({ iframeRef, quartzOrigin, onAsk }: { i
   }, [source]);
 
 
-  if (!source || !bounds || !sized || raw) return null;
+  if (!framed || !bounds || !sized || raw) return null;
+  if (!source) return createPortal(<div className={styles.overlay} style={bounds} data-garden-source-view="pending" aria-busy="true" />, document.body);
   const viewRaw = <button type="button" className={styles.labeled} onClick={() => setRaw(true)} title="Show this page's text"><FileText size={15} />View raw</button>;
   const { cluster, doc, kind } = source, name = doc.sourceFile || doc.title;
   const media = `/api/gardens/${encodeURIComponent(cluster)}/media/${encodeURIComponent(doc.slug)}`;
@@ -227,7 +240,7 @@ function MediaSource({ kind, src, body, transcriptOpen, onCloseTranscript, onOpe
       event.preventDefault();
       onOpenNote(`${decodeURIComponent(link.getAttribute("href")!.slice("#bb-note:".length))}.md`);
     }}>
-      <div className={styles.sourcePlayer}>{kind === "video" ? <video {...media} /> : <audio {...media} />}</div>
+      <div className={styles.sourcePlayer}>{kind === "video" ? <video {...media} onLoadedMetadata={event => { const v = event.currentTarget; if (v.videoWidth && v.videoHeight) v.style.setProperty("--video-ratio", `${v.videoWidth} / ${v.videoHeight}`); }} /> : <audio {...media} />}</div>
       {notes && <ChatMarkdown content={notes} />}
     </div>
   </div>;

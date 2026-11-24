@@ -14,7 +14,7 @@ test("chat rails receive summaries and selected chats receive transcripts", () =
   assert.match(listRoute, /presentHermesSessionSummary/);
   assert.doesNotMatch(listRoute, /listConversationMessages/);
   assert.match(detailRoute, /presentHermesSessionDetail/);
-  assert.match(presentation, /listConversationMessages\(conversation\.id\)/);
+  assert.match(presentation, /listConversationTranscript\(conversation\.id\)/);
   assert.match(client, /SUMMARY_TTL_MS = 5_000/);
   assert.match(client, /detailRequests/);
   assert.match(client, /prefetchHermesSessionDetail/);

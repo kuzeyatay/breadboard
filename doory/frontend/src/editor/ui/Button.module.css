@@ -76,6 +76,7 @@
 
 .primary {
   border-radius: 999px;
+  corner-shape: round;
   background: var(--color-cta);
   color: var(--color-on-cta);
   font-weight: 800;

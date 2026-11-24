@@ -180,6 +180,7 @@
   height: 2rem;
   border: 1px solid var(--color-border-strong);
   border-radius: 50%;
+  corner-shape: round;
   background: var(--color-surface);
   color: var(--ink);
   box-shadow: var(--shadow-sm);

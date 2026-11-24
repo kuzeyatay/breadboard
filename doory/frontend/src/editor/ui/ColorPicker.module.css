@@ -24,6 +24,7 @@
   margin: -9px 0 0 -9px;
   border: 3px solid #fff;
   border-radius: 50%;
+  corner-shape: round;
   box-shadow: 0 0 0 1px rgb(0 0 0 / 0.35), 0 2px 6px rgb(0 0 0 / 0.35);
   pointer-events: none;
 }
@@ -90,6 +91,7 @@
   height: 16px;
   border: 3px solid #fff;
   border-radius: 50%;
+  corner-shape: round;
   background: transparent;
   box-shadow: 0 0 0 1px rgb(0 0 0 / 0.4), 0 1px 4px rgb(0 0 0 / 0.3);
 }
@@ -98,6 +100,7 @@
   height: 10px;
   border: 3px solid #fff;
   border-radius: 50%;
+  corner-shape: round;
   background: transparent;
   box-shadow: 0 0 0 1px rgb(0 0 0 / 0.4);
 }
@@ -176,6 +179,7 @@
   padding: 0;
   border: 1px solid var(--color-border-strong);
   border-radius: 50%;
+  corner-shape: round;
   cursor: pointer;
   transition: transform var(--duration-fast) var(--ease-out);
 }

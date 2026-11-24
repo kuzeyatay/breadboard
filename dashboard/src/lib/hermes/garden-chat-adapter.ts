@@ -7,6 +7,7 @@ import { isBareProviderError } from "../provider-error.ts";
 import { voiceReplyWithOpener } from "../speech/voice-opener-context.ts";
 import { parseBrowserTerminalAccess } from "../browser-terminal.ts";
 import { resolveUnifiedWorkflowContinuation } from "../workflows/unified-continuation.ts";
+import { openWorkflowContext } from "../workflows/open-workflow-context.ts";
 import { browserTerminalPrompt, setBrowserTerminalContext } from "./browser-terminal-context.ts";
 import { codeOriginPrompt } from "../conversations/origin-label.ts";
 import { hermesPromptText } from "../agent-runtime/hermes-prompt.ts";
@@ -52,6 +53,9 @@ import {
   type ExternalAgentCall,
 } from "./evidence.ts";
 import { composeHermesSystemPrompt } from "./system-prompts.ts";
+import { GOAL_MODE_CONNECTION, GOAL_MODE_SKILL, accountGoalModeTurn, clearGoalContinuationDeferral, goalCanContinue, goalTokensForUsage, readGoalModeState } from "../goal-mode.ts";
+import { scheduleGoalContinuation } from "../goal-continuation.ts";
+import { goalCommandText, shouldAutoSelectGoal } from "./goal-intent.ts";
 import { botTurnPersona } from "../bots/team.ts";
 import { suppliedEvidenceText } from "./evidence-calibration.ts";
 import { adjudicateWebGrounding } from "./web-grounding-decider.ts";
@@ -441,8 +445,23 @@ export async function openGardenAgentChat(
     const filesystemGrants = listFilesystemGrants(userId);
     const superAgent = payload.superAgent === true;
     const yoloMode = superAgent || payload.yoloMode === true;
+    let existingGoal = inlineTurnId ? null : readGoalModeState(conversation.public_id);
+    if (existingGoal?.continuation_deferred && !payload.internalAgentContinuation) {
+      clearGoalContinuationDeferral(conversation.public_id);
+      existingGoal = readGoalModeState(conversation.public_id);
+    }
+    const goalIntent = {
+      surface: "garden_chat" as const,
+      authenticated: !inlineTurnId,
+      internalContinuation: payload.internalAgentContinuation === true,
+      hasActiveGoal: Boolean(existingGoal && existingGoal.status !== "complete"),
+    };
+    const goalTurn = !inlineTurnId && (goalIntent.hasActiveGoal || /^\/goal\b/i.test(text.trim()) ||
+      shouldAutoSelectGoal({ ...goalIntent, text }));
     let prepared = prepareTurn({
       request: text,
+      goalMode: goalTurn,
+      yoloMode,
       internalAgentContinuation: payload.internalAgentContinuation === true,
       priorRequests,
       surface: "garden_chat",
@@ -520,6 +539,8 @@ export async function openGardenAgentChat(
           }
           const regranted = prepareTurn({
             request: text,
+            goalMode: goalTurn,
+            yoloMode,
             internalAgentContinuation: payload.internalAgentContinuation === true,
             priorRequests,
             surface: "garden_chat",
@@ -717,6 +738,7 @@ export async function openGardenAgentChat(
       authenticated: true,
       priorMessages: messages,
     });
+    const goalSelection = goalCommandText({ ...goalIntent, text: messagingSelection.text });
     const commandContext = {
       mode: decision.mode,
       surface: "garden_chat" as const,
@@ -730,7 +752,7 @@ export async function openGardenAgentChat(
     // so its fallback starts from the fact-check selection text.
     const resolved = await resolveCommandMessage(
       userId,
-      messagingSelection.text,
+      goalSelection.text,
       session.activeDirectory,
       commandContext,
     ).catch(async (error: unknown) => {
@@ -747,7 +769,8 @@ export async function openGardenAgentChat(
         !githubExplorerSelection.automatic &&
         !humanizeSelection.automatic &&
         !computerUseSelection.automatic &&
-        !breadboardUseSelection.automatic
+        !breadboardUseSelection.automatic &&
+        !goalSelection.automatic
       )
         throw error;
       return await resolveCommandMessage(
@@ -788,6 +811,12 @@ export async function openGardenAgentChat(
     decision.selectedConnections = resolved.invocations
       .filter((item) => item.kind === "mcp")
       .map((item) => item.slug);
+    const goalSkillSelected = !inlineTurnId && decision.selectedConditionalSkills.includes(GOAL_MODE_SKILL);
+    const goalEnabled = goalIntent.hasActiveGoal || goalSkillSelected;
+    if (goalEnabled) {
+      decision.allowedTools = [...new Set([...decision.allowedTools, "mcp_call"])];
+      decision.selectedConnections = [...new Set([...decision.selectedConnections, GOAL_MODE_CONNECTION])];
+    }
     const parametricCadSelected = decision.selectedConditionalSkills.includes("cad");
     const codingRequest = payload.internalAgentContinuation !== true && payload.voice !== true && isCodeWritingRequest(text);
     const codexDrive = codingRequest && gardenHasRepository(userId, clusterSlug) &&
@@ -1006,6 +1035,7 @@ export async function openGardenAgentChat(
     const runTools = mergeSelectedTools(prepared.grant.allowedTools, {
       ...resolved.tools,
       ...connectedApps.tools,
+      ...(goalEnabled ? { mcp_call: true } : {}),
       ...(repository?.tools ?? {}),
       ...(decision.selectedConditionalSkills.includes(COMPUTER_USE_SKILL)
         ? { computer_use: true }
@@ -1056,6 +1086,8 @@ export async function openGardenAgentChat(
       userId,
       surface: "garden_chat",
       decision,
+      goalMode: existingGoal,
+      goalSkillSelected,
       requiresWebEvidence: webGroundingVerdict.required,
       userText: resolved.userText || text,
       // Compatibility evidence input; original document text travels in turn context.
@@ -1122,6 +1154,7 @@ export async function openGardenAgentChat(
           selectedSlugs,
           prepared,
         ),
+        openWorkflowContext(chatSessionId, userId),
         quartzAssistantSelectionPromptContext(payload.selectedTextContext) ||
           quartzAssistantSelectionPromptContext(payload.selectedText),
       ]
@@ -1276,7 +1309,16 @@ export async function openGardenAgentChat(
           // Same enrollment as turn-service: without it a Garden turn whose
           // Hermes process was memory-killed mid-answer could only ever read
           // "interrupted", while the same turn in the Terminal resumed.
-          taskRecovery: {
+          ...(goalEnabled ? { goalMode: {
+            enabled: true,
+            automatic: false,
+            goalId: existingGoal?.status === "complete" ? null : existingGoal?.goal_id ?? null,
+            context: { activeGardenSlug: clusterSlug, activePageSlug: page?.slug, selectedDocumentIds: selectedSlugs },
+            superAgent,
+            personalize: payload.personalize !== false,
+            adhdMode: payload.adhdMode === true,
+            yoloMode,
+          } } : { taskRecovery: {
             request: text,
             rootClientMessageId: reservedClientMessageId,
             turn: 0,
@@ -1285,7 +1327,7 @@ export async function openGardenAgentChat(
             personalize: payload.personalize !== false,
             adhdMode: payload.adhdMode === true,
             yoloMode,
-          },
+          } }),
         },
       });
     } catch (error) {
@@ -1618,6 +1660,21 @@ function legacyGardenEventStream(
       const toolCalls: Array<Record<string, unknown>> = [];
       const uiResources: GenerativeUiResource[] = [];
       let tokenUsage: unknown;
+      function settleGoal(outcome: "completed" | "error", failureMessage?: string) {
+        const run = getRuntimeRun(runId);
+        if (!run || session.row.conversation_id === null) return;
+        const dispatch = parseRuntimeRunDispatch(run);
+        if (!dispatch.goalMode?.enabled || !dispatch.conversationPublicId) return;
+        try {
+          const goalId = dispatch.goalMode.goalId ?? readGoalModeState(dispatch.conversationPublicId)?.goal_id;
+          if (!goalId) return;
+          const state = accountGoalModeTurn({ conversationPublicId: dispatch.conversationPublicId,
+            goalId, runId, startedAt: run.started_at, outcome, failureMessage, tokensUsed: goalTokensForUsage(tokenUsage) });
+          if (state?.goal_id === goalId && goalCanContinue(state)) scheduleGoalContinuation(session.row.conversation_id, runId);
+        } catch {
+          recordAuditEvent({ eventType: "goal_mode.accounting_failed", runtimeSessionId: session.row.id, payload: { runId } });
+        }
+      }
       let lastArtifactEventId = 0;
       let lastAgentLaunchRequestId = 0;
       // A launch the agent asked for, on its way to the only thing that can
@@ -2135,6 +2192,7 @@ function legacyGardenEventStream(
         }
         markStatus(session, "idle");
         finishRuntimeRun(runId, "completed");
+        settleGoal("completed");
         // Same placement as the Terminal hook: after persistence, before the
         // decision is revoked. See lib/loopx/conversation-tick.ts.
         scheduleLoopxTickForConversation({
@@ -2163,6 +2221,7 @@ function legacyGardenEventStream(
         finishRuntimeRun(runId, "error");
         revokeCapabilityDecision(session.row.id, "abandoned");
         const failureMessage = explainFailure(error, "Agent stream failed.");
+        settleGoal("error", failureMessage);
         const verification = assessVerification("", evidence, { answerModel: null });
         emit({ type: "verification", verification });
         if (session.row.conversation_id !== null) {
