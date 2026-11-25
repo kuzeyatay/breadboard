@@ -127,6 +127,10 @@ function validateBindings(raw: unknown, issues: string[]): GadgetBinding[] {
       issues.push(`bindings[${index}].writable must be stated explicitly.`);
       continue;
     }
+    if (kind === "garden" && writable) {
+      issues.push("Garden bindings support reads only. Set writable to false.");
+      continue;
+    }
     seen.add(name);
     bindings.push({ name, kind: kind as GadgetBinding["kind"], purpose, writable });
   }

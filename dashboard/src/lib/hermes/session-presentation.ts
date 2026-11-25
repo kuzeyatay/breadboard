@@ -385,7 +385,7 @@ export function presentHermesSessionDetail(conversation: ConversationRow) {
         ? { attachmentNames: metadata.attachmentNames }
         : {}),
       ...(Array.isArray(metadata.attachments)
-        ? { attachments: metadata.attachments }
+        ? { attachments: transcriptAttachments(metadata.attachments) }
         : {}),
       ...(focusedDocumentNames.length ? { focusedDocumentNames } : {}),
       ...(focusedDocumentSlugs.length ? { focusedDocumentSlugs } : {}),
@@ -490,4 +490,19 @@ export function presentHermesSessionDetail(conversation: ConversationRow) {
   });
 
   return { ...base, messages };
+}
+
+/**
+ * PDF reader screenshots (the "Current PDF view" image each PDF Assistant turn
+ * sends) are hidden in the transcript and re-captured on every turn, so the
+ * stored copy is never shown or reused by the client. They are ~3 MB data
+ * URLs each; shipping them made one 112-message PDF chat a 134 MB load that
+ * stalled the dashboard. Uploaded images keep their data.
+ */
+function transcriptAttachments(attachments: unknown[]): unknown[] {
+  return attachments.filter((attachment) => {
+    if (!attachment || typeof attachment !== "object") return true;
+    const item = attachment as { type?: unknown; context?: unknown; dataUrl?: unknown };
+    return !(item.type === "image" && item.context === "pdf" && typeof item.dataUrl === "string");
+  });
 }

@@ -54,9 +54,11 @@ function serviceFixture(userId, outcome = { ok: true, message: "Prepared", detai
   return { service, calls, job, output, supervisor };
 }
 
-test("all 41 specialists remain in the eight real workflows with supported fixed setup recipes", () => {
-  assert.equal(AGENT_MANAGER_CATALOG.length, 41);
-  assert.equal(new Set(AGENT_MANAGER_CATALOG.map((item) => item.id)).size, 41);
+test("all 43 specialists remain in the eight real workflows with supported fixed setup recipes", () => {
+  // 43 since Claude Code (code) and PaperOrchestra (research) were registered
+  // in the unified workflow catalog; neither adds a setup action.
+  assert.equal(AGENT_MANAGER_CATALOG.length, 43);
+  assert.equal(new Set(AGENT_MANAGER_CATALOG.map((item) => item.id)).size, 43);
   assert.equal(AGENT_MANAGER_WORKFLOWS.length, 8);
   for (const agent of AGENT_MANAGER_CATALOG) {
     assert.ok(AGENT_MANAGER_WORKFLOWS.some((workflow) => workflow.id === agent.workflowId && workflow.agentIds.includes(agent.id)));

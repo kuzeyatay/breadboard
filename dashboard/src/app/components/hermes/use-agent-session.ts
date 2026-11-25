@@ -1,5 +1,7 @@
 "use client";
 
+import { notifyBotsChanged } from "@/lib/bots/client-cache";
+
 import { mergeProgressNote, mergeThinkingDetail } from "@/lib/hermes/stream-progress";
 import { handleGardenSourceImportResult } from "@/lib/hermes/garden-source-import-client";
 
@@ -2712,6 +2714,7 @@ export function useAgentSession(
               break;
             }
             case "tool.completed": {
+              if (payload.success && payload.toolName === "bot_manage") notifyBotsChanged();
               if (payload.success && payload.toolName === "garden_import_source") handleGardenSourceImportResult(payload.details);
               const id = String(payload.toolCallId);
               const toolName = String(payload.toolName);

@@ -33,11 +33,13 @@ test('the visible composer padding focuses the draft without stealing control or
       import PromptSuggestionOverlay from '@/app/components/prompt-suggestion-overlay';
       import {useSentenceCompletion} from '@/app/components/use-sentence-completion';
       import {composerSegments} from '@/lib/composer-links';
+      import {mentionQueryAt,splitMentions} from '@/lib/bots/mentions';
       import {splitLeadingCommandTokens} from '@/app/components/hermes/command-text';
       function App() {
         const [value,onChange] = useState(''), [compact,setCompact] = useState(false);
         const internalTextareaRef=useRef(null), commandBackdropRef=useRef(null), composerSurfaceRef=useRef(null);
         const assignTextareaRef=internalTextareaRef, slashCommandMenuRef=useRef(null), commandHubRef=useRef(null);
+        const botMentionMenuRef=useRef(null), setMentionQuery=()=>{};
         const pendingWorkflowPrompt=null, setPendingWorkflow=()=>{}, showSlashCommands=false;
         const menuSearch=null, setMenuSearch=()=>{}, closeMenuSearch=()=>{}, addMenuRef=useRef(null);
         const setSlashQuery=()=>{}, setShowSlashCommands=()=>{}, setShowCommandHub=()=>{}, slashQueryAt=()=>null;

@@ -35,6 +35,8 @@ import {
   writeGadgetStorage,
 } from "./gadget-store.ts";
 import { GENERATE_GADGET_SKILL } from "./gadget-skills.ts";
+import db from "../db.ts";
+import { issueCapabilityToken } from "./capability-token.ts";
 import type {
   GadgetBindingHandler,
   GadgetBindingKind,
@@ -541,7 +543,31 @@ const artifactBinding: GadgetBindingHandler = {
 
 // ---------------------------------------------------------------------------
 
+async function observeGarden(context: GadgetBindingContext, operation: string, tool: string, args: Record<string, unknown>) {
+  // The artifact pins the Garden. Recheck ownership on every observation,
+  // including when a saved gadget is reopened long after the creating turn.
+  const garden = db.prepare("SELECT id, slug, name FROM clusters WHERE id=? AND user_id=?")
+    .get(context.clusterId, context.userId) as { id: number; slug: string; name: string } | undefined;
+  if (!garden) throw new GadgetBindingError("garden_unavailable", "Open a gadget created in a Garden you own.");
+  const token = issueCapabilityToken({
+    userId: context.userId, conversationId: context.conversationId, surface: context.surface,
+    hermesSessionId: context.hermesSessionId, gardenId: garden.slug, activeGardenId: garden.id,
+    allowedGardenIds: [garden.id], allowedTools: [tool],
+  }, { ttlMs: 10_000 });
+  const { executeGardenTool } = await import("./garden-tools.ts");
+  const read = await executeGardenTool({ rawToken: token, tool, args: { ...args, gardenId: garden.slug } });
+  if (!read.ok) throw new GadgetBindingError("garden_read_failed", read.error ?? "Could not read this Garden.");
+  return { result: read.data, description: { title: `Read ${garden.name}`, description: `Read from the gadget's Garden, ${garden.name}.`, binding: context.binding.name, operation } };
+}
+
 const HANDLERS: Record<GadgetBindingKind, GadgetBindingHandler> = {
+  garden: {
+    kind: "garden", actions: {}, observations: {
+      list: ({ context }) => observeGarden(context, "list", "garden_list_files", {}),
+      search: ({ context, payload }) => observeGarden(context, "search", "garden_search", { query: requireString(payload, "query", 500) }),
+      read: ({ context, payload }) => observeGarden(context, "read", "garden_get_page", { slug: requireString(payload, "slug", 500) }),
+    },
+  },
   storage: storageBinding,
   artifact: artifactBinding,
   messaging: messagingBinding,

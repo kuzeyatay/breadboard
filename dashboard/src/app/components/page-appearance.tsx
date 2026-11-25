@@ -2,6 +2,7 @@
 
 import * as Dialog from "@radix-ui/react-dialog";
 import { Check, ImageOff, LoaderCircle, Music2, Palette, Pencil, Search, Shuffle, Trash2, Upload, X } from "lucide-react";
+import { loadingIconMotion } from "./loading-icon-motion";
 import { lazy, Suspense, useEffect, useId, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import { asciiWallpaperSlug } from "@/lib/ascii-wallpapers";
 import { prepareAsciiWallpaper } from "@/lib/ascii-magic-client";
@@ -379,7 +380,7 @@ function AppearanceChoices({ initialPage, ownerKey }: { initialPage: AppearanceP
         )}
         <div className={styles.uploadActions}>
           <button type="button" className={styles.upload} aria-label={uploadLabel} aria-describedby={uploadHintId} disabled={uploading} onClick={() => fileInputRef.current?.click()}>
-            {uploading ? <LoaderCircle size={18} className="is-spinning" aria-hidden="true" /> : <Upload size={18} aria-hidden="true" />}
+            {uploading ? <LoaderCircle {...loadingIconMotion} size={18} className="is-spinning" aria-hidden="true" /> : <Upload size={18} aria-hidden="true" />}
             <span>
               <strong>{uploadLabel}</strong>
               {!uploadedImage && <small>Choose a file or drop it here</small>}
@@ -467,7 +468,7 @@ function AppearanceChoices({ initialPage, ownerKey }: { initialPage: AppearanceP
           );
         }) : null}
         {source === "Human" && pixabayLoading ? (
-          <p className="browser-wallpaper-status"><LoaderCircle className="is-spinning" aria-hidden="true" />Finding photos…</p>
+          <p className="browser-wallpaper-status"><LoaderCircle {...loadingIconMotion} className="is-spinning" aria-hidden="true" />Finding photos…</p>
         ) : null}
         {source === "Human" && pixabayError ? (
           <p className="browser-wallpaper-status is-error">{pixabayError}</p>
@@ -512,7 +513,7 @@ function WallpaperThumbnail({ src, selected, loading, lazy = false }: { src: str
     {/* Small bundled previews load together; remote photos follow the scroll viewport. */}
     {/* eslint-disable-next-line @next/next/no-img-element */}
     <img ref={imageRef} src={src} alt="" loading={lazy ? "lazy" : "eager"} decoding="async" fetchPriority={lazy ? "auto" : "high"} onLoad={() => setStatus("ready")} onError={() => setStatus("error")} />
-    {loading || status === "loading" ? <span className={styles.imageStatus} role="status"><LoaderCircle className="is-spinning" size={18} aria-hidden="true" /><span className="sr-only">Loading image</span></span> : null}
+    {loading || status === "loading" ? <span className={styles.imageStatus} role="status"><LoaderCircle {...loadingIconMotion} className="is-spinning" size={18} aria-hidden="true" /><span className="sr-only">Loading image</span></span> : null}
     {!loading && status === "error" ? <span className={styles.imageStatus}>Select to retry</span> : null}
     {selected ? <span className="browser-wallpaper-check"><Check aria-hidden="true" /></span> : null}
   </span>;

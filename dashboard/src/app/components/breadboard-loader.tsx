@@ -4,6 +4,7 @@ import type { CSSProperties } from "react";
 import { ThinkingOrb as Orb, type OrbSize } from "thinking-orbs";
 
 import { useSurfaceTheme } from "@/app/components/effects/use-surface-theme";
+import { loadingIconMotion } from "./loading-icon-motion";
 import { inkRingPath } from "@/lib/speech/voice-conversation";
 
 interface BreadboardLoaderProps {
@@ -44,6 +45,7 @@ export default function BreadboardLoader({
   const theme = useSurfaceTheme();
   return (
     <span
+      {...loadingIconMotion}
       role={label ? "status" : undefined}
       aria-label={label}
       aria-hidden={label ? undefined : true}
@@ -85,6 +87,7 @@ export function BreadboardSketchLoader({
 }: BreadboardLoaderProps) {
   return (
     <svg
+      {...loadingIconMotion}
       role={label ? "status" : undefined}
       aria-label={label}
       aria-hidden={label ? undefined : true}

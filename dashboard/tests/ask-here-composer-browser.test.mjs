@@ -52,6 +52,9 @@ for (const {surface,pdfChat} of [
       const surface='dashboard_terminal',sessionId='conv_one',activeChatId=1,clusterSlug='fixture',temporaryChat=false;
       const model='selection-model';
       const conversationLocked=false,chatContentLoading=false,canAskSelection=true,sourceAnswer=undefined,webSelection=undefined;
+      // The popup's approval and question cards; none are open in this fixture.
+      const inlineRunActive=true,pendingPermission=null,pendingClarification=null,onPermissionDecision=()=>{},onClarificationAnswer=()=>{};
+      const agentActivity={pendingPermission:null,pendingClarification:null},stableTranscriptPermission=()=>{},stableTranscriptClarification=()=>{};
       const deletedInlineSelectionIds=new Set(),chatSelections=new Map();
       ${declarations.get('messageSelectionSourceId')}
       window.requests=[];window.inlineStops=[];window.mainStops=0;

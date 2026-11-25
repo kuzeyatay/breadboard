@@ -5,9 +5,13 @@ import type { BotDefinition } from "./types.ts";
 export const BOTS_CHANGED_EVENT = "breadboard:bots-changed";
 // Matches auth-client without pulling the authentication SDK into the roster.
 export const BOTS_AUTH_CHANGED_EVENT = "breadboard:auth-changed";
-// Short: Bread can create a bot mid-chat (bot_create), server-side; the panel
-// and @ picker show the cached roster at once and revalidate behind it.
-export const BOTS_CACHE_TTL_MS = 15_000;
+export const BOTS_CACHE_TTL_MS = 5 * 60_000;
+
+/** Notify the Bots panel and mention picker, including open sibling tabs. */
+export function notifyBotsChanged(): void {
+  window.dispatchEvent(new Event(BOTS_CHANGED_EVENT));
+  try { window.localStorage.setItem(BOTS_CHANGED_EVENT, crypto.randomUUID()); } catch { /* Same-tab delivery still works. */ }
+}
 
 let cached: { bots: BotDefinition[]; expiresAt: number } | null = null;
 let inFlight: Promise<BotDefinition[]> | null = null;
@@ -25,6 +29,9 @@ function listenForChanges(): void {
   listening = true;
   window.addEventListener(BOTS_CHANGED_EVENT, invalidateBotsCache);
   window.addEventListener(BOTS_AUTH_CHANGED_EVENT, invalidateBotsCache);
+  window.addEventListener("storage", event => {
+    if (event.key === BOTS_CHANGED_EVENT) window.dispatchEvent(new Event(BOTS_CHANGED_EVENT));
+  });
 }
 
 export function peekCachedBots(): BotDefinition[] | null {

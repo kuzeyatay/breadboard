@@ -6,6 +6,7 @@ import { readCircuitDocument } from "@/lib/netlist-viewer/project";
 import { blockSymbol, circuitNets, initialLayout, netColor, pinOffsets, type Placement, type Point, type Terminal } from "@/lib/netlist-viewer/layout";
 import NetlistSymbol from "./netlist-symbol";
 import ArtifactPreviewLoading from "./artifact-preview-loading";
+import { useLoadingTextReveal } from "../loading-text-reveal";
 import styles from "./artifact-netlist-viewer.module.css";
 
 type Props = { sourceUrl: string; filename: string };
@@ -63,6 +64,7 @@ export default function ArtifactNetlistViewer({ sourceUrl, filename }: Props) {
 
   const source = loaded?.url === sourceUrl ? loaded.source : undefined;
   const error = loaded?.url === sourceUrl ? loaded.error : undefined;
+  const sourceReveal = useLoadingTextReveal(source === undefined && !error);
   const content = useMemo(() => source === undefined ? null : readCircuitDocument(source, filename), [source, filename]);
   const parsed = content?.document;
   const project = content?.project;
@@ -163,8 +165,8 @@ export default function ArtifactNetlistViewer({ sourceUrl, filename }: Props) {
       {project && <button type="button" onClick={saveProject}>Save circuit project</button>}
     </div>
     {source === undefined && !error && <ArtifactPreviewLoading label="Loading circuit…" />}
-    {error && <p role="alert" className={styles.error}>{error} <button type="button" onClick={() => { setLoaded(undefined); setRetry((n) => n + 1); }}>Retry</button></p>}
-    {mode === "source" && source !== undefined && <pre className={styles.source} aria-label="SPICE source">{content?.netlist ?? source}</pre>}
+    {error && <p ref={sourceReveal} role="alert" className={styles.error}>{error} <button type="button" onClick={() => { setLoaded(undefined); setRetry((n) => n + 1); }}>Retry</button></p>}
+    {mode === "source" && source !== undefined && <pre ref={sourceReveal} className={styles.source} aria-label="SPICE source">{content?.netlist ?? source}</pre>}
     {mode === "circuit" && <>
       <div className={styles.toolbar}>
         <button type="button" onClick={() => zoom(0.75)} aria-label="Zoom in">+</button>

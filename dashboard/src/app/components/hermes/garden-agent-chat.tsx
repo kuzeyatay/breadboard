@@ -1,5 +1,7 @@
 "use client";
 
+import { useLoadingTextReveal } from "../loading-text-reveal";
+
 // Garden chat backed by the Hermes `breadboard-garden` agent.
 //
 // Scoped to a single garden: the agent can only use the curated garden_* tools
@@ -171,6 +173,7 @@ export default function GardenAgentChat({
   const [history, setHistory] = useState<RuntimeHistorySession[]>([]);
   const { unreadChats } = useUnreadChats();
   const [historyLoading, setHistoryLoading] = useState(true);
+  const historyReveal = useLoadingTextReveal(view === "recents" && historyLoading && history.length === 0);
   const [historyError, setHistoryError] = useState<string | null>(null);
   // Asked in the app's own sheet; `confirmDialog` is rendered at the foot of
   // the tray, and portals itself out of this fixed panel.
@@ -904,18 +907,18 @@ export default function GardenAgentChat({
             Recents
           </div>
           {historyError ? (
-            <p className="mb-2 px-1 text-[11px] text-[#a45f56]">
+            <p ref={historyReveal} className="mb-2 px-1 text-[11px] text-[#a45f56]">
               {historyError}
             </p>
           ) : null}
           {historyLoading && history.length === 0 ? (
             <ChatHistoryLoading />
           ) : history.length === 0 ? (
-            <p className="py-8 text-center text-xs text-gray-500">
+            <p ref={historyReveal} className="py-8 text-center text-xs text-gray-500">
               No chats in this garden yet.
             </p>
           ) : (
-            <ul className="space-y-0.5">
+            <ul ref={historyReveal} className="space-y-0.5">
               {history.map((item) => (
                 <li
                   key={item.id}

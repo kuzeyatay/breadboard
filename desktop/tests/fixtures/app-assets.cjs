@@ -5,6 +5,7 @@ const http = require('node:http');
 const {app, BrowserWindow, session} = require('electron');
 const {registerAppAssetScheme, installAppAssetTransport} = require('../../dist-tests/src/main/app-assets.js');
 const directory = process.argv.at(-1);
+const pixel = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGBgAAAABQABpfZFQAAAAABJRU5ErkJggg==','base64');
 app.setPath('userData', path.join(directory, 'profile'));
 registerAppAssetScheme();
 app.on('window-all-closed', () => {});
@@ -12,6 +13,7 @@ app.whenReady().then(async () => {
   const streams = [];
   let assetReads = 0; let leakedCookie = false; let previewReads = 0;
   let recoveryReads = 0;
+  const pdfModuleReads = new Map();
   const server = http.createServer((req, res) => {
     if (req.url.startsWith('/stream')) {
       res.writeHead(200, {'content-type':'text/event-stream'}); res.write(': open\n\n'); streams.push(res); return;
@@ -21,15 +23,30 @@ app.whenReady().then(async () => {
       if (req.headers.cookie !== 'test-session=private') { res.writeHead(401); res.end(); return; }
       res.setHeader('content-type', 'image/png');
       res.setHeader('cache-control', 'private, no-store');
-      res.end(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==','base64')); return;
+      res.end(pixel); return;
     }
     if (req.url === '/api/hermes/artifacts/art_text/preview') {
       res.setHeader('content-type','text/plain'); res.end('Existing text preview'); return;
     }
+    if (req.url === '/api/hermes/artifacts/art_pdf/preview') {
+      if (req.headers.cookie !== 'test-session=private' || req.headers.range !== 'bytes=3-5') {
+        res.writeHead(400); res.end(); return;
+      }
+      res.writeHead(206, {'content-type':'application/pdf','accept-ranges':'bytes','content-range':'bytes 3-5/12','content-length':3});
+      res.end('DEF'); return;
+    }
+    if (req.url === '/api/pdfjs/pdf.mjs' || req.url === '/api/pdfjs/pdf.worker.mjs') {
+      pdfModuleReads.set(req.url, (pdfModuleReads.get(req.url) || 0) + 1);
+      leakedCookie ||= Boolean(req.headers.cookie);
+      const filename = req.url.slice('/api/pdfjs/'.length).replace('.mjs', '.min.mjs');
+      res.writeHead(200, {'cache-control':'public, immutable','content-type':'text/javascript'});
+      fs.createReadStream(path.join(__dirname, '../../../dashboard/node_modules/pdfjs-dist/legacy/build', filename)).pipe(res);
+      return;
+    }
     if (req.url === '/logo.png') {
       leakedCookie ||= Boolean(req.headers.cookie);
       res.setHeader('content-type','image/png');
-      res.end(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==','base64'));return;
+      res.end(pixel);return;
     }
     if (req.url === '/_next/static/chunks/recover.js') {
       if (++recoveryReads < 3) { res.writeHead(503); res.end('runtime restarting'); return; }
@@ -86,6 +103,20 @@ app.whenReady().then(async () => {
   assert.deepEqual(preview,{width:1,pixel:[0,0,0,0]},'authenticated previews load and stay readable by the animation canvas');
   assert.equal(await window.webContents.executeJavaScript(`fetch('/api/hermes/artifacts/art_text/preview').then(r=>r.text())`),
     'Existing text preview','the artifact viewer still receives non-image previews');
+  const slice = await window.webContents.executeJavaScript(`(async()=>{
+    const response = await fetch('/api/hermes/artifacts/art_pdf/preview', {credentials:'include', headers:{Range:'bytes=3-5'}});
+    return [response.status, response.headers.get('accept-ranges'), response.headers.get('content-range'), await response.text()];
+  })()`);
+  assert.deepEqual(slice, [206, 'bytes', 'bytes 3-5/12', 'DEF']);
+  const readPdf = async contents => contents.executeJavaScript(`(async()=>{
+    const pdfjs = await import(location.origin + '/api/pdfjs/pdf.mjs');
+    const blob = URL.createObjectURL(new Blob(['await import(' + JSON.stringify(location.origin + '/api/pdfjs/pdf.worker.mjs') + ')'], {type:'text/javascript'}));
+    pdfjs.GlobalWorkerOptions.workerSrc = blob;
+    const task = pdfjs.getDocument({data: new TextEncoder().encode('%PDF-1.4\\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\\n2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\\n3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] >> endobj\\ntrailer << /Root 1 0 R >>\\n%%EOF')});
+    try { return (await task.promise).numPages; }
+    finally { await task.destroy(); URL.revokeObjectURL(blob); }
+  })()`);
+  assert.equal(await readPdf(window.webContents), 1, 'opens a PDF with all six app connections occupied');
   await target.cookies.remove(origin, 'test-session');
   const signedOutStatus = await window.webContents.executeJavaScript(`fetch('/api/hermes/artifacts/art_test/preview').then(r=>r.status)`);
   assert.equal(signedOutStatus,401,'an image from a previous authenticated request must not be cached');
@@ -94,8 +125,12 @@ app.whenReady().then(async () => {
   assert.equal(direct.status,404,'direct scheme requests cannot borrow the app session');
   assert.equal(previewReads,2,'a denied request never reaches the authenticated server');
   assert.ok(streams.every(res=>!res.writableEnded),'loading assets must not close live streams');
-  console.log(JSON.stringify({assetReadyMs:Date.now()-began,assetReads,streams:streams.length}));
   for(const response of streams) response.end();
+  await window.loadURL(origin + '/second-pdf');
+  assert.equal(await readPdf(window.webContents), 1);
+  assert.deepEqual([...pdfModuleReads.values()], [1, 1], 'a second document reuses both public PDF.js modules');
+  assert.equal(leakedCookie, false);
+  console.log(JSON.stringify({assetReadyMs:Date.now()-began,assetReads,streams:streams.length}));
   window.destroy(); server.closeAllConnections(); server.close();
   fs.writeFileSync(path.join(directory,'passed.json'),JSON.stringify({passed:true}));
 }).catch(error=>{console.error(error.stack||error);app.exit(1)});

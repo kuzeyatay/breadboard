@@ -1,6 +1,6 @@
 import { externalRuntimePath as path } from "@/lib/external-runtime-path";
 import { NextResponse } from "next/server";
-import { Readable } from "node:stream";
+import { fileContentResponse } from "@/lib/file-content-response";
 import {
   externalRuntimeFilesystem as fs,
   externalRuntimeStat,
@@ -17,7 +17,7 @@ import { sourcePdfFileName } from "@/lib/garden-source-display";
 import { normalizeDocumentSlug } from "@/lib/garden-document-path";
 import { publishQuartzAfterMutation } from "@/lib/quartz-publish";
 import { acquireGardenMutationLease } from "@/lib/garden-mutation-lease";
-import { resolveSourcePdfMarkdownPath } from "@/lib/source-pdf-garden";
+import { readSourceFrontmatter, resolveSourcePdfMarkdownPath } from "@/lib/source-pdf-garden";
 import { resolveGardenSourcePdfPath as resolveSourcePdfPath } from "@/lib/garden-source-pdf-path";
 import {
   requireOwnedClusterFromSlug,
@@ -27,7 +27,6 @@ import {
 
 export const dynamic = "force-dynamic";
 
-type Frontmatter = Record<string, string>;
 type AccessMode = "read" | "write";
 type SourcePdfContext = {
   gardenDir: string;
@@ -45,38 +44,12 @@ type SourcePdfContext = {
   userId: number;
 };
 type SourcePdfRecord = {
-  pdf_data: Buffer;
+  id: number;
   byte_length: number;
   updated_at: string;
 };
 
 const MAX_PDF_BYTES = 100 * 1024 * 1024;
-
-function parseYamlString(value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) return "";
-  try {
-    const parsed = JSON.parse(trimmed);
-    return typeof parsed === "string" ? parsed : "";
-  } catch {
-    return trimmed.replace(/^["']|["']$/g, "");
-  }
-}
-
-function parseFrontmatter(content: string): Frontmatter {
-  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
-  if (!match) return {};
-
-  const data: Frontmatter = {};
-  for (const line of (match[1] ?? "").split(/\r?\n/)) {
-    const index = line.indexOf(":");
-    if (index <= 0) continue;
-    const key = line.slice(0, index).trim();
-    const value = parseYamlString(line.slice(index + 1));
-    data[key] = value;
-  }
-  return data;
-}
 
 function safeClusterDir(
   contentPath: string,
@@ -146,9 +119,7 @@ async function getSourcePdfContext(
     return NextResponse.json({ error: "Document not found" }, { status: 404 });
   }
 
-  const frontmatter = parseFrontmatter(
-    fs.readFileSync(/* turbopackIgnore: true */ markdownPath, "utf-8"),
-  );
+  const frontmatter = readSourceFrontmatter(markdownPath);
   const sourcePdf = frontmatter.source_pdf ?? "";
   const originalPath = resolveSourcePdfPath(
     contentPath,
@@ -198,7 +169,7 @@ function latestSavedPdf(
 ): SourcePdfRecord | undefined {
   return db
     .prepare(
-      `SELECT pdf_data, byte_length, updated_at
+      `SELECT id, length(pdf_data) AS byte_length, updated_at
        FROM pdf_document_edits
        WHERE cluster_id = ? AND document_slug = ? AND source_pdf_path = ?`,
     )
@@ -239,9 +210,9 @@ function savedPdfResponse(
   context: SourcePdfContext,
   savedPdf: SourcePdfRecord,
 ): Response {
-  const bytes = Buffer.from(savedPdf.pdf_data);
+  const size = savedPdf.byte_length;
   const validator = documentValidator({
-    size: bytes.length,
+    size,
     modifiedAtMs: Date.parse(String(savedPdf.updated_at ?? "")) || 0,
     revision: "db",
   });
@@ -251,19 +222,26 @@ function savedPdfResponse(
     return notModified(headers);
   }
   const requested = rangeIsStillValid(request.headers.get("if-range"), validator)
-    ? parseRangeHeader(request.headers.get("range"), bytes.length)
+    ? parseRangeHeader(request.headers.get("range"), size)
     : ({ kind: "whole" } as const);
   if (requested.kind === "unsatisfiable") {
-    return unsatisfiableRange(headers, bytes.length);
+    return unsatisfiableRange(headers, size);
   }
   if (requested.kind === "range") {
     const { start, end } = requested.range;
-    headers.set("Content-Range", `bytes ${start}-${end}/${bytes.length}`);
-    headers.set("Content-Length", String(end - start + 1));
-    return new Response(bytes.subarray(start, end + 1), { status: 206, headers });
+    const length = end - start + 1;
+    headers.set("Content-Range", `bytes ${start}-${end}/${size}`);
+    headers.set("Content-Length", String(length));
+    const slice = request.method === "HEAD" ? null : db.prepare(
+      "SELECT substr(pdf_data, ?, ?) FROM pdf_document_edits WHERE id = ?",
+    ).pluck().get(start + 1, length, savedPdf.id) as Buffer<ArrayBuffer>;
+    return new Response(slice, { status: 206, headers });
   }
-  headers.set("Content-Length", String(bytes.length));
-  return new Response(bytes, { headers });
+  headers.set("Content-Length", String(size));
+  const body = request.method === "HEAD" ? null : db.prepare(
+    "SELECT pdf_data FROM pdf_document_edits WHERE id = ?",
+  ).pluck().get(savedPdf.id) as Buffer<ArrayBuffer>;
+  return new Response(body, { headers });
 }
 
 /** The stored document, streamed rather than read whole into memory. */
@@ -273,32 +251,7 @@ function storedPdfResponse(request: Request, context: SourcePdfContext): Respons
   const validator = documentValidator({ size, modifiedAtMs: stats.mtimeMs });
   const headers = pdfHeaders(context, validator);
   headers.set("X-PDF-Source", "file");
-  if (matchesValidator(request.headers.get("if-none-match"), validator)) {
-    return notModified(headers);
-  }
-  const requested = rangeIsStillValid(request.headers.get("if-range"), validator)
-    ? parseRangeHeader(request.headers.get("range"), size)
-    : ({ kind: "whole" } as const);
-  if (requested.kind === "unsatisfiable") return unsatisfiableRange(headers, size);
-
-  const range = requested.kind === "range"
-    ? requested.range
-    : { start: 0, end: Math.max(0, size - 1) };
-  if (requested.kind === "range") {
-    headers.set("Content-Range", `bytes ${range.start}-${range.end}/${size}`);
-  }
-  headers.set("Content-Length", String(size === 0 ? 0 : range.end - range.start + 1));
-  if (size === 0) return new Response(null, { headers });
-  const stream = Readable.toWeb(
-    fs.createReadStream(/* turbopackIgnore: true */ context.pdfPath, {
-      start: range.start,
-      end: range.end,
-    }),
-  ) as ReadableStream<Uint8Array>;
-  return new Response(stream, {
-    status: requested.kind === "range" ? 206 : 200,
-    headers,
-  });
+  return fileContentResponse(request, context.pdfPath, size, headers);
 }
 
 export async function GET(
@@ -309,15 +262,13 @@ export async function GET(
     const context = await getSourcePdfContext(request, params, "read");
     if (!isSourcePdfContext(context)) return context;
 
-    // An unsaved local edit is always the newer document (PDF-06): it is
-    // read from the database and served from memory. An untouched document
-    // is streamed off disk instead of being read whole into a Buffer, which
-    // is what used to block the server while a shelf of textbooks restored
-    // into tabs at startup (IO-03).
-    const savedPdf = latestSavedPdf(context);
-    return savedPdf
-      ? savedPdfResponse(request, context, savedPdf)
-      : storedPdfResponse(request, context);
+    // Keep the validator and the requested bytes in the same SQLite snapshot
+    // if another tab saves an edit while a reader is seeking.
+    const saved = db.transaction(() => {
+      const record = latestSavedPdf(context);
+      return record ? savedPdfResponse(request, context, record) : null;
+    })();
+    return saved ?? storedPdfResponse(request, context);
   } catch (error) {
     return routeErrorResponse(error);
   }

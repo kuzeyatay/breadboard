@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { ArtifactLoadingMark } from "./artifact-preview-loading";
+import { useLoadingTextReveal } from "../loading-text-reveal";
 import type { PresentedArtifact } from "@/lib/hermes/artifact-types";
 
 const AUTOSAVE_DELAY_MS = 1_200;
@@ -54,6 +56,7 @@ export default function ArtifactVvvebEditor({ artifact, onSaved }: Props) {
     phase: "loading",
     message: "Opening visual editor…",
   });
+  const statusReveal = useLoadingTextReveal(status.phase === "loading");
 
   useEffect(() => {
     onSavedRef.current = onSaved;
@@ -248,8 +251,9 @@ export default function ArtifactVvvebEditor({ artifact, onSaved }: Props) {
     <div className="flex h-full min-h-[42rem] flex-col overflow-hidden bg-[var(--paper-raised)]" data-vvveb-artifact-editor>
       <div className="flex min-h-9 items-center gap-3 border-b border-[var(--line)] bg-[var(--paper-strong)] px-4 py-2 text-xs">
         <span className="font-medium text-[var(--ink-heading)]">Visual HTML editor</span>
-        <span className={`ml-auto ${statusTone}`} role={status.phase === "error" ? "alert" : "status"}>
-          {status.message}
+        <span className={`ml-auto flex items-center gap-2 ${statusTone}`} role={status.phase === "error" ? "alert" : "status"}>
+          {status.phase === "loading" && <ArtifactLoadingMark size={16} />}
+          <span ref={statusReveal}>{status.message}</span>
         </span>
         {status.phase === "error" ? (
           <button

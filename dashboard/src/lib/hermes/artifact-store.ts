@@ -2302,18 +2302,19 @@ export function artifactFile(input: {
   purpose: "preview" | "download";
   database?: Database.Database;
   storageRoot?: string;
-}): { path: string; mimeType: string; filename: string } {
+}): { path: string; mimeType: string; filename: string; size: number } {
   const version = getArtifactVersion(input.artifact.id, input.version, input.database ?? db);
   const location = input.purpose === "preview" ? version.preview_location : version.output_location;
   if (!location) throw new ArtifactStoreError(404, "artifact_file_unavailable", "This artifact file is not available.");
   const file = resolveStoredPath(storageRoot(input.storageRoot), location);
-  if (!fs.existsSync(file) || !fs.statSync(file).isFile()) {
+  const stat = fs.statSync(file, { throwIfNoEntry: false });
+  if (!stat?.isFile()) {
     throw new ArtifactStoreError(404, "artifact_file_unavailable", "This artifact file is not available.");
   }
   const mimeType = input.purpose === "preview" && file.toLowerCase().endsWith(".html")
     ? "text/html; charset=utf-8"
     : version.mime_type;
-  return { path: file, mimeType, filename: input.artifact.filename };
+  return { path: file, mimeType, filename: input.artifact.filename, size: stat.size };
 }
 
 export function addArtifactProvenance(input: {

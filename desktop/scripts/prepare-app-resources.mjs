@@ -2251,6 +2251,13 @@ fs.writeFileSync(
 const runtimeV2DashboardScripts = path.join(stagingRoot, "dashboard", "scripts");
 fs.mkdirSync(runtimeV2DashboardScripts, { recursive: true });
 await stageApiAnything(stagingRoot, repoRoot);
+// Bundle the stdio host with the same SDK and embedded QuickJS engine as development.
+const dashboardRequire = createRequire(path.join(repoRoot, "dashboard", "package.json"));
+await dashboardRequire("esbuild").build({
+  entryPoints: [path.join(repoRoot, "dashboard/scripts/authored-mcp-server.cjs")],
+  outfile: path.join(runtimeV2DashboardScripts, "authored-mcp-server.cjs"),
+  bundle: true, platform: "node", format: "cjs", target: "node22",
+});
 for (const entry of [
   "api-anything-contract.mjs",
   "api-anything-client.mjs",

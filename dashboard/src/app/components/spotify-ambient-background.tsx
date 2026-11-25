@@ -2,16 +2,22 @@
 
 import { useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
 import { RANDOM_AMBIENT_PERIOD_MS } from "@/lib/random-ambient-palette";
+import { AMBIENT_LIGHTING_CHANGE, setAmbientLightPhase } from "@/lib/ambient-frame-governor";
+import { isAmbientTabPresented, subscribeDesktopTabs } from "@/lib/desktop-browser-tabs";
 import type { AppearanceTheme } from "@/lib/page-appearance";
 import { useSpotifyAmbientSource } from "./spotify-ambient-context";
 import { useRandomAmbientPalette } from "./use-random-ambient-palette";
 import styles from "./spotify-ambient-background.module.css";
 
 function subscribeVisibility(changed: () => void) {
+  const unsubscribe = subscribeDesktopTabs(changed);
   document.addEventListener("visibilitychange", changed);
-  return () => document.removeEventListener("visibilitychange", changed);
+  return () => {
+    unsubscribe();
+    document.removeEventListener("visibilitychange", changed);
+  };
 }
-const visible = () => document.visibilityState !== "hidden";
+const visible = () => document.visibilityState !== "hidden" && isAmbientTabPresented();
 const serverVisible = () => false;
 
 function subscribeMotion(changed: () => void) {
@@ -43,7 +49,11 @@ export default function SpotifyAmbientBackground({ theme, spotifyColors = true, 
   const randomActive = randomColors && !spotifyActive;
 
   useLayoutEffect(() => {
-    if ((!randomActive && !spotifyActive) || !pageVisible || reducedMotion) return;
+    if (!pageVisible || reducedMotion) return;
+    // The shell's visibility event can arrive before React commits data-playing.
+    // Wake the clock after that commit, including when resuming a paused light.
+    document.dispatchEvent(new Event(AMBIENT_LIGHTING_CHANGE));
+    if (!randomActive && !spotifyActive) return;
     let cancelled = false;
     for (const light of backgroundRef.current?.querySelectorAll<HTMLSpanElement>("span") ?? []) {
       const randomLayer = light.parentElement?.dataset.ambientLayer === "random";
@@ -58,6 +68,7 @@ export default function SpotifyAmbientBackground({ theme, spotifyColors = true, 
           const paletteAnimation = /palette/i.test((animation as CSSAnimation).animationName);
           const elapsed = !paletteAnimation ? now % (duration * 2)
             : randomLayer ? now % RANDOM_AMBIENT_PERIOD_MS : Math.max(0, now - (album?.paletteAt ?? now));
+          setAmbientLightPhase(animation, now, elapsed);
           if (animation.playState === "paused") {
             // Retain the inactive layer without starting invisible animation work.
             animation.currentTime = elapsed;

@@ -3,10 +3,11 @@ import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.
 import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import { dashboardDataDir } from "../runtime-paths.ts";
 import { addProxyMcpConnection, proxyMcpTools, setProxyMcpConnectionConnected } from "../agent-runtime/mcp-proxy.ts";
-import { mcpSlug, parseMcpConfig, runtimeMcpConfig, saveMcpConnection, setMcpConnectionEnabled } from "./mcp-connections.ts";
+import { listMcpConnections, mcpSlug, parseMcpConfig, runtimeMcpConfig, saveMcpConnection, setMcpConnectionEnabled } from "./mcp-connections.ts";
 import { ApiError } from "./route-core.ts";
 import { MCP_INSTALLER_CONNECTION } from "./mcp-installer-context.ts";
 import { resolveHostExecutable, withHostPath } from "../../../scripts/host-path.mjs";
+import { AUTHOR_MCP_TOOL, authorMcpServer } from "./authored-mcp.ts";
 
 /**
  * Built-in connection that lets a chat turn find an MCP server on GitHub and
@@ -19,6 +20,8 @@ const REPO = /^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/;
 const LAUNCHES = ["npx", "uvx", "clone", "remote"] as const;
 
 const TOOLS = [
+  AUTHOR_MCP_TOOL,
+  { name: "list_installed", description: "Look up saved MCP servers available to this chat by display name and exact connection slug.", inputSchema: { type: "object", properties: {} } },
   {
     name: "search",
     description: "Search GitHub for MCP server repositories matching a program, service or topic. Returns candidates ranked by stars.",
@@ -164,8 +167,26 @@ function which(name: string): string {
   // like the user's own shell: their registry PATH plus well-known install folders.
   const resolved = resolveHostExecutable(name);
   if (resolved) return resolved;
-  throw new ApiError(503, "mcp_launcher_missing", `${name} is not installed on this computer, so this MCP cannot be launched that way. Try another launch method or ask the user to install ${name}.`);
+  const hint = INSTALL_HINTS[name.replace(/\.(exe|cmd|bat)$/i, "").toLowerCase()];
+  throw new ApiError(503, "mcp_launcher_missing", `${name} is not installed on this computer, so this MCP cannot be launched that way. ` +
+    (hint ? `Install it with \`${hint}\` (no Breadboard restart needed), or try another launch method.` : `Try another launch method or ask the user to install ${name}.`));
 }
+
+// Like Codex's `doctor`, name the missing tool *and* the fix. The lookup above
+// re-reads the user's PATH, so a tool installed now is found on the next try.
+const INSTALL_HINTS: Record<string, string> = {
+  git: "winget install --id Git.Git -e",
+  uv: "winget install --id astral-sh.uv -e",
+  uvx: "winget install --id astral-sh.uv -e",
+  node: "winget install --id OpenJS.NodeJS.LTS -e",
+  npx: "winget install --id OpenJS.NodeJS.LTS -e",
+  npm: "winget install --id OpenJS.NodeJS.LTS -e",
+  python: "winget install --id Python.Python.3.12 -e",
+  python3: "winget install --id Python.Python.3.12 -e",
+  docker: "winget install --id Docker.DockerDesktop -e",
+  bun: "winget install --id Oven-sh.Bun -e",
+  deno: "winget install --id DenoLand.Deno -e",
+};
 
 /**
  * npm and npx as `node <npm>/bin/<name>-cli.js`. Their Windows .cmd shims break
@@ -365,19 +386,27 @@ async function install(userId: number, args: Record<string, unknown>, permission
 
 export async function callMcpInstaller(input: {
   userId: number;
+  selectedConnections?: string[];
   tool: string;
   args: Record<string, unknown>;
   permissionGranted: boolean;
   signal?: AbortSignal;
 }): Promise<{ data: unknown; installedSlug?: string }> {
   if (input.tool === "__breadboard_list_tools") return { data: { tools: TOOLS } };
+  if (input.tool === "list_installed") return { data: { connections: listMcpConnections(input.userId, true)
+    .filter(connection => input.selectedConnections?.includes(connection.slug))
+    .map(({ slug, displayName }) => ({ name: displayName, connection: slug })) } };
   if (input.tool === "search") return { data: await search(input.args, input.signal) };
   if (input.tool === "inspect") return { data: await inspect(input.args, input.signal) };
   if (input.tool === "find_app") return { data: await findApp(input.args, input.signal) };
   if (input.tool === "install_app") return { data: await installApp(input.args, input.permissionGranted, input.signal) };
+  if (input.tool === "author") {
+    const result = await authorMcpServer(input.userId, input.args, input.permissionGranted, input.signal);
+    return { data: result, installedSlug: result.connection };
+  }
   if (input.tool === "install") {
     const result = await install(input.userId, input.args, input.permissionGranted, input.signal);
     return { data: result, installedSlug: result.connection };
   }
-  throw new ApiError(403, "mcp_tool_denied", "The MCP installer offers find_app, install_app, search, inspect and install.");
+  throw new ApiError(403, "mcp_tool_denied", "The MCP installer offers author, find_app, install_app, search, inspect and install.");
 }

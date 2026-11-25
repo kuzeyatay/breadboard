@@ -1,7 +1,7 @@
 // Download one durable file named by the run's sealed Runtime projection. The
 // disposable worker and Gateway may both be gone by the time this route runs.
 
-import { Readable } from "node:stream";
+import { nodeStreamToWeb } from "@/lib/node-stream-to-web";
 import { NextResponse } from "next/server";
 import { externalRuntimeFilesystem as fs } from "@/lib/external-runtime-filesystem";
 import { requireUserId, RouteError } from "@/lib/server-auth";
@@ -18,7 +18,7 @@ export async function GET(
     const userId = await requireUserId();
     const { runId, artifactId } = await params;
     const artifact = await readRunArtifact(userId, runId, artifactId);
-    const body = Readable.toWeb(
+    const body = nodeStreamToWeb(
       fs.createReadStream(artifact.absolutePath, { highWaterMark: 1024 * 1024 }),
     ) as ReadableStream<Uint8Array>;
     return new Response(body, {

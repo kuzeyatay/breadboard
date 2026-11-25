@@ -19,6 +19,8 @@ import type { PresentedArtifact } from "@/lib/hermes/artifact-types";
 import { ARTIFACT_CATEGORIES, artifactCategory, type ArtifactCategory } from "@/lib/generated/artifact-reference";
 import styles from "./artifact-panel.module.css";
 import ArtifactCardContent from "./artifact-card-content";
+import { ArtifactLoadingMark } from "./artifact-preview-loading";
+import { useLoadingTextReveal } from "../loading-text-reveal";
 import AttachmentPreviewDialog from "@/app/components/attachment-preview-dialog";
 import { artifactVersionKey } from "./use-learn-artifacts";
 import { ChevronDown } from "lucide-react";
@@ -535,6 +537,7 @@ export default function ArtifactPanel({
     () => filterArtifactsForArchive(artifacts),
     [artifacts],
   );
+  const archiveReveal = useLoadingTextReveal(loading && archiveArtifacts.length === 0);
   useEffect(() => {
     if (hasLoadedArtifacts) onArchiveCountChange?.(new Set(archiveArtifacts.map((item) => item.id)).size);
   }, [archiveArtifacts, hasLoadedArtifacts, onArchiveCountChange]);
@@ -835,17 +838,19 @@ export default function ArtifactPanel({
         />
       ) : null}
 
-      {error ? <p className="m-3 rounded-md bg-red-50 p-2 text-xs text-red-700">{error}</p> : null}
+      {error ? <p ref={archiveReveal} className="m-3 rounded-md bg-red-50 p-2 text-xs text-red-700">{error}</p> : null}
 
       <div className={styles.list}>
         {loading && archiveArtifacts.length === 0 ? (
-          <p className="p-3 text-xs text-[var(--ink-muted)]">Loading…</p>
+          <p role="status" className="flex items-center gap-2 p-3 text-xs text-[var(--ink-muted)]">
+            <ArtifactLoadingMark size={16} /> Loading…
+          </p>
         ) : null}
         {archiveArtifacts.length === 0 && !loading ? (
-          <div className={styles.empty}><ArtifactFileIcon kind="document" /><strong>No artifacts yet.</strong><p>Documents, images, and web pages you create in chat will appear here.</p></div>
+          <div ref={archiveReveal} className={styles.empty}><ArtifactFileIcon kind="document" /><strong>No artifacts yet.</strong><p>Documents, images, and web pages you create in chat will appear here.</p></div>
         ) : null}
         {archiveArtifacts.length > 0 && filteredArtifacts.length === 0 && !loading ? (
-          <div className="px-3 py-8 text-center">
+          <div ref={archiveReveal} className="px-3 py-8 text-center">
             <p className="text-xs text-[var(--ink-muted)]">{searching ? `No artifacts match “${searchQuery.trim()}”.` : `No ${category.toLowerCase()} artifacts yet.`}</p>
             <button
               type="button"
@@ -895,6 +900,7 @@ export default function ArtifactPanel({
           return (
             <div
               key={artifactId}
+              ref={archiveReveal}
               className={`bb-neu-artifact-card ${styles.row}`}
               data-open={openId === artifactVersionKey(artifact) || attached || undefined}
               style={{
@@ -1039,10 +1045,7 @@ export default function ArtifactPanel({
                         aria-expanded={openColorPaletteId === artifactVersionKey(artifact)}
                       >
                         {attaching ? (
-                          <span
-                            aria-hidden="true"
-                            className="h-2.5 w-2.5 animate-spin rounded-full border border-current border-r-transparent"
-                          />
+                          <ArtifactLoadingMark size={12} />
                         ) : (
                           <span
                             className="h-3 w-3 rounded-sm border border-[var(--line-strong)]"

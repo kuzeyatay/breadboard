@@ -1,16 +1,11 @@
 'use client';
 
-// The goal card that sits on top of the composer whenever this conversation is
-// under a goal.
-//
-// A goal outlives the turn that created it, which is exactly what makes it easy
-// to forget one is running. The card is the standing reminder: the objective,
-// how long it has been open, and the three things only the person may do about
-// it — abandon it, hold it, or push it forward. The model's one lever,
-// completion, is deliberately not here; it has to be earned through the audited
-// tool.
+// The composer keeps the conversation's objective, status and controls visible
+// across turns. Usage comes from the server's per-run accounting.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { CirclePause, CircleAlert, Gauge, Play } from 'lucide-react';
+import { formatTokenCount } from '@/lib/chat-token-usage';
 import { GOAL_TURN_EVENT, type GoalTurnSnapshot } from '@/lib/goal-turn-activity';
 
 export type GoalCardStatus =
@@ -25,6 +20,7 @@ export interface GoalCardState {
   goalId: string;
   objective: string;
   status: GoalCardStatus;
+  statusReason?: string;
   turnBudget: number | null;
   tokenBudget: number | null;
   continuationDeferred: boolean;
@@ -75,19 +71,17 @@ function statusLabel(status: GoalCardStatus): string {
   return 'Pursuing goal';
 }
 
-/**
- * Complete is the only state that earns the accent. An active goal remains a
- * pursuit between turns, so it reads in ordinary ink while the play or pause
- * button says whether work is in flight right now.
- */
 function statusTone(status: GoalCardStatus): string {
   if (status === 'complete') return 'text-[var(--botanical)]';
   if (status === 'paused') return 'text-[var(--ink-muted)]';
-  if (status === 'budget_limited') return 'text-[var(--danger)]';
+  if (status === 'budget_limited' || status === 'blocked' || status === 'usage_limited') return 'text-[var(--danger)]';
   return 'text-[var(--ink)]';
 }
 
 function GoalIcon({ status }: { status: GoalCardStatus }) {
+  if (status === 'paused') return <CirclePause className="h-4 w-4" strokeWidth={1.8} />;
+  if (status === 'blocked') return <CircleAlert className="h-4 w-4" strokeWidth={1.8} />;
+  if (status === 'budget_limited' || status === 'usage_limited') return <Gauge className="h-4 w-4" strokeWidth={1.8} />;
   if (status === 'complete') {
     return (
       <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
@@ -125,8 +119,11 @@ export default function GoalCard({
   const [confirmingAbandon, setConfirmingAbandon] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [now, setNow] = useState(() => Date.now());
+  const [liveSeconds, setLiveSeconds] = useState(0);
   const [budgetDraft, setBudgetDraft] = useState('');
+  // null while reading; the draft text while the person is rewording the goal.
+  const [objectiveDraft, setObjectiveDraft] = useState<string | null>(null);
+  const objectiveInput = useRef<HTMLTextAreaElement | null>(null);
   const endpoint = `/api/hermes/sessions/${encodeURIComponent(String(sessionId))}/goal`;
   // Read inside the callbacks rather than in their dependency lists: the
   // endpoint is derived from a prop that changes only when the conversation
@@ -186,27 +183,26 @@ export default function GoalCard({
 
   // A goal that is not moving does not need a ticking clock, and a complete one
   // has stopped counting for good.
-  const ticking = goal !== null && goal.status === 'active';
+  const ticking = running && goal?.status === 'active' && goal.tokenBudget == null;
   useEffect(() => {
+    setLiveSeconds(0);
     if (!ticking) return;
-    setNow(Date.now());
-    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    const observedAt = Date.now();
+    const timer = window.setInterval(() => setLiveSeconds(Math.floor((Date.now() - observedAt) / 1_000)), 1_000);
     return () => window.clearInterval(timer);
-  }, [ticking]);
+  }, [ticking, goal?.goalId, goal?.timeUsedSeconds]);
 
   const send = useCallback(
     async (init: RequestInit, optimistic?: (current: GoalCardState | null) => GoalCardState | null) => {
+      if (mutating.current) return;
       const target = endpointRef.current;
       const version = ++requestVersion.current;
       mutating.current = true;
       // Pause and Abandon show at once; the server's answer then confirms or
       // rolls back. Waiting on the round trip read as a Stop that did nothing.
-      let before: GoalCardState | null = null;
-      if (optimistic) {
-        setGoal((current) => { before = current; return optimistic(current); });
-      } else {
-        setBusy(true);
-      }
+      const before = goal;
+      setBusy(true);
+      if (optimistic) setGoal(optimistic(before));
       try {
         const response = await fetch(target, init);
         if (!response.ok) throw new Error('goal_update_failed');
@@ -225,21 +221,14 @@ export default function GoalCard({
         setBusy(false);
       }
     },
-    [],
+    [goal],
   );
 
   if (!goal) return null;
 
   const label = statusLabel(goal.status);
   const tone = statusTone(goal.status);
-  const createdAt = Date.parse(goal.createdAt);
-  const updatedAt = Date.parse(goal.updatedAt);
-  // Wall-clock since the goal was set, which is what someone means by "how long
-  // has this been open". It freezes once the goal stops moving, so a paused
-  // goal does not quietly accumulate hours nobody worked.
-  const elapsedSeconds = Number.isFinite(createdAt)
-    ? ((ticking ? now : Number.isFinite(updatedAt) ? updatedAt : now) - createdAt) / 1_000
-    : goal.timeUsedSeconds;
+  const elapsedSeconds = goal.timeUsedSeconds + (ticking ? liveSeconds : 0);
 
   const patch = (body: Record<string, unknown>) =>
     void send({
@@ -248,30 +237,56 @@ export default function GoalCard({
       body: JSON.stringify(body),
     }, body.status === 'paused'
       ? (current) => (current ? { ...current, status: 'paused' } : current)
-      : undefined);
+      : typeof body.objective === 'string'
+        ? (current) => (current ? { ...current, objective: (body.objective as string).trim() } : current)
+        : undefined);
+
+  const startEditingObjective = () => {
+    if (busy) return;
+    setObjectiveDraft(goal.objective);
+    window.requestAnimationFrame(() => {
+      const input = objectiveInput.current;
+      if (!input) return;
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    });
+  };
+
+  const saveObjective = () => {
+    if (objectiveDraft === null) return;
+    const next = objectiveDraft.trim();
+    if (!next) {
+      setError('A goal needs an objective. Abandon it instead to drop it.');
+      return;
+    }
+    if (next.length > 4_000) {
+      setError('A goal objective must be at most 4000 characters.');
+      return;
+    }
+    setObjectiveDraft(null);
+    if (next === goal.objective) return;
+    patch({ objective: next });
+  };
 
   const turnBudget = goal.turnBudget;
   const tokenBudget = goal.tokenBudget ?? null;
+  const resumable = goal.status === 'paused' || goal.status === 'blocked' || goal.status === 'usage_limited';
+  const usage = tokenBudget === null ? formatElapsed(elapsedSeconds)
+    : goal.status === 'complete' ? `${formatTokenCount(goal.tokensUsed)} tokens`
+    : `${formatTokenCount(goal.tokensUsed)} / ${formatTokenCount(tokenBudget)} tokens`;
   const primaryAction =
     goal.status === 'complete'
       ? null
-      : goal.status === 'paused' || goal.status === 'blocked' || goal.status === 'usage_limited'
+      : resumable
         ? { kind: 'resume' as const, label: 'Resume this goal' }
         : goal.status === 'budget_limited'
           ? { kind: 'budget' as const, label: 'Increase the goal budget' }
-          : running
-            ? { kind: 'pause' as const, label: 'Pause this goal' }
-            : { kind: 'continue' as const, label: 'Keep working on this goal' };
-
-  const primaryDisabled =
-    busy ||
-    (primaryAction?.kind === 'continue' && (!onContinue || continueBlocked));
+          : { kind: 'pause' as const, label: 'Pause this goal' };
 
   const runPrimary = () => {
     if (!primaryAction) return;
     if (primaryAction.kind === 'resume') patch({ status: 'active' });
     else if (primaryAction.kind === 'pause') patch({ status: 'paused' });
-    else if (primaryAction.kind === 'continue') onContinue?.();
     else {
       setExpanded(true);
       setBudgetDraft(tokenBudget === null ? '' : String(tokenBudget));
@@ -279,6 +294,7 @@ export default function GoalCard({
   };
 
   const toggleDetails = () => {
+    setObjectiveDraft(null);
     setExpanded((open) => {
       if (!open) setBudgetDraft(tokenBudget === null ? '' : String(tokenBudget));
       return !open;
@@ -288,19 +304,27 @@ export default function GoalCard({
   return (
     <div className="mb-2 border-b border-[var(--line)]" data-goal-card>
         <div className="flex min-h-9 items-center gap-1.5 px-2">
-          <span className={`shrink-0 ${tone}`}>
+          <span className={`shrink-0 ${tone}`} aria-hidden="true">
             <GoalIcon status={goal.status} />
           </span>
-          <span className={`shrink-0 text-xs font-medium ${tone}`}>{label}</span>
-          <span
-            className="min-w-0 flex-1 truncate text-xs text-[var(--ink-muted)]"
-            title={goal.objective}
+          <span role="status" className={`shrink-0 text-xs font-medium ${tone}`}>{label}</span>
+          <button
+            type="button"
+            className="min-w-0 flex-1 cursor-text truncate rounded-md text-left text-xs text-[var(--ink-muted)] hover:text-[var(--ink)] focus-visible:outline-2 focus-visible:outline-[var(--botanical)]"
+            title="Click to edit the goal"
+            onClick={() => {
+              if (!expanded) {
+                setExpanded(true);
+                setBudgetDraft(tokenBudget === null ? '' : String(tokenBudget));
+              }
+              startEditingObjective();
+            }}
           >
             {goal.objective}
-          </span>
-          <span className="shrink-0 tabular-nums text-[11px] text-[var(--ink-muted)]">
-            {formatElapsed(elapsedSeconds)}
-          </span>
+          </button>
+          {!resumable && (
+            <span className="shrink-0 tabular-nums text-[11px] text-[var(--ink-muted)]">{usage}</span>
+          )}
           <button
             type="button"
             className={ICON_BUTTON}
@@ -316,15 +340,11 @@ export default function GoalCard({
           {primaryAction ? (
             <button
               type="button"
-              className={ICON_BUTTON}
+              className={primaryAction.kind === 'resume' ? ICON_BUTTON + ' w-auto gap-1 px-1.5 text-xs' : ICON_BUTTON}
               onClick={runPrimary}
-              disabled={primaryDisabled}
+              disabled={busy}
               aria-label={primaryAction.label}
-              title={
-                primaryAction.kind === 'continue' && continueBlocked
-                  ? 'Send or clear your draft first'
-                  : primaryAction.label
-              }
+              title={primaryAction.label}
             >
               {primaryAction.kind === 'pause' ? (
                 <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -339,6 +359,14 @@ export default function GoalCard({
                   <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.348a1.125 1.125 0 0 1 0 1.971l-11.54 6.347a1.125 1.125 0 0 1-1.667-.985V5.653Z" />
                 </svg>
               )}
+              {primaryAction.kind === 'resume' ? 'Resume' : null}
+            </button>
+          ) : null}
+          {goal.status === 'active' && !running && onContinue ? (
+            <button type="button" className={ICON_BUTTON} onClick={onContinue}
+              disabled={busy || continueBlocked} aria-label="Keep working on this goal"
+              title={continueBlocked ? 'Send or clear your draft first' : 'Keep working on this goal'}>
+              <Play className="h-3.5 w-3.5" strokeWidth={1.8} aria-hidden />
             </button>
           ) : null}
           <button
@@ -387,9 +415,74 @@ export default function GoalCard({
 
         {expanded ? (
           <div className="space-y-1.5 border-t border-[var(--line)] px-2 py-2">
-            <p className="whitespace-pre-wrap text-xs leading-relaxed text-[var(--ink)]">
-              {goal.objective}
-            </p>
+            {goal.status === 'blocked' || goal.status === 'usage_limited' ? (
+              <p className="break-words text-xs text-[var(--ink-muted)]">
+                {goal.statusReason || (goal.status === 'blocked'
+                  ? 'Resume after the blocker is resolved.'
+                  : 'Resume when your provider usage is available again.')}
+              </p>
+            ) : null}
+            {objectiveDraft === null ? (
+              <button
+                type="button"
+                className="-mx-1 block w-[calc(100%+0.5rem)] cursor-text whitespace-pre-wrap rounded-md px-1 py-0.5 text-left text-xs leading-relaxed text-[var(--ink)] transition-[background-color] duration-150 ease-out hover:bg-[var(--paper-strong)] focus-visible:outline-2 focus-visible:outline-[var(--botanical)] disabled:cursor-not-allowed"
+                onClick={startEditingObjective}
+                disabled={busy}
+                title="Click to edit the goal"
+                aria-label="Edit the goal objective"
+              >
+                {goal.objective}
+              </button>
+            ) : (
+              <form
+                className="space-y-1.5"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  saveObjective();
+                }}
+              >
+                <textarea
+                  ref={objectiveInput}
+                  value={objectiveDraft}
+                  onChange={(event) => setObjectiveDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Escape') {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      setObjectiveDraft(null);
+                    } else if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+                      event.preventDefault();
+                      saveObjective();
+                    }
+                  }}
+                  rows={Math.min(8, Math.max(2, objectiveDraft.split('\n').length))}
+                  maxLength={4_000}
+                  aria-label="Goal objective"
+                  className="block w-full resize-y rounded-md border border-[var(--line)] bg-transparent px-2 py-1 text-xs leading-relaxed text-[var(--ink)] focus-visible:outline-2 focus-visible:outline-[var(--botanical)]"
+                />
+                <div className="flex items-center gap-2 text-[11px] text-[var(--ink-muted)]">
+                  <span className="min-w-0 flex-1">
+                    {goal.status === 'active'
+                      ? 'Enter to save. The running turn is redirected to the new goal.'
+                      : 'Enter to save, Shift+Enter for a new line.'}
+                  </span>
+                  <button
+                    type="button"
+                    className="rounded-md px-2 py-1 transition-[color,background-color,transform] duration-150 ease-out hover:bg-[var(--paper-strong)] active:scale-[0.97]"
+                    onClick={() => setObjectiveDraft(null)}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className="rounded-md px-2 py-1 font-medium text-[var(--ink)] transition-[color,background-color,transform] duration-150 ease-out hover:bg-[var(--paper-strong)] active:scale-[0.97] disabled:opacity-40"
+                    disabled={busy || !objectiveDraft.trim()}
+                  >
+                    Save
+                  </button>
+                </div>
+              </form>
+            )}
             <dl className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-[var(--ink-muted)]">
               <div className="flex gap-1"><dt>Tokens</dt><dd>{goal.tokensUsed}{tokenBudget === null ? ' (unlimited)' : ` of ${tokenBudget}`}</dd></div>
               <div className="flex gap-1">
@@ -420,14 +513,11 @@ export default function GoalCard({
                   event.preventDefault();
                   const trimmed = budgetDraft.trim();
                   const parsed = trimmed === '' ? null : Number(trimmed);
-                  if (parsed !== null && (!Number.isInteger(parsed) || parsed <= 0)) {
+                  if (parsed !== null && (!Number.isSafeInteger(parsed) || parsed <= 0)) {
                     setError('A token budget is a positive whole number, or blank for unlimited.');
                     return;
                   }
-                  // Lifting a ceiling is only ever asked for by someone who
-                  // wants the work to carry on, so the goal comes off the
-                  // budget stop in the same request.
-                  patch({ tokenBudget: parsed, ...(turnBudget !== null ? { turnBudget: null } : {}), status: 'active' });
+                  patch({ tokenBudget: parsed, ...(turnBudget != null ? { turnBudget: null } : {}) });
                 }}
               >
                 <label htmlFor={`goal-budget-${goal.goalId}`}>Token budget</label>

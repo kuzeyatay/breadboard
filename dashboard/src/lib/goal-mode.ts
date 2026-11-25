@@ -12,7 +12,7 @@ import crypto from "node:crypto";
 import { externalRuntimePath as path } from "./external-runtime-path.ts";
 import { externalRuntimeFilesystem as fs } from "./external-runtime-filesystem.ts";
 import { dashboardDataDir } from "./runtime-paths.ts";
-import { GOAL_CONTINUATION_PROMPT, GOAL_BUDGET_PROMPT } from "./goal-prompts.ts";
+import { GOAL_CONTINUATION_PROMPT, GOAL_BUDGET_PROMPT, GOAL_OBJECTIVE_UPDATED_PROMPT } from "./goal-prompts.ts";
 import { normalizeChatTokenUsage } from "./chat-token-usage.ts";
 import { taskFailureCanRecover, recoveryFingerprint } from "./hermes/task-recovery-policy.ts";
 
@@ -46,6 +46,8 @@ export interface GoalModeState {
   continuation_deferred: boolean;
   runtime_failures?: number;
   runtime_failure_fingerprint?: string;
+  /** A short explanation from the turn that stopped this goal. */
+  status_reason?: string;
   /** Cumulative per-run receipts make streaming and final accounting idempotent. */
   accounting: Record<string, { tokens: number; seconds: number; ended: boolean }>;
   turns_used: number;
@@ -136,6 +138,7 @@ function parseState(value: unknown): GoalModeState | null {
       ? { runtime_failures: asNonNegativeInteger(state.runtime_failures) ?? 0 } : {}),
     ...(typeof state.runtime_failure_fingerprint === "string"
       ? { runtime_failure_fingerprint: state.runtime_failure_fingerprint } : {}),
+    ...(typeof state.status_reason === "string" ? { status_reason: state.status_reason } : {}),
     accounting: state.accounting && typeof state.accounting === "object"
       ? state.accounting as GoalModeState["accounting"] : {},
     turns_used: turnsUsed,
@@ -308,7 +311,8 @@ export function setGoalModeStatus(input: {
   if (!state) return null;
   // A finished goal is history. Resuming one would silently reopen work the
   // completion audit already signed off on; starting again requires a new goal.
-  if (state.status === "complete") return state;
+  if (state.status === "complete" || (input.status === "paused" && state.status !== "active")) return state;
+  if (input.status === "active" && state.status === "active" && !state.continuation_deferred) return state;
   const next: GoalModeState = {
     ...state,
     status:
@@ -324,6 +328,7 @@ export function setGoalModeStatus(input: {
     updated_at: nowIso(input.now),
   };
   delete next.runtime_failure_fingerprint;
+  delete next.status_reason;
   writeRaw(paths, next);
   return next;
 }
@@ -362,6 +367,54 @@ export function extendGoalModeBudget(input: {
   };
   writeRaw(paths, next);
   return next;
+}
+
+/**
+ * Reword the goal in place, as Codex's goal editor does (`thread/goal/set` on
+ * the existing goal): the goal id, its usage and its start time all survive,
+ * so an edit is a correction to the same pursuit rather than a fresh one.
+ * Paused, blocked and usage-limited goals keep their stop; a budget-limited or
+ * complete goal is put back in motion, and the budget check then decides
+ * whether that motion can actually happen.
+ */
+export function editGoalModeObjective(input: {
+  conversationPublicId: string;
+  objective: string;
+  env?: NodeJS.ProcessEnv;
+  now?: Date;
+}): { state: GoalModeState; objectiveChanged: boolean } | null {
+  const paths = goalModePaths(input.conversationPublicId, input.env);
+  const state = readRaw(paths);
+  if (!state) return null;
+  const objective = cleanObjective(input.objective);
+  const requested: GoalModeStatus =
+    state.status === "budget_limited" || state.status === "complete" ? "active" : state.status;
+  const status = statusAfterBudgetLimit(
+    requested, state.turns_used, state.turn_budget, state.tokens_used, state.token_budget,
+  );
+  const reopened = status === "active" && state.status !== "active";
+  const next: GoalModeState = {
+    ...state,
+    objective,
+    status,
+    // A new objective is new evidence: the no-tool deferral and the failure
+    // streak were both judgements about the old wording.
+    continuation_deferred: status === "active" ? false : state.continuation_deferred,
+    ...(reopened || objective !== state.objective ? { runtime_failures: 0 } : {}),
+    updated_at: nowIso(input.now),
+  };
+  if (reopened || objective !== state.objective) delete next.runtime_failure_fingerprint;
+  writeRaw(paths, next);
+  return { state: next, objectiveChanged: objective !== state.objective };
+}
+
+/** The hidden note Codex steers into a running turn after the person edits the objective. */
+export function goalObjectiveUpdatedPrompt(state: GoalModeState): string {
+  return GOAL_OBJECTIVE_UPDATED_PROMPT
+    .replaceAll("{{ objective }}", state.objective.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;"))
+    .replaceAll("{{ tokens_used }}", String(state.tokens_used))
+    .replaceAll("{{ token_budget }}", state.token_budget === null ? "none" : String(state.token_budget))
+    .replaceAll("{{ remaining_tokens }}", state.token_budget === null ? "unbounded" : String(Math.max(0, state.token_budget - state.tokens_used)));
 }
 
 /**
@@ -410,7 +463,10 @@ export function accountGoalModeTurn(input: {
   if (previous.ended) return state;
   const turnsUsed = state.turns_used + (ended ? 1 : 0);
   const tokensUsed = state.tokens_used + tokens - previous.tokens;
-  const recoverableFailure = input.outcome === "error" && taskFailureCanRecover({ code: input.failureCode, message: input.failureMessage });
+  const failureText = `${input.failureCode ?? ""} ${input.failureMessage ?? ""}`.replaceAll("_", " ");
+  const usageLimited = input.outcome === "usage_limited" || (input.outcome === "error" &&
+    /\b(?:usage[ -]?limits?|rate[ -]?limit(?:ed|s)?|quota exceeded|insufficient (?:quota|credits)|http\s*429)\b/i.test(failureText));
+  const recoverableFailure = input.outcome === "error" && !usageLimited && taskFailureCanRecover({ code: input.failureCode, message: input.failureMessage });
   const fingerprint = recoverableFailure ? recoveryFingerprint([input.failureCode, input.failureMessage]) : undefined;
   const runtimeFailures = ended ? (recoverableFailure
     ? (state.runtime_failure_fingerprint === fingerprint ? (state.runtime_failures ?? 0) + 1 : 1)
@@ -419,7 +475,7 @@ export function accountGoalModeTurn(input: {
   if (status === "active" && ended) {
     if (input.outcome === "cancelled") status = "paused";
     if (input.outcome === "error" && (!recoverableFailure || runtimeFailures >= 3)) status = "blocked";
-    if (input.outcome === "usage_limited") status = "usage_limited";
+    if (usageLimited) status = "usage_limited";
   }
   const next: GoalModeState = {
     ...state,
@@ -432,6 +488,10 @@ export function accountGoalModeTurn(input: {
     status,
     updated_at: nowIso(input.now),
   };
+  if (state.status === "active" && (status === "blocked" || status === "usage_limited")) {
+    const reason = input.failureMessage?.trim().slice(0, 400);
+    if (reason) next.status_reason = reason;
+  }
   if (next.runtime_failure_fingerprint === undefined) delete next.runtime_failure_fingerprint;
   writeRaw(paths, next);
   return next;
@@ -454,6 +514,7 @@ export function goalModeToolResponse(
     goal: {
       objective: state.objective,
       status: state.status,
+      ...(state.status_reason ? { statusReason: state.status_reason } : {}),
       turnBudget: state.turn_budget,
       tokenBudget: state.token_budget,
       remainingTokens: state.token_budget === null ? null : Math.max(0, state.token_budget - state.tokens_used),
@@ -483,6 +544,7 @@ export function callGoalModeTool(input: {
   conversationPublicId: string;
   tool: string;
   args: Record<string, unknown>;
+  expectedGoalId?: string | null;
   env?: NodeJS.ProcessEnv;
   now?: Date;
 }): GoalModeToolResult {
@@ -531,9 +593,18 @@ export function callGoalModeTool(input: {
       };
     }
     if (!existing) return { isError: true, text: "cannot update goal: no goal exists" };
+    if (input.expectedGoalId && existing.goal_id !== input.expectedGoalId) {
+      return { isError: true, text: "This turn belongs to a previous goal." };
+    }
+    if (existing.status === input.args.status) return goalModeToolResponse(existing, true);
+    if (existing.status !== "active" && !(existing.status === "budget_limited" && input.args.status === "complete")) {
+      return { isError: true, text: `The goal is ${existing.status}. Its status has been preserved.` };
+    }
     const next: GoalModeState = {
       ...existing,
       status: input.args.status,
+      ...(input.args.status === "blocked" && typeof input.args.reason === "string" && input.args.reason.trim()
+        ? { status_reason: input.args.reason.trim().slice(0, 400) } : {}),
       updated_at: nowIso(input.now),
     };
     writeRaw(goalModePaths(input.conversationPublicId, env), next);
@@ -551,6 +622,7 @@ export function presentGoalModeState(state: GoalModeState): {
   goalId: string;
   objective: string;
   status: GoalModeStatus;
+  statusReason?: string;
   turnBudget: number | null;
   tokenBudget: number | null;
   remainingTokens: number | null;
@@ -566,6 +638,7 @@ export function presentGoalModeState(state: GoalModeState): {
     goalId: state.goal_id,
     objective: state.objective,
     status: state.status,
+    ...(state.status_reason ? { statusReason: state.status_reason } : {}),
     turnBudget: state.turn_budget,
     tokenBudget: state.token_budget,
     remainingTokens: state.token_budget === null ? null : Math.max(0, state.token_budget - state.tokens_used),
@@ -628,7 +701,7 @@ export function goalModeSection(
     "This Breadboard conversation has a persistent goal. Automatic continuation follows the Codex goal lifecycle; the objective can concern any task.",
     `Current status: ${state.status}.`,
     "For an unfinished goal, do not call create_goal. The person can pause, resume or abandon it from the goal card and controls its budget.",
-    `Use mcp_call with connection="goal" and tool=get_goal to inspect it. Use tool=update_goal with status="complete" only after the completion audit, or status="blocked" only after the blocked audit below.`,
+    `Use mcp_call with connection="goal" and tool=get_goal to inspect it. Use tool=update_goal with status="complete" only after the completion audit. When the blocked audit is satisfied, set status="blocked" and include a short reason describing what needs to change before the goal can resume.`,
     "Goal Mode grants no filesystem, network, or other capability; the normal capability decision remains authoritative.",
     statusInstruction,
     state.status === "budget_limited" && state.token_budget === null && state.turn_budget !== null

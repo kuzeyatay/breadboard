@@ -8,6 +8,8 @@ import { BoundedWorkQueue } from "./bounded-work-queue";
 const SCHEME = "breadboard-assets";
 const PREFIX = "/_next/static/";
 const PUBLIC_IMAGES = new Set(["/logo.png", "/breadboard-favicon-20260426.ico", "/breadboard-icon-20260426.png", "/breadboard-apple-icon-20260426.png"]);
+// Only the public viewer runtime is shared across tabs. Document URLs carry private bytes.
+const PDFJS_ASSET = /^\/api\/pdfjs\/(?:pdf(?:\.worker)?\.mjs|pdf_viewer\.(?:mjs|css)|images\/[\w-]+\.(?:svg|gif))$/;
 const MAX_ASSET_BYTES = 16 * 1024 * 1024;
 const MAX_CACHE_BYTES = 32 * 1024 * 1024;
 type Asset = { status: number; headers: [string, string][]; bytes: ArrayBuffer };
@@ -27,7 +29,7 @@ export function appAssetUrl(value: string, dashboardUrl: string | null): URL | n
     const url = new URL(value);
     if (base.protocol !== "http:" || !["127.0.0.1", "localhost", "[::1]"].includes(base.hostname) ||
         base.username || base.password || url.origin !== base.origin || url.username || url.password ||
-        (!url.pathname.startsWith(PREFIX) && !PUBLIC_IMAGES.has(url.pathname)) || /%2f|%5c|%2e/i.test(url.pathname)) return null;
+        (!url.pathname.startsWith(PREFIX) && !PUBLIC_IMAGES.has(url.pathname) && !PDFJS_ASSET.test(url.pathname)) || /%2f|%5c|%2e/i.test(url.pathname)) return null;
     return url;
   } catch { return null; }
 }
@@ -149,7 +151,7 @@ export function installAppAssetTransport(target: Session, dashboardUrl: () => st
             authorized.expires < Date.now() || authorized.url !== image.href) {
           return new Response("Not found", { status: 404 });
         }
-        return await readArtifactPreview(image, target, request.signal);
+        return await readArtifactPreview(image, target, request);
       }
       const url = appAssetUrl(origin + asset.pathname.slice(slash) + asset.search, dashboardUrl());
       if (asset.hostname !== "app" || slash < 0 || !url || !["GET", "HEAD"].includes(request.method)) {

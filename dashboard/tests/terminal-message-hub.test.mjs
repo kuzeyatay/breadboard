@@ -198,7 +198,7 @@ test("terminal history includes every saved surface with source labels before a 
   assert.equal(response.status, 200);
   const { sessions } = await response.json();
   assert.equal(sessions.length, 4);
-  assert.deepEqual(new Set(sessions.map((chat) => chat.originLabel)), new Set(["Terminal", "EM 1: Workspace", "EM 2: Assistant", "EM 1: Page AI"]));
+  assert.deepEqual(new Set(sessions.map((chat) => chat.originLabel)), new Set(["Terminal", "EM 1: Workspace", "EM 2: Explore Assistant", "EM 1: Page AI"]));
   assert.ok(sessions.every((chat) => chat.messageCount === 2 && !Object.hasOwn(chat, "messages")));
   assert.equal(sessions.find((chat) => chat.id === page.public_id).surface, "quartz_ai");
   const scoped = await (await api.GET(new Request("http://localhost/api/hermes/sessions?surface=garden_chat"))).json();
@@ -287,7 +287,7 @@ test("hub search finds message contents and source names while garden search sta
   const result = await (await api.GET(new Request("http://localhost/search?surface=dashboard_terminal&q=resonance"))).json();
   assert.equal(result.results.length, 2);
   assert.ok(result.results.some((hit) => hit.title === "EM 1: Workspace: Circuit question"));
-  assert.ok(result.results.some((hit) => hit.title === "EM 2: Assistant: Circuit question"));
+  assert.ok(result.results.some((hit) => hit.title === "EM 2: Explore Assistant: Circuit question"));
   const origin = await (await api.GET(new Request("http://localhost/search?surface=dashboard_terminal&q=Workspace"))).json();
   assert.deepEqual(origin.results.map((hit) => hit.id), [workspace.public_id]);
   const scoped = await (await api.GET(new Request("http://localhost/search?surface=garden_chat&gardenSlug=em-1&q=resonance"))).json();

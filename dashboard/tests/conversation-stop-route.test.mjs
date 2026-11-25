@@ -80,6 +80,13 @@ test('Stop authorizes the conversation and seals pending, direct, runtime and ex
     assert.equal(JSON.parse(store.getConversationMessageById(pending.assistantMessage.id).metadata).preDispatchReserved,false);
     assert.equal((await (await stop(pending.conversation.public_id)).json()).alreadyFinished,true);
 
+    for (const status of ['active', 'blocked', 'usage_limited', 'budget_limited']) {
+      const {conversation} = makeTurn();
+      globalThis.stopFixture.goals = {[conversation.public_id]: {status}};
+      assert.equal((await stop(conversation.public_id)).status, 200);
+      assert.equal(calls.some(([kind, id]) => kind === 'goal' && id === conversation.public_id), status === 'active');
+    }
+
     const external=makeTurn();
     const worker=turns.recordExternalAgentTurn({conversation:external.conversation,clientMessageId:'worker-turn',surface:'dashboard_terminal',userContent:'Worker request',assistantContent:'',run:{kind:'max_research',runId:'worker-job',query:'Worker request'}});
     assert.equal((await stop(external.conversation.public_id)).status,200);

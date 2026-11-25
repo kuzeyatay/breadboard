@@ -898,7 +898,7 @@ function driveSessionEventPump(
         // final turn's usage; repeated terminal events cannot charge it twice.
         if (session.row.conversation_id !== null && streamRun) {
           const goalMode = parseRuntimeRunDispatch(streamRun).goalMode;
-          if (goalMode?.enabled) {
+          if (goalMode?.enabled && !goalMode.readOnly) {
             const conversation = db
               .prepare("SELECT public_id FROM conversations WHERE id = ?")
               .get(session.row.conversation_id) as { public_id: string } | undefined;
@@ -924,8 +924,7 @@ function driveSessionEventPump(
                   toolCalls: toolCalls.length,
                   failureCode: failure?.code,
                   failureMessage: failure?.message,
-                  outcome: status === "idle" ? "completed" : status === "aborted" ? "cancelled" :
-                    /usage.limit|quota|rate.limit/i.test(failure?.code ?? "") ? "usage_limited" : "error",
+                  outcome: status === "idle" ? "completed" : status === "aborted" ? "cancelled" : "error",
                 });
                 goalContinues = accounted?.goal_id === goalId && goalCanContinue(accounted);
               } catch {
@@ -1206,7 +1205,7 @@ function driveSessionEventPump(
               tokenUsage = event.payload.usage;
               event.payload.usage = normalizeChatTokenUsage(tokenUsage);
               const dispatch = streamRun ? parseRuntimeRunDispatch(streamRun) : null;
-              if (streamRun && dispatch?.goalMode?.enabled && dispatch.conversationPublicId) {
+              if (streamRun && dispatch?.goalMode?.enabled && !dispatch.goalMode.readOnly && dispatch.conversationPublicId) {
                 const before = readGoalModeState(dispatch.conversationPublicId);
                 if (before && (before.status === "active" || before.status === "budget_limited")) {
                   const progress = accountGoalModeTurn({ conversationPublicId: dispatch.conversationPublicId,

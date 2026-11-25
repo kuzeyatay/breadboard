@@ -1,6 +1,7 @@
 "use client";
 
 import type { RestoredGardenUpload } from "./use-garden-restored-uploads";
+import { loadingIconMotion } from "./loading-icon-motion";
 
 export function RestoredGardenUploadRows({ uploads }: { uploads: RestoredGardenUpload[] }) {
   if (uploads.length === 0) return null;
@@ -11,7 +12,7 @@ export function RestoredGardenUploadRows({ uploads }: { uploads: RestoredGardenU
           {upload.error ? (
             <span className="h-4 w-4 shrink-0 text-center text-red-400" aria-hidden="true">!</span>
           ) : (
-            <span className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-gray-700 border-t-gray-400" aria-hidden="true" />
+            <span {...loadingIconMotion} className="h-4 w-4 shrink-0 motion-safe:animate-spin rounded-full border-2 border-gray-700 border-t-gray-400" aria-hidden="true" />
           )}
           <span className="min-w-0 flex-1">
             <span className="block truncate text-xs text-gray-300">{upload.filename}</span>

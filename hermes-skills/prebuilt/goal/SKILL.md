@@ -79,7 +79,8 @@ the goal cost.
 
 `update_goal` accepts `complete` or `blocked`. Use `blocked` only when the same
 blocking condition has recurred for at least three consecutive goal turns and
-meaningful progress requires user input or an external change. A resumed blocked
+meaningful progress requires user input or an external change. Include the
+concrete blocker in the `reason` field so the goal card can show it. A resumed blocked
 goal starts that audit afresh. Pausing, resuming and abandoning belong to the user,
 through the goal card above the composer. Never
 mark a goal complete to get out of hard work, and never mark it complete because
@@ -94,7 +95,6 @@ stop, not a widening of what you are allowed to do.
 
 Breadboard automatically continues an active goal when the chat is idle, preserving
 its model and context. Pending user input and other chat work take priority.
-An automatic continuation with no tool calls defers further automatic turns.
 Interruptions pause the goal; terminal errors and usage limits stop it.
 
 When an explicit token budget is set and reached,

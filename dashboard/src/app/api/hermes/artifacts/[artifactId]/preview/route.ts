@@ -1,10 +1,9 @@
-import { Readable } from "node:stream";
+import { fileContentResponse } from "@/lib/file-content-response";
 import { externalRuntimeFilesystem as fs } from "@/lib/external-runtime-filesystem";
 import { requireUserId } from "@/lib/server-auth";
 import { apiErrorResponse, requireEnabled, ApiError } from "@/lib/hermes/route-helpers.ts";
 import { artifactFile, getArtifactForUser, ArtifactStoreError } from "@/lib/hermes/artifact-store.ts";
 import { presentArtifact } from "@/lib/hermes/artifact-store.ts";
-import { saveArtifactPdfBytes } from "@/lib/hermes/artifact-pdf-save.ts";
 import { authorizeGardenAccess } from "@/lib/hermes/session-service.ts";
 import { withInteractiveVisualizerWheelZoom } from "@/lib/hermes/interactive-visualizer-wheel.ts";
 import { withInteractiveVisualizerInlineLayout } from "@/lib/hermes/interactive-visualizer-inline.ts";
@@ -84,37 +83,10 @@ export async function GET(request: Request, { params }: { params: Promise<{ arti
         "X-Frame-Options": "SAMEORIGIN",
       } : {}),
     };
-    if (/^(?:audio|video)\//i.test(file.mimeType)) {
-      const stat = fs.statSync(file.path);
-      const range = parseRange(request.headers.get("range"), stat.size);
-      const stream = fs.createReadStream(
-        file.path,
-        range ? { start: range.start, end: range.end } : undefined,
-      );
-      return new Response(
-        Readable.toWeb(stream) as ReadableStream,
-        {
-          status: range ? 206 : 200,
-          headers: {
-            ...baseHeaders,
-            "Accept-Ranges": "bytes",
-            "Content-Length": String(
-              range ? range.end - range.start + 1 : stat.size,
-            ),
-            ...(range
-              ? {
-                  "Content-Range": `bytes ${range.start}-${range.end}/${stat.size}`,
-                }
-              : {}),
-          },
-        },
-      );
-    }
-    let body = interactive
-      ? guardInteractiveVisualizerPreview(fs.readFileSync(file.path, "utf8"))
-      : fs.readFileSync(file.path);
-    if (interactive && url.searchParams.get("presentation") === "inline") {
-      body = withInteractiveVisualizerInlineLayout(String(body));
+    if (!interactive) return fileContentResponse(request, file.path, file.size, baseHeaders);
+    let body = guardInteractiveVisualizerPreview(await fs.promises.readFile(file.path, "utf8"));
+    if (url.searchParams.get("presentation") === "inline") {
+      body = withInteractiveVisualizerInlineLayout(body);
     }
     return new Response(body, {
       headers: {
@@ -146,6 +118,7 @@ export async function PUT(request: Request, { params }: { params: Promise<{ arti
     const artifact = getArtifactForUser({ artifactId, userId, conversationPublicId: conversationId });
     if (artifact.garden_slug) authorizeGardenAccess(userId, artifact.garden_slug);
     const bytes = new Uint8Array(await request.arrayBuffer());
+    const { saveArtifactPdfBytes } = await import("@/lib/hermes/artifact-pdf-save.ts");
     const saved = await saveArtifactPdfBytes(artifact, bytes);
     return Response.json({ artifact: presentArtifact(saved) });
   } catch (error) {
@@ -167,34 +140,4 @@ async function renderedPptx(filePath: string): Promise<string> {
   renderedPptxCache.set(key, html);
   while (renderedPptxCache.size > 8) renderedPptxCache.delete(renderedPptxCache.keys().next().value!);
   return html;
-}
-
-function parseRange(
-  value: string | null,
-  size: number,
-): { start: number; end: number } | null {
-  const match = value?.match(/^bytes=(\d*)-(\d*)$/i);
-  if (!match || size <= 0) return null;
-  const requestedStart = match[1] ? Number(match[1]) : null;
-  const requestedEnd = match[2] ? Number(match[2]) : null;
-  if (
-    (requestedStart !== null && !Number.isSafeInteger(requestedStart)) ||
-    (requestedEnd !== null && !Number.isSafeInteger(requestedEnd))
-  ) {
-    return null;
-  }
-  let start: number;
-  let end: number;
-  if (requestedStart === null) {
-    const suffix = Math.min(requestedEnd ?? 0, size);
-    if (suffix <= 0) return null;
-    start = size - suffix;
-    end = size - 1;
-  } else {
-    start = requestedStart;
-    end = Math.min(requestedEnd ?? size - 1, size - 1);
-  }
-  return start >= 0 && start <= end && start < size
-    ? { start, end }
-    : null;
 }

@@ -36,6 +36,8 @@ import {
   Trash2,
   X,
 } from "lucide-react";
+import { loadingIconMotion } from "@/app/components/loading-icon-motion";
+import { useLoadingTextReveal } from "@/app/components/loading-text-reveal";
 import {
   useCallback,
   useId,
@@ -1130,6 +1132,7 @@ function BrowserSpotifyDock({
 }) {
   const rootRef = useRef<HTMLElement | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
+  const trackReveal = useLoadingTextReveal(initializing);
   const [devicesOpen, setDevicesOpen] = useState(false);
   const [view, setView] = useState<"search" | "playlists">("search");
   const [query, setQuery] = useState("");
@@ -1149,6 +1152,10 @@ function BrowserSpotifyDock({
   const [libraryRevision, setLibraryRevision] = useState(0);
   const [libraryNotice, setLibraryNotice] = useState("");
   const [loading, setLoading] = useState(false);
+  const emptyLibraryView = view === "search"
+    ? Boolean(query.trim()) && !searchResults.length && !artistResults.length
+    : selectedPlaylist ? !playlistTracks.length : !playlists.length;
+  const libraryReveal = useLoadingTextReveal(open && loading && emptyLibraryView);
   const [libraryError, setLibraryError] = useState("");
   const [playlistReconnectRequired, setPlaylistReconnectRequired] = useState(false);
   const [sampledPalette, setSampledPalette] = useState({
@@ -1520,11 +1527,11 @@ function BrowserSpotifyDock({
         aria-label={initializing ? "Loading Spotify connection" : spotify?.connected ? "Open Spotify player" : spotify ? "Connect Spotify" : "Spotify unavailable"}
       />
         {initializing ? (
-          <span className="browser-spotify-cover browser-spotify-cover-loading" aria-hidden="true"><LoaderCircle /></span>
+          <span className="browser-spotify-cover browser-spotify-cover-loading" aria-hidden="true"><LoaderCircle {...loadingIconMotion} /></span>
         ) : (
           <SpotifyArtwork imageUrl={track?.imageUrl} label={track?.album ?? "Spotify album art"} className="browser-spotify-cover" />
         )}
-        <span className="browser-spotify-copy">
+        <span ref={trackReveal} className="browser-spotify-copy">
           <strong>{initializing ? "Loading Spotify…" : track?.name ?? (spotify?.connected ? "Spotify is ready" : spotify ? "Connect Spotify" : "Spotify unavailable")}</strong>
           <small>{initializing ? "Checking your connection" : error || track?.artist || (spotify?.connected ? (spotify.engine.ready ? "Search music or browse playlists" : "Starting player…") : spotify ? "Settings → Connections" : "Trying again shortly")}</small>
           {spotify?.connected ? <button type="button" className="browser-spotify-device" title="Choose a Spotify device" aria-haspopup="dialog" aria-expanded={open && devicesOpen} aria-controls="browser-spotify-player" onClick={openDevices}>{playbackDeviceLabel}<ChevronUp aria-hidden="true" /></button> : null}
@@ -1625,7 +1632,7 @@ function BrowserSpotifyDock({
                   {query ? <button type="button" onClick={() => { setQuery(""); setSearchResults([]); setArtistResults([]); setLibraryError(""); setLoading(false); }} aria-label="Clear search"><X aria-hidden="true" /></button> : null}
                 </label>
                 {!query.trim() && !loading && !recentSearches.length && !history.length ? <p className="browser-spotify-empty">What do you want to listen to?</p> : null}
-                {query.trim() && !loading && !libraryError && !searchResults.length && !artistResults.length ? <p className="browser-spotify-empty">No songs or artists found.</p> : null}
+                {query.trim() && !loading && !libraryError && !searchResults.length && !artistResults.length ? <p ref={libraryReveal} className="browser-spotify-empty">No songs or artists found.</p> : null}
                 {!query.trim() && recentSearches.length ? (
                   <>
                     <p className="browser-spotify-history-label">Recent searches</p>
@@ -1641,7 +1648,7 @@ function BrowserSpotifyDock({
                 ) : null}
                 {!query.trim() && history.length ? <p className="browser-spotify-history-label">Recently played</p> : null}
                 {query.trim() && artistResults.length ? (
-                  <section aria-label="Artists">
+                  <section ref={libraryReveal} aria-label="Artists">
                     <div className="browser-spotify-artist-list">
                       {artistResults.map((artist) => (
                         <button key={artist.uri} type="button" className="browser-spotify-result browser-spotify-artist-result" onClick={() => { rememberSearch(query); searchScrollRef.current = libraryRef.current?.scrollTop ?? 0; setSelectedArtist(artist); }} aria-label={`Open ${artist.name} artist profile`}>
@@ -1652,7 +1659,7 @@ function BrowserSpotifyDock({
                     </div>
                   </section>
                 ) : null}
-                <div className="browser-spotify-result-list">
+                <div ref={libraryReveal} className="browser-spotify-result-list">
                   {(query.trim() ? searchResults : history).map((item) => (
                     <div key={item.uri} className="browser-spotify-managed-track">
                       <button type="button" className="browser-spotify-result" disabled={busy || !canPlay} onClick={() => { if (query.trim()) rememberSearch(query); void playTrack(item, []); }} aria-label={`Play ${item.name} by ${item.artist}`}>
@@ -1684,7 +1691,7 @@ function BrowserSpotifyDock({
                     <button type="button" disabled={busy} onClick={() => { setPlaylistForm(null); setPlaylistName(""); }} aria-label="Cancel rename"><X aria-hidden="true" /></button>
                   </form>
                 ) : null}
-                <div className="browser-spotify-result-list">
+                <div ref={libraryReveal} className="browser-spotify-result-list">
                   {playlistTracks.map((item, index) => (
                     <div key={`${item.uri}-${index}`} className="browser-spotify-managed-track">
                       <button type="button" className="browser-spotify-result" disabled={busy || !canPlay} onClick={() => {
@@ -1699,7 +1706,7 @@ function BrowserSpotifyDock({
                     </div>
                   ))}
                 </div>
-                {!loading && !playlistTracks.length ? <p className="browser-spotify-empty">This playlist is empty.</p> : null}
+                {!loading && !playlistTracks.length ? <p ref={libraryReveal} className="browser-spotify-empty">This playlist is empty.</p> : null}
               </>
             ) : (
               <>
@@ -1717,7 +1724,7 @@ function BrowserSpotifyDock({
                     <button type="button" disabled={busy} onClick={() => { setPlaylistForm(null); setPlaylistName(""); }} aria-label="Cancel new playlist"><X aria-hidden="true" /></button>
                   </form>
                 ) : null}
-                <div className="browser-spotify-playlist-grid">
+                <div ref={libraryReveal} className="browser-spotify-playlist-grid">
                   {playlists.map((playlist) => (
                     <button key={playlist.uri} type="button" className="browser-spotify-playlist" disabled={busy || Boolean(trackToAdd && !playlist.canAddTracks)} onClick={() => { if (trackToAdd) { void addTrackToPlaylist(playlist); } else { setSelectedPlaylist(playlist); setLibraryError(""); setLibraryNotice(""); setLoading(true); } }}>
                       <SpotifyPlaylistArtwork playlist={playlist} className="browser-spotify-playlist-cover" />
@@ -1728,10 +1735,10 @@ function BrowserSpotifyDock({
               </>
             )}
             {libraryNotice ? <p className="browser-spotify-notice" role="status">{libraryNotice}</p> : null}
-            {loading ? <p className="browser-spotify-loading" role="status"><span aria-hidden="true" />Loading Spotify…</p> : null}
+            {loading ? <p className="browser-spotify-loading" role="status"><span {...loadingIconMotion} aria-hidden="true"><span /></span>Loading Spotify…</p> : null}
             {displayedLibraryError ? (
               <div className="browser-spotify-error" role="alert">
-                <p>{displayedLibraryError}</p>
+                <p ref={libraryReveal}>{displayedLibraryError}</p>
                 {playlistPermissionMissing || playlistReconnectRequired || /Reconnect Spotify/u.test(displayedLibraryError) ? <button type="button" onClick={openConnections}>Reconnect Spotify</button> : null}
               </div>
             ) : null}

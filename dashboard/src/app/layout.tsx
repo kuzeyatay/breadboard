@@ -25,7 +25,7 @@ import "katex/dist/katex.min.css";
 
 // Keep startup/rebuilds independent of Google Fonts availability.
 const sourceSans = localFont({
-  src: "./fonts/sourcesans3/SourceSans3[wght].ttf",
+  src: "./fonts/sourcesans3/SourceSans3[wght].woff2",
   variable: "--font-source-sans",
   weight: "200 900",
   style: "normal",
@@ -33,7 +33,7 @@ const sourceSans = localFont({
 });
 
 const schibsted = localFont({
-  src: "./fonts/schibstedgrotesk/SchibstedGrotesk[wght].ttf",
+  src: "./fonts/schibstedgrotesk/SchibstedGrotesk[wght].woff2",
   variable: "--font-schibsted",
   weight: "400 900",
   style: "normal",
@@ -42,12 +42,13 @@ const schibsted = localFont({
 
 const ibmPlexMono = localFont({
   src: [
-    { path: "./fonts/ibmplexmono/IBMPlexMono-Regular.ttf", weight: "400", style: "normal" },
-    { path: "./fonts/ibmplexmono/IBMPlexMono-Medium.ttf", weight: "500", style: "normal" },
-    { path: "./fonts/ibmplexmono/IBMPlexMono-SemiBold.ttf", weight: "600", style: "normal" },
-    { path: "./fonts/ibmplexmono/IBMPlexMono-Bold.ttf", weight: "700", style: "normal" },
+    { path: "./fonts/ibmplexmono/IBMPlexMono-Regular.woff2", weight: "400", style: "normal" },
+    { path: "./fonts/ibmplexmono/IBMPlexMono-Medium.woff2", weight: "500", style: "normal" },
+    { path: "./fonts/ibmplexmono/IBMPlexMono-SemiBold.woff2", weight: "600", style: "normal" },
+    { path: "./fonts/ibmplexmono/IBMPlexMono-Bold.woff2", weight: "700", style: "normal" },
   ],
   variable: "--font-ibm-plex-mono",
+  preload: false,
   display: "swap",
   adjustFontFallback: false,
 });

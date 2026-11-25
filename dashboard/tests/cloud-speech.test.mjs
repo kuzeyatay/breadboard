@@ -45,6 +45,8 @@ const bundled = await esbuild.build({
       export * as subscriptionLive from './src/lib/speech/subscription-live.ts';
       export * as subscriptionRoute from './src/app/api/speech/subscription/route.ts';
       export * as synthesis from './src/lib/speech/synthesis.ts';
+      export * as narrationRelay from './src/lib/speech/narration-relay.ts';
+      export * as narrationRelayRoute from './src/app/api/speech/narration-relay/route.ts';
       export * as recording from './src/lib/speech/recording-transcription.ts';
       export * as prepareRoute from './src/app/api/speech/prepare/route.ts';
       export * as statusRoute from './src/app/api/speech/status/route.ts';
@@ -171,6 +173,115 @@ function cloud() {
   settings.updateSpeechSettings(1, { speechProvider: "chatgpt", openaiVoice: "maple" });
 
 }
+
+test("agent narration falls back to the local Voicebox voice when subscription speech is selected", async () => {
+  settings.updateSpeechSettings(1, { speechProvider: "chatgpt", profileId: "saved-voice", engine: "auto" });
+  // Page readers still get the honest refusal: they can open the browser connection.
+  await assert.rejects(synthesis.synthesizeSpeech({ userId: 1, text: "Hello" }), /browser audio connection/);
+
+  let generated;
+  state.localJson = async (url) => {
+    if (url === "/profiles") return [
+      { id: "preset-voice", name: "Preset", voice_type: "preset", preset_engine: "kokoro" },
+      { id: "saved-voice", name: "Saved", voice_type: "preset", preset_engine: "kokoro" },
+    ];
+    throw new Error(`Unexpected ${url}`);
+  };
+  state.localFetch = async (url, init) => {
+    assert.equal(url, "/generate/stream");
+    generated = JSON.parse(init.body);
+    return new Response(new Uint8Array([1, 2, 3]), { headers: { "Content-Type": "audio/wav" } });
+  };
+  const response = await synthesis.synthesizeSpeech({ userId: 1, text: "Hello", localFallback: true });
+  assert.equal(generated.profile_id, "saved-voice");
+  assert.equal(generated.engine, "kokoro");
+  assert.equal(response.headers.get("content-type"), "audio/wav");
+  assert.match(response.headers.get(synthesis.SPEECH_FALLBACK_HEADER), /^voicebox; voice=Saved; reason=No%20Breadboard%20voice%20window/);
+  assert.equal((await response.arrayBuffer()).byteLength, 3);
+
+  // No saved local voice: a preset stands in.
+  settings.updateSpeechSettings(1, { profileId: null });
+  await synthesis.synthesizeSpeech({ userId: 1, text: "Hello", localFallback: true });
+  assert.equal(generated.profile_id, "preset-voice");
+
+  state.localJson = async () => [];
+  await assert.rejects(synthesis.synthesizeSpeech({ userId: 1, text: "Hello", localFallback: true }), /no voices to fall back to/);
+});
+
+/** Stands in for the voice window: answers each claimed script through the route. */
+function startRelay(answerFor) {
+  const { narrationRelayRoute } = fixture.exports;
+  const controller = new AbortController();
+  const seen = [];
+  const loop = (async () => {
+    while (!controller.signal.aborted) {
+      const poll = await narrationRelayRoute.GET(new Request("http://breadboard.test/api/speech/narration-relay?wait=1", { signal: controller.signal }));
+      const { job } = await poll.json();
+      if (!job) continue;
+      seen.push(job.text);
+      const answer = answerFor(job.text, seen.length);
+      await narrationRelayRoute.POST(new Request(`http://breadboard.test/api/speech/narration-relay?id=${job.id}`, answer instanceof Uint8Array
+        ? { method: "POST", headers: { "Content-Type": "audio/wav" }, body: answer }
+        : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(answer) }));
+    }
+  })();
+  return { seen, async stop() { controller.abort(); await loop.catch(() => {}); } };
+}
+
+test("agent narration is read in the ChatGPT voice by the voice window when one is polling", async () => {
+  const { narrationRelay } = fixture.exports;
+  narrationRelay.resetNarrationRelayForTests();
+  settings.updateSpeechSettings(1, { speechProvider: "chatgpt", profileId: "saved-voice", pronunciations: "SQL = sequel" });
+  const relay = startRelay(() => new Uint8Array([82, 73, 70, 70]));
+  try {
+    // The relay registers itself with its first poll.
+    for (let tries = 0; !narrationRelay.narrationRelayAvailable(1) && tries < 50; tries++) await new Promise((r) => setTimeout(r, 10));
+    const response = await synthesis.synthesizeSpeech({ userId: 1, text: "Read the SQL", localFallback: true });
+    assert.equal(response.headers.get("content-type"), "audio/wav");
+    assert.equal(response.headers.get(synthesis.SPEECH_VOICE_HEADER), "chatgpt");
+    assert.equal(response.headers.get(synthesis.SPEECH_FALLBACK_HEADER), null);
+    assert.deepEqual([...new Uint8Array(await response.arrayBuffer())], [82, 73, 70, 70]);
+    // The page applies pronunciations itself, so the script travels as written.
+    assert.deepEqual(relay.seen, ["Read the SQL"]);
+
+    // Another user's relay cannot answer this user's job, and vice versa.
+    assert.equal(narrationRelay.narrationRelayAvailable(2), false);
+    assert.equal(narrationRelay.completeNarrationJob(2, "00000000-0000-0000-0000-000000000000", { error: "x" }), false);
+  } finally {
+    await relay.stop();
+    narrationRelay.resetNarrationRelayForTests();
+  }
+});
+
+test("a narration the ChatGPT voice cannot finish is read again entirely by Voicebox", async () => {
+  const { narrationRelay } = fixture.exports;
+  narrationRelay.resetNarrationRelayForTests();
+  settings.updateSpeechSettings(1, { speechProvider: "chatgpt", profileId: "saved-voice", engine: "auto" });
+  const generated = [];
+  state.localJson = async (url) => {
+    if (url === "/profiles") return [{ id: "saved-voice", name: "Saved", voice_type: "preset", preset_engine: "kokoro" }];
+    throw new Error(`Unexpected ${url}`);
+  };
+  state.localFetch = async (_url, init) => {
+    generated.push(JSON.parse(init.body).text);
+    return new Response(new Uint8Array([9]), { headers: { "Content-Type": "audio/wav" } });
+  };
+  // The first line reads; the second fails in the page.
+  const relay = startRelay((_text, count) => count === 1 ? new Uint8Array([1]) : { error: "The voice service did not start speaking." });
+  try {
+    for (let tries = 0; !narrationRelay.narrationRelayAvailable(1) && tries < 50; tries++) await new Promise((r) => setTimeout(r, 10));
+    const { clips, fallback } = await synthesis.synthesizeNarrationLines({ userId: 1, lines: ["One.", "Two.", "Three."] });
+    assert.deepEqual(clips.map((clip) => clip.text), ["One.", "Two.", "Three."]);
+    assert.ok(clips.every((clip) => clip.audio[0] === 9), "every clip is the Voicebox reading");
+    assert.deepEqual(generated, ["Two.", "One.", "Two.", "Three."]);
+    assert.equal(fallback.voice, "Saved");
+    assert.match(fallback.reason, /did not start speaking/);
+    assert.deepEqual(relay.seen, ["One.", "Two."], "the relay is not asked again once it has failed");
+  } finally {
+    await relay.stop();
+    narrationRelay.resetNarrationRelayForTests();
+  }
+});
 function recordingRequest() {
   const form = new FormData();
   form.set("file", new Blob(["test-audio"], { type: "audio/wav" }), "dictation.wav");

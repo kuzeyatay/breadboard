@@ -3,6 +3,9 @@ import path from 'path';
 import { pageUnderstanding } from '@/lib/page-understanding.ts';
 import { pageFlagColor, understandingPageSlug } from '@/lib/page-understanding-types.ts';
 import { listClusterFolders, scanClusterKnowledgeCooperatively } from '@/lib/knowledge';
+import { gardenDirectory } from '@/lib/garden-directory';
+import { findGardenSourceNote } from '@/lib/source-pdf-garden';
+import { gardenDocumentNoteSlug } from '@/lib/garden-document-route';
 import { INTERNAL_CONCEPT_TYPE, isLegacySubtopicRelPath, readingOrderRank } from '@/lib/learning-garden';
 import { createGardenDocument } from '@/lib/garden-documents.ts';
 import { isPageAuthorship } from '@/lib/page-authorship.ts';
@@ -23,13 +26,18 @@ export async function GET(request: Request) {
     }
 
     const { cluster, userId } = await requireReadableClusterFromSlug(clusterSlug);
-    const understanding = new Map(pageUnderstanding.list(userId, cluster.slug).map(page => [page.pageSlug, page]));
 
     const contentPath = process.env.QUARTZ_CONTENT_PATH;
     if (!contentPath) {
       return NextResponse.json({ error: 'QUARTZ_CONTENT_PATH not configured' }, { status: 500 });
     }
 
+    const sourceNote = searchParams.get('sourceNote');
+    if (sourceNote) {
+      const doc = findGardenSourceNote(gardenDirectory(cluster.slug, contentPath), sourceNote);
+      if (doc) return NextResponse.json({ document: doc }, { headers: { 'Cache-Control': 'no-store' } });
+    }
+    const understanding = new Map(pageUnderstanding.list(userId, cluster.slug).map(page => [page.pageSlug, page]));
     const knowledge = await scanClusterKnowledgeCooperatively(contentPath, cluster.slug);
     const linkCountBySlug = new Map<string, number>();
     for (const edge of knowledge.edges) {
@@ -86,6 +94,12 @@ export async function GET(request: Request) {
         return dateDiff || a.title.localeCompare(b.title);
       });
 
+    if (sourceNote) {
+      const spelling = (value: string) => value.toLowerCase().replace(/\s+/g, '-');
+      const wanted = spelling(sourceNote);
+      const document = documents.find(doc => spelling(gardenDocumentNoteSlug(doc)) === wanted) ?? null;
+      return NextResponse.json({ document }, { headers: { 'Cache-Control': 'no-store' } });
+    }
     // A folder earns its place when a visible document lives in it. That keeps
     // the legacy topic-card folders hidden while letting `generated/` through
     // once Save page has written a real page there - the two share a name.

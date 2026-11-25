@@ -16,7 +16,7 @@ test("login errors recover, callback screens return, and browser tabs follow sig
       import AuthenticationSync from '@/app/components/authentication-sync';
       import SignOutButton from '@/app/components/sign-out-button';
       createRoot(document.getElementById('root')).render(<><AuthenticationSync />
-        {location.pathname.startsWith('/auth/') ? <Login /> : <><h1>Workspace</h1><SignOutButton>Sign out</SignOutButton></>}
+        {location.pathname.startsWith('/auth/') ? <Login name="Test account" auto={false} /> : <><h1>Workspace</h1><SignOutButton>Sign out</SignOutButton></>}
       </>);` },
     plugins: [{ name: "auth-fixture", setup(builder) {
       const stubs = {
@@ -78,16 +78,15 @@ test("login errors recover, callback screens return, and browser tabs follow sig
   const errors=[]; first.on('pageerror',error=>errors.push(error.message)); second.on('pageerror',error=>errors.push(error.message));
   await first.goto(origin+'/auth/login?callbackUrl='+encodeURIComponent('/gardens/one?chat=42#reply'));
   await second.goto(origin+'/auth/login?callbackUrl=%2Fprofile');
-  await first.getByLabel('Email',{exact:true}).fill('fixture@example.com');
-  await first.getByLabel('Password',{exact:true}).fill('wrong');
+  await first.getByLabel('Password or PIN',{exact:true}).fill('wrong');
   await first.getByRole('button',{name:'Sign in',exact:true}).click();
-  await expect(first.getByText('Invalid email or password.')).toBeVisible();
+  await expect(first.getByText('Wrong password.')).toBeVisible();
   await expect(first.getByRole('button',{name:'Sign in',exact:true})).toBeEnabled();
   await first.evaluate(()=>{window.failNetwork=true;});
   await first.getByRole('button',{name:'Sign in',exact:true}).click();
-  await expect(first.getByText('Could not sign in. Please try again.')).toBeVisible();
+  await expect(first.getByText('Could not sign in. Try again.')).toBeVisible();
   await first.evaluate(()=>{window.failNetwork=false;});
-  await first.getByLabel('Password',{exact:true}).fill('correct');
+  await first.getByLabel('Password or PIN',{exact:true}).fill('correct');
   await first.getByRole('button',{name:'Sign in',exact:true}).click();
   await expect(first).toHaveURL(origin+'/gardens/one?chat=42#reply');
   await expect(second).toHaveURL(origin+'/profile');

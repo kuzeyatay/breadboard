@@ -3,6 +3,7 @@
 import { useRef, useState, type CSSProperties } from "react";
 import * as Menu from "@radix-ui/react-dropdown-menu";
 import { Check, ChevronRight, Download, GitBranch, Globe, LoaderCircle, Pencil, Settings, Trash2 } from "lucide-react";
+import { loadingIconMotion } from "@/app/components/loading-icon-motion";
 import type { Cluster, ClusterVisibility } from "@/app/actions/clusters";
 import styles from "./garden-card-settings-menu.module.css";
 
@@ -86,7 +87,7 @@ export default function GardenCardSettingsMenu({
           }}
         >
           <Menu.Item className={styles.item} disabled={repositoryBusy} onSelect={onConnectRepository}>
-            {connecting ? <LoaderCircle className={styles.spinner} /> : <GitBranch />}
+            {connecting ? <LoaderCircle {...loadingIconMotion} className={styles.spinner} /> : <GitBranch />}
             <span>
               {connecting ? "Connecting repository…" : cluster.repo_connected ? "Change repository" : "Connect repository"}
               {cluster.repo_connected && cluster.repo_name && <small>{cluster.repo_name}</small>}
@@ -99,7 +100,7 @@ export default function GardenCardSettingsMenu({
             <Pencil /> Edit garden
           </Menu.Item>
           <Menu.Item className={styles.item} disabled={exportBusy} onSelect={onExport}>
-            {exporting ? <LoaderCircle className={styles.spinner} /> : <Download />}
+            {exporting ? <LoaderCircle {...loadingIconMotion} className={styles.spinner} /> : <Download />}
             {exporting ? "Exporting garden…" : "Export garden"}
           </Menu.Item>
           <Menu.Sub>

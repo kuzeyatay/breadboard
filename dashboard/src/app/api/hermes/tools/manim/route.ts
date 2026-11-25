@@ -21,7 +21,7 @@ import { ManimServiceError, validateManimRequest } from "@/lib/manim/request.ts"
 import { publishManimVideo } from "@/lib/manim/artifact.ts";
 import { ManimRuntimeError, runManimViaRuntime } from "@/lib/runtime-v2/manim-job.ts";
 import { addSoundtrack, validateManimSound } from "@/lib/manim/soundtrack.ts";
-import { synthesizeSpeech } from "@/lib/speech/synthesis";
+import { synthesizeNarrationLines } from "@/lib/speech/synthesis";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -99,20 +99,19 @@ export async function POST(request: Request) {
 
     // Narration is spoken by whatever voice the user set up for read-aloud. It
     // is made before the render so a missing voice costs seconds, not minutes.
-    const narration: { atSeconds: number; audio: Uint8Array }[] = [];
-    for (const line of sound.narration) {
-      const speech = await synthesizeSpeech({
-        userId: session.user_id,
-        text: line.text,
-        signal: request.signal,
-      }).catch((error: unknown) => {
-        throw new ManimServiceError(
-          "manim_narration_unavailable",
-          `Narration could not be spoken: ${error instanceof Error ? error.message : "speech failed"} Render without narration, or tell the user what to switch on.`,
-        );
-      });
-      narration.push({ atSeconds: line.atSeconds, audio: new Uint8Array(await speech.arrayBuffer()) });
-    }
+    const spoken = sound.narration.length
+      ? await synthesizeNarrationLines({
+          userId: session.user_id,
+          lines: sound.narration.map((line) => line.text),
+          signal: request.signal,
+        }).catch((error: unknown) => {
+          throw new ManimServiceError(
+            "manim_narration_unavailable",
+            `Narration could not be spoken: ${error instanceof Error ? error.message : "speech failed"} Render without narration, or tell the user what to switch on.`,
+          );
+        })
+      : { clips: [], fallback: null };
+    const narration = spoken.clips.map((clip, index) => ({ atSeconds: sound.narration[index].atSeconds, audio: clip.audio }));
 
     const result = await runManimViaRuntime({
       scope: {
@@ -187,7 +186,9 @@ export async function POST(request: Request) {
                   atSeconds,
                   durationSeconds,
                 })),
-                notes: scored.audio.notes,
+                notes: spoken.fallback
+                  ? [...scored.audio.notes, `The user's ChatGPT voice was unavailable (${spoken.fallback.reason}), so the narration was read by their local Voicebox voice, ${spoken.fallback.voice}. Mention this once.`]
+                  : scored.audio.notes,
               }
             : {}),
         },

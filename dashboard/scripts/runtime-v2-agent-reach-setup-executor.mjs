@@ -1,6 +1,7 @@
 import { sameRuntimePath as samePath, runtimePathWithin as pathWithin } from "./runtime-v2-paths.mjs";
 import crypto from "node:crypto";
 import { spawn } from "node:child_process";
+import { withHostPath } from "./host-path.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { Readable, Transform } from "node:stream";
@@ -1114,7 +1115,9 @@ export async function executeAgentReachSetup(request, options) {
       "The staged dashboard worker scripts",
     ),
     inputPath: options.inputPath ?? null,
-    env: options.env ?? process.env,
+    // Widen the locked-down Runtime V2 PATH so the user's own uv, Python and
+    // Git are found; an injected env (tests) is used exactly as given.
+    env: options.env ?? withHostPath(process.env),
     signal: options.signal,
     spawnImpl: options.spawnImpl ?? spawn,
     fetchImpl: options.fetchImpl ?? fetch,

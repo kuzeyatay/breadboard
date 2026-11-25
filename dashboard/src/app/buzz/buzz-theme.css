@@ -2054,6 +2054,14 @@
   color: hsl(var(--primary-foreground));
 }
 
+.buzz-root > [aria-hidden="true"] > [data-spotify-background] {
+  --bb-ambient-fps: 30;
+}
+
+.buzz-root[data-buzz-sidebar]:has(> div > [data-spotify-background][data-active="true"]) .buzz-navigation {
+  background-color: hsl(var(--sidebar-background) / 0.22);
+}
+
 /* Keep the subtle content-card lift in Buzz Light only. */
 .buzz-root[data-buzz-sidebar]:not(.dark)
   [data-buzz-content-surface]:not([data-buzz-content-unframed]) {

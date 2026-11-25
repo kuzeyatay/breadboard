@@ -45,7 +45,8 @@ function mount() {
   const exports = {};
   const mod = { exports };
   new Function("require", "module", "exports", "window", "fetch", code)(
-    name => name === "react" ? React : name === "@/lib/goal-turn-activity"
+    name => name === "react" ? React : name === "@/lib/chat-token-usage"
+      ? require("../src/lib/chat-token-usage.ts") : name === "@/lib/goal-turn-activity"
       ? { GOAL_TURN_EVENT: "breadboard:goal-turn" } : require(name), mod, exports, window, fetch,
   );
   const render = (sessionId = "lab-chat") => {
@@ -54,14 +55,14 @@ function mount() {
     effects.forEach(effect => effect());
     return tree;
   };
-  function button(label, node = tree) {
+  function find(predicate, node = tree) {
     if (!node) return;
-    if (Array.isArray(node)) return node.map(child => button(label, child)).find(Boolean);
-    if (node.props?.["aria-label"] === label) return node;
-    return button(label, node.props?.children ?? null);
+    if (Array.isArray(node)) return node.map(child => find(predicate, child)).find(Boolean);
+    if (predicate(node)) return node;
+    return find(predicate, node.props?.children ?? null);
   }
   render();
-  return { requests, render, button, goal: () => hooks[0],
+  return { requests, render, find, button: label => find(node => node.props?.["aria-label"] === label), goal: () => hooks[0],
     poll() { [...timers.values()].filter(timer => timer.ms === 5000).forEach(timer => timer.fn()); },
     focus() { listeners.get("focus")?.(); },
     unmount() { hooks.forEach(hook => hook?.cleanup?.()); }, timers, listeners,
@@ -78,6 +79,20 @@ test("an external goal resume refreshes a blocked card without a run-state chang
   assert.equal(view.goal().status, "active");
   assert.ok(view.button("Pause this goal"));
   view.unmount();
+});
+
+test("saving a budget on the stopped card changes only the limit", async () => {
+  for (const status of ["paused", "blocked", "usage_limited"]) {
+    const view = mount();
+    view.requests[0].finish({ ...base, status, tokenBudget: 1500, turnBudget: null }); await tick(); view.render();
+    view.button("Show goal detail").props.onClick(); view.render();
+    view.find(node => node.props?.inputMode === "numeric").props.onChange({ target: { value: "3000" } }); view.render();
+    view.find(node => node.type === "form").props.onSubmit({ preventDefault() {} });
+    assert.deepEqual(JSON.parse(view.requests[1].init.body), {tokenBudget: 3000});
+    view.requests[1].finish({ ...base, status, tokenBudget: 3000 }); await tick(); view.render();
+    assert.ok(view.button("Resume this goal"));
+    view.unmount();
+  }
 });
 
 test("a pending refresh cannot undo a newer pause and focus reads current state", async () => {

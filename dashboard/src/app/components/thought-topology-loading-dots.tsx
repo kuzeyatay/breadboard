@@ -1,3 +1,7 @@
+"use client";
+
+import { loadingIconMotion } from "./loading-icon-motion";
+
 interface ThoughtTopologyLoadingDotsProps {
   label?: string;
 }
@@ -7,6 +11,7 @@ export default function ThoughtTopologyLoadingDots({
 }: ThoughtTopologyLoadingDotsProps) {
   return (
     <div
+      {...loadingIconMotion}
       className="thought-topology-loading-dots"
       role={label ? "status" : undefined}
       aria-label={label}

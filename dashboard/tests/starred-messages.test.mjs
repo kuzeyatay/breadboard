@@ -36,8 +36,9 @@ function fixture(t) {
 
 test("stars resolve live and restored identities to one durable message", (t) => {
   const db = fixture(t);
-  setMessageStar(db, 1, { conversationId: "conv_one", messageId: "client-turn-one", starred: true });
-  setMessageStar(db, 1, { conversationId: "conv_one", messageId: "msg_1", starred: true });
+  assert.deepEqual(setMessageStar(db, 1, { conversationId: "conv_one", messageId: "client-turn-one", starred: true }),
+    { conversationId: 1, messageId: "msg_1", answer: "Full response" });
+  assert.equal(setMessageStar(db, 1, { conversationId: "conv_one", messageId: "msg_1", starred: true }), null);
   ensureStarredMessagesSchema(db);
   const [star] = listStarredMessages(db, 1);
   assert.equal(listStarredMessages(db, 1).length, 1);

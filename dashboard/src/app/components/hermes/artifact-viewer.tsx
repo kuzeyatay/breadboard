@@ -24,6 +24,7 @@ import { isSpiceNetlistArtifact } from "@/lib/netlist-viewer/format";
 // cannot be held behind a second JavaScript request with an empty fallback.
 import ArtifactNetlistViewer from "./artifact-netlist-viewer";
 import ArtifactPreviewLoading from "./artifact-preview-loading";
+import { useLoadingTextReveal } from "../loading-text-reveal";
 import ArtifactPreviewSurface from "./artifact-preview-surface";
 import BreadboardVideoPlayer from "@/app/components/breadboard-video-player";
 import {
@@ -906,8 +907,9 @@ export default function ArtifactViewer({
     return () => document.removeEventListener("keydown", onKeyDown, true);
   }, [expanded, markdownEditorOpen]);
 
+  const needsTextPreview = isTextual && Boolean(artifact?.previewAvailable);
   useEffect(() => {
-    if (!artifact || !isTextual || !artifact.previewAvailable) return;
+    if (!needsTextPreview) return;
     const controller = new AbortController();
     const timeout = window.setTimeout(() => {
       setPreview({ url: previewUrl, text: null });
@@ -928,11 +930,13 @@ export default function ArtifactViewer({
       window.clearTimeout(timeout);
       controller.abort();
     };
-  }, [artifact, isTextual, previewUrl, previewAttempt]);
+  }, [needsTextPreview, previewUrl, previewAttempt]);
 
   const resolved = preview?.url === previewUrl ? preview : null;
   const text = resolved?.text ?? null;
-  const loading = isTextual && Boolean(artifact?.previewAvailable) && resolved === null;
+  const loading = needsTextPreview && resolved === null;
+  const generatingPreview = artifact && !artifact.previewAvailable && artifact.status !== "ready" && artifact.status !== "draft";
+  const previewTextReveal = useLoadingTextReveal(loading || Boolean(generatingPreview));
   const readingMinutes = useMemo(
     () => artifact?.kind === "markdown" && text !== null
       ? markdownReadingMinutes(text)
@@ -1231,7 +1235,7 @@ export default function ArtifactViewer({
       }
       if (artifact.status !== "ready") return <ArtifactPreviewLoading label="Generating preview…" />;
       return (
-        <div className="flex h-full min-h-40 items-center justify-center text-sm text-[var(--ink-muted)]">
+        <div ref={previewTextReveal} className="flex h-full min-h-40 items-center justify-center text-sm text-[var(--ink-muted)]">
           No inline preview is available for this format. Use Download to open it.
         </div>
       );
@@ -1243,7 +1247,7 @@ export default function ArtifactViewer({
       return <InlineGadget artifact={artifact} />;
     }
     if (isTextual && resolved?.text === null) {
-      return <p role="alert" className="flex items-center gap-2 p-3 text-sm text-[var(--ink-muted)]">
+      return <p ref={previewTextReveal} role="alert" className="flex items-center gap-2 p-3 text-sm text-[var(--ink-muted)]">
         Preview could not be loaded.
         <button type="button" className="underline" onClick={() => { setPreview(null); setPreviewAttempt(value => value + 1); }}>Retry</button>
       </p>;
@@ -1255,7 +1259,7 @@ export default function ArtifactViewer({
       }
       if ("error" in blueprint) {
         return (
-          <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{blueprint.error}</p>
+          <p ref={previewTextReveal} className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{blueprint.error}</p>
         );
       }
       return <HardwareBlueprintArtifact design={blueprint.design} />;
@@ -1265,7 +1269,7 @@ export default function ArtifactViewer({
         return <ArtifactPreviewLoading />;
       }
       if ("error" in cadDesign) {
-        return <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{cadDesign.error}</p>;
+        return <p ref={previewTextReveal} className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{cadDesign.error}</p>;
       }
       return (
         <ParametricCadArtifact
@@ -1293,7 +1297,7 @@ export default function ArtifactViewer({
         return <ArtifactPreviewLoading />;
       }
       if ("error" in film) {
-        return <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{film.error}</p>;
+        return <p ref={previewTextReveal} className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{film.error}</p>;
       }
       return (
         <VimaxFilmArtifact
@@ -1307,7 +1311,7 @@ export default function ArtifactViewer({
         return <ArtifactPreviewLoading />;
       }
       if ("error" in voxFilm) {
-        return <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{voxFilm.error}</p>;
+        return <p ref={previewTextReveal} className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{voxFilm.error}</p>;
       }
       return (
         <VoxProductionArtifact
@@ -1321,7 +1325,7 @@ export default function ArtifactViewer({
         return <ArtifactPreviewLoading />;
       }
       if ("error" in post) {
-        return <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{post.error}</p>;
+        return <p ref={previewTextReveal} className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{post.error}</p>;
       }
       return <SocialsManagerPostArtifact stored={post.stored} artifact={artifact} />;
     }
@@ -1333,14 +1337,14 @@ export default function ArtifactViewer({
             aria-label={`${artifact.title} Markdown preview`}
             className="artifact-document-page mx-auto min-h-full w-full max-w-[54rem] rounded-lg border border-[var(--line)] bg-[var(--paper-raised)] px-6 py-7 text-[var(--ink)] shadow-[0_8px_24px_rgba(28,45,36,0.10)] sm:px-10 sm:py-9"
           >
-            <ChatMarkdown content={text} />
+            <div ref={previewTextReveal}><ChatMarkdown content={text} /></div>
           </article>
         </ArtifactDocumentViewport>
       );
     }
     if (isTextual) {
       return (
-        <pre className="whitespace-pre-wrap break-words rounded-lg bg-[var(--paper-strong)] p-3 text-xs text-[var(--ink)]">
+        <pre ref={previewTextReveal} className="whitespace-pre-wrap break-words rounded-lg bg-[var(--paper-strong)] p-3 text-xs text-[var(--ink)]">
           {text ?? "Preview unavailable."}
         </pre>
       );

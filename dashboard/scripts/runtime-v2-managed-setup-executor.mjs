@@ -1,6 +1,7 @@
 import { runtimePathWithin as pathWithin, sameRuntimePath, runtimeProcessPath } from "./runtime-v2-paths.mjs";
 import { clearManagedPayloadReady, managedPayloadTarget, markManagedPayloadReady, runtimeBulkDataRoot } from "./runtime-v2-bulk-paths.mjs";
 import { spawn } from "node:child_process";
+import { resolveHostExecutable, withHostPath } from "./host-path.mjs";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -3191,12 +3192,23 @@ function readPinnedPackageVersion(root, relativeManifest, label) {
 }
 
 export function managedNpmLauncher(nodeExecutable = process.execPath) {
-  const entry = path.join(path.dirname(nodeExecutable), "node_modules", "npm", "bin", "npm-cli.js");
-  if (fs.statSync(entry, { throwIfNoEntry: false })?.isFile()) {
-    return {
-      command: directPath(nodeExecutable, "isFile", "The managed Node runtime"),
-      baseArgs: [directPath(entry, "isFile", "The managed npm entrypoint")],
-    };
+  // A bare `npm.cmd` is wrong on Windows twice over: Runtime's locked-down PATH
+  // cannot see it, and Node refuses to spawn a .cmd shim without a shell
+  // (EINVAL). So prefer npm-cli.js beside this Node, then beside the user's
+  // own Node, and run it as `node npm-cli.js` either way.
+  const candidates = [nodeExecutable];
+  if (nodeExecutable === process.execPath) {
+    const hostNode = resolveHostExecutable("node");
+    if (hostNode && !sameRuntimePath(hostNode, nodeExecutable)) candidates.push(hostNode);
+  }
+  for (const node of candidates) {
+    const entry = path.join(path.dirname(node), "node_modules", "npm", "bin", "npm-cli.js");
+    if (fs.statSync(entry, { throwIfNoEntry: false })?.isFile()) {
+      return {
+        command: directPath(node, "isFile", "The managed Node runtime"),
+        baseArgs: [directPath(entry, "isFile", "The managed npm entrypoint")],
+      };
+    }
   }
   return { command: process.platform === "win32" ? "npm.cmd" : "npm", baseArgs: [] };
 }
@@ -4087,7 +4099,11 @@ export async function executeManagedSetup(request, options) {
   if (!options || typeof options !== "object") fail("Managed setup context is invalid.");
   const dataRoot = directPath(options.dataRoot, "isDirectory", "The Runtime data root");
   const appRoot = directPath(options.appRoot, "isDirectory", "The Breadboard application root");
-  const environment = options.env ?? process.env;
+  // Runtime V2 launches setup with a locked-down PATH that cannot see the
+  // user's own uv, Python or Git (the same gap that broke the MCP installer's
+  // Git clone). Widen the real environment the way the user's shell would;
+  // bundled runtimes keep priority and an injected env (tests) is left exact.
+  const environment = options.env ?? withHostPath(process.env);
   const bulkRoot = MANAGED_SETUP_EXCLUSIVE_OPERATIONS.includes(canonical.operation)
     ? runtimeBulkDataRoot(dataRoot, environment) : dataRoot;
   const context = {

@@ -1,5 +1,7 @@
 'use client';
 
+import { notifyBotsChanged } from '@/lib/bots/client-cache';
+
 import { useStarredMessageJump, type StarredMessageTarget } from '@/app/components/use-starred-message-jump';
 import AssistantPanelHeader, { AssistantEmptyState } from '@/app/components/chat/assistant-panel-header';
 import StarredMessagesPanel from '@/app/components/hermes/starred-messages-panel';
@@ -27,6 +29,7 @@ import {
 import AssistantComposer from '@/app/components/assistant-composer';
 import { useRecommendations } from '@/app/components/use-recommendations';
 import { ChatSuggestionCards } from '@/app/components/hermes/chat-greeting-empty-state';
+import { SuggestionEmptyStatePresence } from '@/app/components/hermes/suggestion-presence';
 import { usePageSuggestions } from '@/app/components/use-page-suggestions';
 import QuartzInlineAnswerPopover, { type QuartzAnswerSelection } from '@/app/garden/quartz-inline-answer-popover';
 import InlineArtifactCards, { InlineArtifactCardsProvider } from '@/app/components/hermes/inline-artifact-cards';
@@ -692,11 +695,11 @@ const TranscriptRow = memo(function TranscriptRow({
                 live={isLiveConnection(connection)}
                 notes={message.progressNotes}
                 answer={visibleAssistantContent}
-                renderPanel={(hideNotes) => (
+                renderPanel={(hideNotes, notesOnly) => (
               <ActivityPanel
                 activities={activities}
                 progressNotes={hideNotes ? [] : delegatedThinkingUpdates(message)}
-                reasoning={message.thinking}
+                reasoning={notesOnly ? undefined : message.thinking}
                 answerContent={visibleAssistantContent}
                 connection={connection}
                 pendingPermission={pendingPermission}
@@ -2132,6 +2135,7 @@ export default function GardenAssistant({
           handleGardenSourceImportResult(event.details);
         }
         if (event.type === 'tool' && event.status === 'completed') {
+          if (event.toolName === 'bot_manage') notifyBotsChanged();
           const resources = normalizeGenerativeUiResources(event.uiResources);
           if (resources.length) {
             assistantMessage = {
@@ -2837,19 +2841,10 @@ export default function GardenAssistant({
         <div
           ref={transcriptScrollRef}
           data-notification-chat={`garden_chat:${activeClusterSlug}:${activeChatId}`}
-          className="bb-chat-scroller bb-chat-scroll-tail flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-4"
+          className="bb-chat-scroller bb-chat-scroll-tail relative flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-4"
           style={showStarred ? { marginRight: 'min(320px, 60%)' } : undefined}
         >
-          <InlineArtifactCardsProvider legacyChatSessionId={activeChatId} gardenSlug={activeClusterSlug}>
-          <InlineProposalCardsProvider
-            key={viewingConversationId}
-            conversationId={activeChat?.isOwn !== false ? viewingConversationId : null}
-            gardenSlug={activeChat?.isOwn !== false && viewingConversationId ? activeClusterSlug : null}
-            refreshKey={`${chatIsStreaming}:${messages.length}`}
-            onRequestRevision={prompt => queueFollowUp(prompt, [])}
-          >
-          {visibleMessages.length === 0 ? (
-            // Only suggestions grounded in what is open; nothing generic when there are none.
+          <SuggestionEmptyStatePresence visible={visibleMessages.length === 0} className="flex flex-1 flex-col">
             <AssistantEmptyState
               line={!hasActiveCluster
                 ? 'Open a garden to start asking.'
@@ -2859,12 +2854,21 @@ export default function GardenAssistant({
                 suggestionDetails={viewedPage
                   ? Object.fromEntries((pageSuggestions ?? []).map(prompt => [prompt, { label: 'This file' }]))
                   : Object.fromEntries(recommendations.map(item => [item.prompt, { label: item.sourceLabel, usefulness: item.usefulness, lesson: item.lesson }]))}
-                suggestionScopeKey={JSON.stringify([activeClusterSlug, viewedPage?.title, temporaryChat])}
+                suggestionScopeKey={JSON.stringify([activeClusterSlug, viewedPage?.title, temporaryChat, activeChat?.isOwn !== false])}
                 disabled={chatIsStreaming || !hasActiveCluster}
                 onSelectSuggestion={prompt => { setInput(prompt); composerTextareaRef.current?.focus(); }}
               />}
             />
-          ) : (
+          </SuggestionEmptyStatePresence>
+          <InlineArtifactCardsProvider legacyChatSessionId={activeChatId} gardenSlug={activeClusterSlug}>
+          <InlineProposalCardsProvider
+            key={viewingConversationId}
+            conversationId={activeChat?.isOwn !== false ? viewingConversationId : null}
+            gardenSlug={activeChat?.isOwn !== false && viewingConversationId ? activeClusterSlug : null}
+            refreshKey={`${chatIsStreaming}:${messages.length}`}
+            onRequestRevision={prompt => queueFollowUp(prompt, [])}
+          >
+          {visibleMessages.length > 0 && (
             <VirtualizedMessageList
               surface="garden-assistant"
               className="w-full"

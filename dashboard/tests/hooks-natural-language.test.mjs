@@ -22,6 +22,7 @@ for (const [sentence, provider, instructions] of [
   ["After a chat finishes, save the key decisions to my notes", "chat_completed", "save the key decisions to my notes"],
   ["When a new chat starts, remind me of my open tasks", "session_started", "remind me of my open tasks"],
   ["Whenever I send a message, note the time", "prompt_submitted", "note the time"],
+  ["When I star an answer, add it to my reading notes", "message_starred", "add it to my reading notes"],
   ["After any tool finishes, summarize what it did", "tool_used", "summarize what it did"],
   ["Before a tool runs, tell me which one", "tool_started", "tell me which one"],
 ]) {

@@ -1022,19 +1022,16 @@ export default function PdfAssistant({
                 Ask about the document, a figure, or what’s on this page.
                 Highlight text to ask in chat or keep an answer beside it.
               </p>
-              {pageSuggestions?.key === suggestionKey && pageSuggestions.items.length ? (
-                <div className="mt-5 flex justify-center">
-                  <ChatSuggestionCards
-                    suggestions={pageSuggestions.items}
-                    suggestionScopeKey={pageSuggestions.key}
-                    disabled={disabled || busy}
-                    onSelectSuggestion={(question) => {
-                      setInput(question);
-                      textareaRef.current?.focus();
-                    }}
-                  />
-                </div>
-              ) : null}
+              <ChatSuggestionCards
+                className="mx-auto mt-5"
+                suggestions={pageSuggestions?.key === suggestionKey ? pageSuggestions.items : []}
+                suggestionScopeKey={suggestionKey}
+                disabled={disabled || busy}
+                onSelectSuggestion={(question) => {
+                  setInput(question);
+                  textareaRef.current?.focus();
+                }}
+              />
             </div>
           }
         />

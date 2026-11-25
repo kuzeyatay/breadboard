@@ -5,6 +5,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import test from "node:test";
 import { build } from "esbuild";
+import Database from "better-sqlite3";
 
 test("Unicode PDF filenames work for disk, saved edits, ranges, and revalidation", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "source-pdf-response-"));
@@ -14,7 +15,13 @@ test("Unicode PDF filenames work for disk, saved edits, ranges, and revalidation
   const bytes = Buffer.from("%PDF-1.7\noriginal PDF bytes\n%%EOF");
   fs.mkdirSync(path.join(garden, "assets"), { recursive: true });
   fs.writeFileSync(path.join(garden, "assets", "introduction.pdf"), bytes);
-  globalThis.__sourcePdfResponseTest = { saved: undefined };
+  const db = new Database(":memory:");
+  db.exec(`CREATE TABLE pdf_document_edits (
+    id INTEGER PRIMARY KEY, cluster_id INTEGER, document_slug TEXT UNIQUE, source_pdf_path TEXT, pdf_data BLOB, updated_at TEXT);
+    CREATE TABLE pdf_document_edit_history (cluster_id INTEGER, document_slug TEXT);
+    INSERT INTO pdf_document_edit_history VALUES (1, 'telecom-1'), (1, 'telecom-1');`);
+  const addEdit = db.prepare("INSERT INTO pdf_document_edits VALUES (NULL,1,?,'/telecom-1/assets/introduction.pdf',?,'2026-09-21T12:00:00Z')");
+  globalThis.__sourcePdfResponseTest = db;
 
   try {
     const lib = path.resolve(import.meta.dirname, "../src/lib");
@@ -23,7 +30,7 @@ test("Unicode PDF filenames work for disk, saved edits, ranges, and revalidation
       "server-auth": `export const requireReadableClusterFromSlug = async slug => ({cluster: {slug, id: 1}, userId: 7});
         export const requireOwnedClusterFromSlug = requireReadableClusterFromSlug;
         export const routeErrorResponse = error => Response.json({error: error.message}, {status: 500});`,
-      "db": "export default {prepare: sql => ({get: (...args) => {globalThis.__sourcePdfResponseTest.lastKey=args[1];return sql.includes('COUNT(*)')?{count:2}:globalThis.__sourcePdfResponseTest.saved;}})};",
+      "db": "export default globalThis.__sourcePdfResponseTest;",
       "quartz-publish": "export async function publishQuartzAfterMutation() {}",
     };
     const bundle = await build({
@@ -51,9 +58,8 @@ test("Unicode PDF filenames work for disk, saved edits, ranges, and revalidation
       fs.writeFileSync(path.join(garden, "introduction.md"), `---\nsource_file: ${JSON.stringify(filename)}\nsource_pdf: /telecom-1/assets/introduction.pdf\n---\n`);
       for (const source of ["file", "database"]) {
         const expected = source === "file" ? bytes : Buffer.from("%PDF-1.7\nsaved annotation\n%%EOF");
-        globalThis.__sourcePdfResponseTest.saved = source === "file" ? undefined : {
-          pdf_data: expected, byte_length: expected.length, updated_at: "2026-09-21T12:00:00Z",
-        };
+        db.exec("DELETE FROM pdf_document_edits");
+        if (source === "database") addEdit.run("introduction", expected);
         const response = await get();
         assert.equal(response.status, 200, response.status === 200 ? undefined : await response.text());
         assert.equal(response.headers.get("x-pdf-source"), source);
@@ -73,23 +79,23 @@ test("Unicode PDF filenames work for disk, saved edits, ranges, and revalidation
     }
     fs.mkdirSync(path.join(garden, 'sources'));
     fs.writeFileSync(path.join(garden, 'sources/telecom-1.md'), '---\nsource_file: Telecom.pdf\nsource_pdf: /telecom-1/assets/introduction.pdf\n---\n');
-    globalThis.__sourcePdfResponseTest.saved = undefined;
+    const telecom = Buffer.from("%PDF-1.7\ntelecom annotation\n%%EOF");
+    addEdit.run("telecom-1", telecom);
     for (const slug of ['telecom-1', 'sources/telecom-1', 'telecom-1/sources/telecom-1', 'garden/telecom-1/sources/telecom-1.md']) {
       const request = new Request('http://localhost/api/documents/'+encodeURIComponent(slug)+'/source-pdf?clusterSlug=telecom-1');
       const params = { params: Promise.resolve({ slug }) };
       const pdf = await module.exports.GET(request, params);
       assert.equal(pdf.status, 200, slug);
-      assert.deepEqual(Buffer.from(await pdf.arrayBuffer()), bytes);
-      assert.equal(globalThis.__sourcePdfResponseTest.lastKey, 'telecom-1');
+      assert.deepEqual(Buffer.from(await pdf.arrayBuffer()), telecom);
       const history = await module.exports.historyGET(request, params);
       assert.equal(history.status, 200, slug);
       assert.deepEqual(await history.json(), { count: 2 });
-      assert.equal(globalThis.__sourcePdfResponseTest.lastKey, 'telecom-1');
     }
   } finally {
     if (previousContent === undefined) delete process.env.QUARTZ_CONTENT_PATH;
     else process.env.QUARTZ_CONTENT_PATH = previousContent;
     delete globalThis.__sourcePdfResponseTest;
+    db.close();
     fs.rmSync(root, {recursive: true, force: true});
   }
 });

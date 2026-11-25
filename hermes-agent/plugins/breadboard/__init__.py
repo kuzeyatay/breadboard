@@ -134,6 +134,10 @@ _MANIM_REQUEST_TIMEOUT_SECONDS = 130 * 60
 # music download and narration come first. The dashboard allows about eleven
 # minutes in total, so this has to outlast it.
 _VIDEO_REQUEST_TIMEOUT_SECONDS = 720
+# With the ChatGPT voice selected, Breadboard's voice window records each
+# narration line in about real time and verifies it word for word, so up to
+# sixty lines can take far longer than one Remotion render.
+_SPEECH_REQUEST_TIMEOUT_SECONDS = 30 * 60
 # Markdown conversion may transcribe an hour of audio locally, or wait on a
 # video's captions and a Whisper fallback (Watch allows 45 min plus queueing).
 _TO_MARKDOWN_REQUEST_TIMEOUT_SECONDS = 55 * 60
@@ -433,7 +437,7 @@ _GADGET_BINDING_SCHEMA = _object_schema(
         "name": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,31}$"},
         "kind": {
             "type": "string",
-            "enum": ["storage", "artifact", "messaging", "memory"],
+            "enum": ["storage", "artifact", "messaging", "memory", "garden"],
         },
         "purpose": _STRING,
         "writable": {"type": "boolean"},
@@ -3034,7 +3038,7 @@ _TOOLS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
         "mcp",
         _schema(
             "mcp_call",
-            "Call one tool on the Breadboard connection explicitly selected for this turn. Breadboard revalidates the user, conversation, connection, tool, arguments, capability mode, and active run before forwarding.",
+            "Call a tool on a Breadboard connection. To code, test and install a custom MCP server in Bread, discover the author tool on connection 'mcp-installer' using '__breadboard_list_tools'. To use an installed server from a new chat, get its exact connection with 'mcp-installer' / 'list_installed'. Breadboard checks the user, conversation, active run and permissions on each call.",
             {
                 "connection": {
                     "type": "string",
@@ -4346,7 +4350,7 @@ _TOOLS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
             "follows `instructions`. ALWAYS use this for 'whenever X happens, do "
             "Y' requests instead of telling the user to open the Hooks panel. "
             "Breadboard triggers: chat_completed, session_started, "
-            "prompt_submitted, tool_started, tool_used; `matcher` (regex, "
+            "prompt_submitted, message_starred (when the user stars an answer), tool_started, tool_used; `matcher` (regex, "
             "optional) filters them by tool name or turn text. External "
             "triggers (github, linear, generic webhook, ...) return a `url` the "
             "user must paste into that service; providers that need a token or "
@@ -5733,6 +5737,8 @@ def _call_breadboard(
             if route_kind == "image_to_3d"
             else _MANIM_REQUEST_TIMEOUT_SECONDS
             if route_kind == "manim"
+            else _SPEECH_REQUEST_TIMEOUT_SECONDS
+            if tool_name == "speech_synthesize"
             else _VIDEO_REQUEST_TIMEOUT_SECONDS
             if route_kind == "video"
             else _TO_MARKDOWN_REQUEST_TIMEOUT_SECONDS

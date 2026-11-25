@@ -23,6 +23,7 @@ import {
 import { useComposerInset } from '@/app/components/chat/use-composer-inset';
 import ChatDisclaimer from '@/app/components/chat/chat-disclaimer';
 import ChatGreetingEmptyState from '@/app/components/hermes/chat-greeting-empty-state';
+import { SuggestionEmptyStatePresence } from '@/app/components/hermes/suggestion-presence';
 import { useChatGreeting } from '@/app/components/hermes/use-chat-greeting';
 import AssistantMessageActions from '@/app/components/assistant-message-actions';
 import AssistantResponseMeta from '@/app/components/assistant-response-meta';
@@ -45,6 +46,7 @@ import ChatMessageRail, {
 } from '@/app/components/chat-message-rail';
 import ChatMarkdown from '@/app/components/chat-markdown';
 import { useSmoothStreamText } from '@/app/components/chat/use-smooth-stream-text';
+import { ReplyText } from '@/app/components/loading-text-reveal';
 import ChatTimeSeparator from '@/app/components/chat-time-separator';
 import { useAssistantIntelligence } from '@/app/components/use-assistant-intelligence';
 import { useAssistantModels } from '@/app/components/use-assistant-models';
@@ -233,10 +235,11 @@ const TranscriptRow = memo(function TranscriptRow({
             />
             {editing && onEditAssistant ? (
               <AssistantResponseEditor content={message.content} onSave={onEditAssistant} onCancel={() => setEditing(false)} />
-            ) : message.content ? (
-              <ChatMarkdown content={message.content} compact />
             ) : (
-              <span className="text-gray-500">Reading across your gardens...</span>
+              <>
+                <ReplyText>{message.content ? <ChatMarkdown content={message.content} compact /> : null}</ReplyText>
+                {!message.content && <span className="text-gray-500">Reading across your gardens...</span>}
+              </>
             )}
             {!responding ? (
               <AssistantMessageActions
@@ -1059,8 +1062,8 @@ export default function KnowledgeTerminal({ scope, onOpenRecentChat, privateBrow
             ref={transcriptScrollRef}
             className="bb-chat-scroller min-h-0 flex-1 overflow-y-auto"
           >
-            <div className="bb-chat-scroll-tail mx-auto flex min-h-full w-full max-w-3xl flex-col px-4 py-5">
-              {messages.length === 0 ? (
+            <div className="bb-chat-scroll-tail relative mx-auto flex min-h-full w-full max-w-3xl flex-col px-4 py-5">
+              <SuggestionEmptyStatePresence visible={messages.length === 0}>
                 <ChatGreetingEmptyState
                   greeting={chatGreeting.greeting}
                   suggestions={chatGreeting.suggestions}
@@ -1068,7 +1071,8 @@ export default function KnowledgeTerminal({ scope, onOpenRecentChat, privateBrow
                   suggestionDetails={chatGreeting.suggestionDetails}
                   onSelectSuggestion={fillComposerWithPrompt}
                 />
-              ) : (
+              </SuggestionEmptyStatePresence>
+              {messages.length > 0 && (
                 <VirtualizedMessageList
                   surface="knowledge-terminal"
                   className="w-full"

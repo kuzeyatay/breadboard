@@ -174,6 +174,7 @@ export function gadgetHostApiReference(): string {
     "```js",
     "// A read. Resolves with real data once Breadboard authorizes and records it.",
     "const rows = await host.<binding>.observe('<operation>', { ...args });",
+    "// A read-only garden binding can list {}, search {query}, or read {slug} in its gadget's own Garden.",
     "",
     "// A write. Resolves IMMEDIATELY, before it has happened, with:",
     "//   { actionId, status: 'pending' | 'approved', simulated, outcome }",

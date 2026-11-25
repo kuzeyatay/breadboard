@@ -173,7 +173,7 @@ export function createConversation(
 }
 
 /**
- * Move a terminal chat into a garden workspace. It becomes exactly what a chat
+ * Move a saved chat into a garden workspace. A terminal chat becomes what a chat
  * started there is: a garden_chat conversation with the workspace history row
  * (chat_sessions + chat_messages mirror) the Garden UI reads, so it lists in the
  * workspace and shows as "<Garden>: Workspace: <title>" in the terminal.
@@ -183,10 +183,22 @@ export function moveConversationToGarden(
   gardenId: number,
   database: Database.Database = db,
 ): ConversationRow {
-  if (conversation.surface !== "dashboard_terminal" || conversation.legacy_chat_session_id !== null) {
-    throw new ConversationStoreError(409, "not_movable", "Only terminal chats can be moved to a workspace.");
-  }
   return database.transaction(() => {
+    // Re-read inside the write transaction so a retry or simultaneous move
+    // always follows the current mirror, even with a stale caller snapshot.
+    conversation = getConversationForUser(conversation.public_id, conversation.user_id, database);
+    if (conversation.surface === "garden_chat" && conversation.legacy_chat_session_id !== null) {
+      const moved = database.prepare(`
+        UPDATE chat_sessions SET cluster_id = ?, updated_at = datetime('now')
+        WHERE id = ? AND conversation_id = ? AND user_id = ? AND history_surface = 'garden_chat'
+      `).run(gardenId, conversation.legacy_chat_session_id, conversation.id, conversation.user_id);
+      if (!moved.changes) throw new ConversationStoreError(409, "not_movable", "Only workspace chats can move between Gardens.");
+      database.prepare("UPDATE conversations SET default_garden_id = ?, updated_at = datetime('now') WHERE id = ?").run(gardenId, conversation.id);
+      return getConversationById(conversation.id, database)!;
+    }
+    if (conversation.surface !== "dashboard_terminal" || conversation.legacy_chat_session_id !== null) {
+      throw new ConversationStoreError(409, "not_movable", "Choose a Terminal or Garden workspace chat.");
+    }
     const session = database.prepare(`
       INSERT INTO chat_sessions(cluster_id, user_id, title, history_surface, conversation_id, created_at, updated_at)
       VALUES (?, ?, ?, 'garden_chat', ?, ?, datetime('now'))

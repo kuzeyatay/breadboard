@@ -11,7 +11,6 @@ import { gardenCardNoteCount } from "@/lib/garden-card-note-count";
 import {
   refreshOrganizationQuartzIndex,
   refreshPrivateQuartzIndex,
-  refreshPrivateQuartzIndexCooperatively,
   refreshPublicQuartzIndex,
 } from "@/lib/quartz-garden-index";
 import {
@@ -23,6 +22,7 @@ import type { GraftIndexState } from "@/lib/code-index/index-service";
 import { publishQuartzAfterMutation } from "@/lib/quartz-publish";
 import { requireUserId } from "@/lib/server-auth";
 import { uniqueGardenSlug } from "@/lib/garden-slug";
+import { createOwnedGarden } from "@/lib/garden-creation";
 import { acquireGardenMutationLease } from "@/lib/garden-mutation-lease";
 import {
   deleteOwnedGarden,
@@ -83,7 +83,7 @@ const MAX_CARD_WIDTH = 640;
 const MIN_CARD_HEIGHT = 190;
 const MAX_CARD_HEIGHT = 440;
 
-type ClusterRow = Omit<
+export type ClusterRow = Omit<
   Cluster,
   | "noteCount"
   | "visibility"
@@ -326,64 +326,7 @@ export async function createCluster(
 ): Promise<Cluster> {
   try {
     const userId = await requireUserId();
-    const slug = uniqueClusterSlug(name);
-    const cleanFolder = normalizeFolderPath(folder);
-    if (cleanFolder) ensureFolderPath(db, userId, cleanFolder);
-    const contentPath = process.env.QUARTZ_CONTENT_PATH;
-    const clusterDir = contentPath ? path.join(contentPath, slug) : null;
-    const lease = clusterDir
-      ? acquireGardenMutationLease(clusterDir, "create-garden")
-      : null;
-    let created: ClusterRow;
-
-    try {
-      created = db.prepare(
-        `INSERT INTO clusters (
-          user_id, name, slug, description, visibility, border_color, folder,
-          thought_topology_enabled, thought_topology_revision
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0) RETURNING *`,
-      ).get(
-        userId,
-        name,
-        slug,
-        description,
-        "private",
-        DEFAULT_BORDER_COLOR,
-        cleanFolder || null,
-      ) as ClusterRow;
-
-      if (contentPath && clusterDir) {
-        fs.mkdirSync(clusterDir, { recursive: true });
-        const date = new Date().toISOString().split("T")[0];
-        const indexContent = `---\ntitle: ${JSON.stringify(name)}\ndate: ${date}\ndescription: ${JSON.stringify(description || "")}\nknowledge_type: "cluster-index"\n---\n`;
-        fs.writeFileSync(path.join(clusterDir, "_index.md"), indexContent);
-        refreshClusterIndex(contentPath, slug);
-      }
-    } finally {
-      lease?.release();
-    }
-
-    // The garden is usable as soon as its database row and source index exist.
-    // Preparing the library scans every existing garden, so it belongs after
-    // the response too, alongside the potentially long Quartz publication.
-    after(async () => {
-      try {
-        await refreshPrivateQuartzIndexCooperatively(userId);
-        await publishQuartzAfterMutation(`create cluster ${slug}`, {
-          userId,
-          gardenSlug: slug,
-        });
-      } catch (error) {
-        console.error(
-          `[quartz] Failed to publish newly created garden ${slug}:`,
-          error,
-        );
-      }
-    });
-    revalidatePath("/dashboard");
-    revalidatePath("/new-tab");
-    revalidatePath("/browser");
-    revalidatePath("/garden");
+    const created = createOwnedGarden(userId, name, description, folder);
     return toCluster(created, 0, userId);
   } catch (err) {
     throw new Error(

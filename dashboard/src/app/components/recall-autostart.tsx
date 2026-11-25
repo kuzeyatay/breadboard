@@ -23,7 +23,8 @@ export default function RecallAutoStart() {
     const deadline = Date.now() + 35 * 60_000;
     let onSettingsChanged = () => {};
 
-    void getSession()
+    // Checking the owner on navigation should not wake every other tab to recheck its session.
+    void getSession({ broadcast: false })
       .then(async (session) => {
         if (!active) return;
         if (!session?.user) return;

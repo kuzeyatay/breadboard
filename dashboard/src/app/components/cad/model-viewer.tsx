@@ -20,6 +20,7 @@
 // The props below name that difference rather than assuming either case.
 
 import { useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
+import ArtifactPreviewLoading from "../hermes/artifact-preview-loading";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import type { ModelAttachmentFormat } from "@/lib/model-attachments";
@@ -810,9 +811,9 @@ export default function ModelViewer({
     <div className="relative h-full w-full">
       <div ref={mountRef} className="h-full w-full" />
       {status === "loading" ? (
-        <p className="absolute inset-0 flex items-center justify-center text-sm text-[var(--ink-muted)]">
-          Loading the 3D model…
-        </p>
+        <div className="absolute inset-0 flex items-center justify-center">
+          <ArtifactPreviewLoading label="Loading the 3D model…" />
+        </div>
       ) : null}
       {status === "error" ? (
         <p className="absolute inset-0 flex items-center justify-center px-6 text-center text-sm text-[var(--danger)]">

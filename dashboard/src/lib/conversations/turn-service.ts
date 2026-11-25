@@ -2272,6 +2272,7 @@ export async function startConversationTurn(
               goalId: goalModeState?.status === "complete" ? null : goalModeState?.goal_id ?? null,
               enabled: true,
               automatic: Boolean(input.goalContinuation),
+              ...(goalModeState && goalModeState.status !== "complete" && goalModeState.status !== "active" ? { readOnly: true } : {}),
               ...(input.goalContinuation ? { previousRunIds: [...(continuationDispatch?.goalMode?.previousRunIds ?? []), input.goalContinuation.sourceRunId] } : {}),
               context: { activeGardenSlug: context.activeGardenSlug, activePageSlug: context.activePageSlug,
                 selectedDocumentIds: context.selectedDocumentIds },

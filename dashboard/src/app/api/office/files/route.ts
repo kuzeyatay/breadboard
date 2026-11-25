@@ -2,6 +2,7 @@ import db from "@/lib/db";
 import { fileError, fileJson, gardenFileContext, gardenFiles, readFileJson } from "@/lib/garden-files/server.ts";
 import { GardenFileError } from "@/lib/garden-files/store.ts";
 import { blankOfficeFile } from "@/lib/office/blank.ts";
+import { createFromSpaceTemplate, listSpaceTemplates } from "@/lib/office/templates.ts";
 import { scheduleOfficeMirrors } from "@/lib/office/quartz-mirror.ts";
 import { OFFICE_FOLDER, officeKind, spacesKindForPath, type OfficeFile, type OfficeWorkspace } from "@/lib/office/types.ts";
 import { requireUserId } from "@/lib/server-auth";
@@ -28,7 +29,7 @@ export async function GET(request: Request) {
     }
     files.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     const workspaces: OfficeWorkspace[] = gardens.map(({ slug, name }) => ({ slug, name }));
-    return fileJson({ files, workspaces });
+    return fileJson({ files, workspaces, templates: listSpaceTemplates(store, userId) });
   } catch (error) { return fileError(error); }
 }
 
@@ -42,6 +43,10 @@ export async function POST(request: Request) {
     const whiteboard = info.kind === "affine" && body.whiteboard === true;
     const title = (typeof body.title === "string" ? body.title : "").replace(/[\\/:*?"<>|\u0000-\u001f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 120) || `Untitled ${whiteboard ? "whiteboard" : info.noun}`;
     const { store, scope } = await gardenFileContext(body.gardenId, true);
+    if (typeof body.templateId === "string") {
+      const file = await createFromSpaceTemplate(store, scope, body.templateId, title, request.signal);
+      return fileJson({ file }, 201);
+    }
     const bytes = await blankOfficeFile(info.kind, title, { whiteboard });
     const stage = await store.stage(new Blob([bytes as BlobPart]).stream(), request.signal);
     try {

@@ -8,25 +8,21 @@ import {
   requireEnabled,
   requireString,
 } from "@/lib/hermes/route-helpers.ts";
-import {
-  classifySkill,
-  quarantineSkill,
-  type SkillCandidate,
-} from "@/lib/hermes/skills.ts";
-import {
-  buildSkillFiles,
-  parseSkillDraftResponse,
-  skillDraftMessages,
-  validateSkillDraft,
-  type SkillDraft,
-  type SkillReferenceDraft,
-} from "@/lib/hermes/skill-authoring.ts";
-import { recordAuditEvent, recordSkillDecision } from "@/lib/hermes/runtime-store.ts";
+import { parseSkillDraftResponse, skillDraftMessages, validateSkillDraft } from "@/lib/hermes/skill-authoring.ts";
+import { pendingAuthoredSkills, stageAuthoredSkill } from "@/lib/hermes/stage-authored-skill.ts";
 import { createChatmockClient } from "@/lib/knowledge";
 import { DEFAULT_MODEL } from "@/lib/ai-models";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+
+export async function GET() {
+  try {
+    const userId = await requireUserId();
+    requireEnabled();
+    return NextResponse.json({ drafts: pendingAuthoredSkills(userId) });
+  } catch (error) { return apiErrorResponse(error); }
+}
 
 // The skill creator produces locally authored skills. Creation only stages an
 // immutable revision in inactive quarantine; the same human review and
@@ -38,77 +34,12 @@ export async function POST(request: Request) {
     const body = await readJsonBody(request);
     if (body.action === "draft") return await draftWithModel(body, userId);
 
-    const draft = draftFromBody(body);
-    const validation = validateSkillDraft(draft);
-    if (validation.issues.length) {
-      throw new ApiError(422, "invalid_skill_draft", validation.issues.join(" "));
-    }
-    const files = buildSkillFiles(draft);
-    const manifest = files["SKILL.md"];
-    const classification = classifySkill({
-      name: draft.name,
-      description: draft.description,
-      manifest,
-    });
-    const candidate: SkillCandidate = {
-      id: `local:${draft.name}`,
-      upstreamId: `local:${draft.name}`,
-      name: draft.name,
-      package: `local/authored@${draft.name}`,
-      publisher: "local",
-      repository: "local/authored",
-      source: "Created with the Breadboard skill creator",
-      detailsUrl: "local://skill-creator",
-      description: draft.description.trim(),
-      installCommand: "Authored locally; never downloaded",
-      requestedPermissions: [],
-      slashCommand: draft.name,
-      classification,
-    };
-    const report = quarantineSkill({ candidate, files });
-    recordSkillDecision({
-      skillName: report.name,
-      sourceUrl: report.source,
-      decision: "quarantined",
-      decidedBy: userId,
-      manifest: report,
-      notes: "Authored locally with the Breadboard skill creator (skill-creator methodology).",
-    });
-    recordAuditEvent({
-      eventType: "skill.authored_quarantined",
-      userId,
-      payload: {
-        name: report.name,
-        fileHashes: report.fileHashes,
-        classification: report.classification,
-      },
-    });
-    return NextResponse.json({ report, warnings: validation.warnings });
+    return NextResponse.json(stageAuthoredSkill(userId, body));
   } catch (error) {
     return apiErrorResponse(error);
   }
 }
 
-function draftFromBody(body: Record<string, unknown>): SkillDraft {
-  const references: SkillReferenceDraft[] = Array.isArray(body.references)
-    ? body.references.flatMap((entry) => {
-        if (typeof entry !== "object" || entry === null) return [];
-        const reference = entry as Record<string, unknown>;
-        return [
-          {
-            filename: typeof reference.filename === "string" ? reference.filename : "",
-            contents: typeof reference.contents === "string" ? reference.contents : "",
-          },
-        ];
-      })
-    : [];
-  return {
-    name: requireString(body.name, "name", 100).trim(),
-    description: requireString(body.description, "description", 4000).trim(),
-    instructions: requireString(body.instructions, "instructions", 500_000),
-    references,
-  };
-}
 
 async function draftWithModel(body: Record<string, unknown>, userId: number): Promise<NextResponse> {
   const intent = requireString(body.intent, "intent", 4000);

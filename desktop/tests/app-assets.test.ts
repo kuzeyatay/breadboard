@@ -4,10 +4,30 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { appAssetUrl, createAppAssetLoader } from "../src/main/app-assets";
-import { artifactPreviewUrl } from "../src/main/artifact-preview-transport";
+import { artifactPreviewUrl, readArtifactPreview } from "../src/main/artifact-preview-transport";
 import { runElectronFixture } from "./helpers/run-electron-fixture";
 
 const base = "http://127.0.0.1:32123/new-tab";
+test("private images deliver the first bytes before EOF and enforce the decoded size limit", { timeout: 5000 }, async () => {
+  const url = new URL("/api/hermes/artifacts/art_test/preview", base);
+  const open = (stream: ReadableStream<Uint8Array>) => readArtifactPreview(url, { cookies: { get: async () => [] } },
+    new Request(url), async () => new Response(stream, { headers: { "Content-Type": "image/png" } }));
+  let cancelled = false;
+  const preview = await open(new ReadableStream({
+    start(controller) { controller.enqueue(Uint8Array.of(42)); },
+    cancel() { cancelled = true; },
+  }));
+  const reader = preview.body!.getReader();
+  assert.deepEqual((await reader.read()).value, Uint8Array.of(42));
+  await reader.cancel();
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(cancelled, true);
+
+  const chunk = new Uint8Array(1024 * 1024);
+  const oversized = await open(new ReadableStream({ pull(controller) { controller.enqueue(chunk); } }));
+  await assert.rejects(oversized.arrayBuffer(), /too large/);
+});
+
 test("private preview transport accepts only artifact previews on the app origin", () => {
   const preview = "http://127.0.0.1:32123/api/hermes/artifacts/art_test/preview?version=2";
   assert.equal(artifactPreviewUrl(preview, base)?.href, preview);

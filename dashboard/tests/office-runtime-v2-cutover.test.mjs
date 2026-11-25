@@ -624,7 +624,7 @@ test("all Next Office-family callers have no direct process or heavy renderer fa
   assert.match(markdownPdfRoute, /renderMarkdownPdfDownloadViaRuntime/u);
   assert.doesNotMatch(markdownPdfRoute, /markdown-render\/pdf|renderMarkdownToPdf/u);
   assert.match(markdownPdfRoute, /requireReadableCluster\(userId, clusterSlug\)\.slug/u);
-  assert.match(markdownPdfRoute, /Readable\.toWeb\(fs\.createReadStream\(filePath\)\)/u);
+  assert.match(markdownPdfRoute, /nodeStreamToWeb\(fs\.createReadStream\(filePath\)\)/u);
   assert.ok(
     markdownPdfRoute.indexOf("directPdf(durablePath)") <
       markdownPdfRoute.indexOf("renderMarkdownPdfDownloadViaRuntime("),

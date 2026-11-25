@@ -44,11 +44,12 @@ test("Next builds every dashboard font from checked-in files with fetch unavaila
         data: [options],
         resolve: (file) => path.resolve(path.dirname(filename), file),
         loaderContext: { fs },
-        emitFontFile: (buffer, ext) => {
-          assert.equal(ext, "ttf");
-          assert.equal(buffer.readUInt32BE(0), 0x00010000, "valid TrueType header");
+        emitFontFile: (buffer, ext, preload) => {
+          assert.equal(ext, "woff2");
+          assert.equal(buffer.toString("ascii", 0, 4), "wOF2", "valid WOFF2 header");
+          if (call.name === "ibmPlexMono") assert.equal(preload, false, "load code fonts only on demand");
           emitted += 1;
-          return `/_next/static/media/offline-font-${emitted}.ttf`;
+          return `/_next/static/media/offline-font-${emitted}.woff2`;
         },
       });
       assert.equal(result.variable, options.variable);

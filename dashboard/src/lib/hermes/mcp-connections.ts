@@ -90,6 +90,7 @@ const RESERVED_MCP_SLUGS = new Set([
   "list",
   "read",
   "mcp-installer",
+  "breadboard-workspace",
 ]);
 
 export function mcpSlug(value: string): string {
@@ -390,6 +391,21 @@ export function saveMcpConnection(
       JSON.stringify(storedConfig),
     );
   return getMcpConnection(userId, Number(result.lastInsertRowid))!;
+}
+
+/** Publish only a tested definition. A retry can reuse its exact launch, but
+ * two chats creating different tools with the same name cannot replace each other. */
+export function createVerifiedMcpConnection(userId: number, slug: string, name: string, launch: LegacyApprovedLocalMcpDefinition): McpConnectionRecord {
+  const parsed = parseMcpConfig({ ...launch, approved: true, displayName: name, slug });
+  const { reference } = sealApprovedLocalMcpProfile(userId, slug, launch);
+  return db.transaction(() => {
+    const existing = getMcpConnectionBySlug(userId, slug);
+    if (existing) {
+      if (existing.enabled && isApprovedLocalMcpProfileReference(existing.config) && existing.config.profileDigest === reference.profileDigest) return existing;
+      throw new ApiError(409, "mcp_name_in_use", "That connection name is already in use. Choose another name or manage the existing connection in Settings.");
+    }
+    return saveMcpConnection(userId, { ...parsed, config: reference });
+  }).immediate();
 }
 
 export function setMcpConnectionEnabled(

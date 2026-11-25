@@ -52,7 +52,11 @@
   content: none;
 }
 
-/* The rings belong to the opening search area, not the fixed wallpaper. */
+.backdrop > [data-spotify-background],
+.rings:global(.browser-start-page) {
+  --bb-ambient-fps: 30;
+}
+/* Anchor the rings to the opening search area as the page scrolls. */
 .rings:global(.browser-start-page) {
   position: absolute;
   inset: 0;
@@ -103,6 +107,18 @@
 }
 
 .accessories :global(.browser-daily-quote) { display: flex; padding-block: 11px 9px; }
+/* The color field is already soft. Tint the stationary widgets so each
+   lighting frame can pass underneath without running a blur per widget. */
+.surface:has(> .backdrop [data-spotify-background][data-active="true"]) {
+  --home-widget-backdrop: none;
+}
+.surface:has(> .backdrop [data-spotify-background][data-active="true"]) :is(:global(.browser-sketch-outline), :global(.bb-terminal-suggestion-beam)) path:last-child {
+  filter: none;
+}
+.surface:has(> .backdrop [data-spotify-background][data-active="true"]) .accessories :global(.browser-daily-quote) {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
 .accessories :global(.browser-dock) { padding-block: 7px; }
 .accessories :global(.browser-dock-weather) { padding-block: 7px; }
 .accessories :global(.browser-home-calendar) { padding-block: 10px; gap: 8px; }
@@ -144,8 +160,8 @@
   background: var(--home-widget-tint);
   border-color: var(--home-widget-border);
   box-shadow: var(--home-widget-shadow);
-  -webkit-backdrop-filter: blur(18px) saturate(125%);
-  backdrop-filter: blur(18px) saturate(125%);
+  -webkit-backdrop-filter: var(--home-widget-backdrop, blur(18px) saturate(125%));
+  backdrop-filter: var(--home-widget-backdrop, blur(18px) saturate(125%));
 }
 .surface .launcher :global(.browser-add-shortcut) :global(.browser-quick-link-icon) {
   border-color: transparent;
@@ -225,15 +241,18 @@
 .surface .gardens :is(:global(.dashboard-garden-card), :global(.neu-segmented), :global(.neu-popover), :global(.dashboard-garden-card-overlay)) {
   background: var(--home-widget-tint);
   box-shadow: var(--home-widget-shadow);
-  -webkit-backdrop-filter: blur(18px) saturate(125%);
-  backdrop-filter: blur(18px) saturate(125%);
+  -webkit-backdrop-filter: var(--home-widget-backdrop, blur(18px) saturate(125%));
+  backdrop-filter: var(--home-widget-backdrop, blur(18px) saturate(125%));
+}
+.surface .gardens :is(:global(.neu-popover), :global(.dashboard-garden-card-overlay)) {
+  --home-widget-backdrop: blur(18px) saturate(125%);
 }
 .surface .gardens :is(button, a):not([aria-label^="Use border color"], [aria-label^="Resize"]) {
   background: var(--home-widget-tint);
   color: var(--browser-wallpaper-foreground);
   box-shadow: 0 2px 8px rgb(0 0 0 / 10%);
-  -webkit-backdrop-filter: blur(18px) saturate(125%);
-  backdrop-filter: blur(18px) saturate(125%);
+  -webkit-backdrop-filter: var(--home-widget-backdrop, blur(18px) saturate(125%));
+  backdrop-filter: var(--home-widget-backdrop, blur(18px) saturate(125%));
 }
 .surface .gardens :is(button, a):not([aria-label^="Use border color"], [aria-label^="Resize"]):hover {
   background: color-mix(in srgb, var(--home-widget-tint), var(--browser-wallpaper-foreground) 12%);

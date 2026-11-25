@@ -1,4 +1,4 @@
-import { Readable } from "node:stream";
+import { nodeStreamToWeb } from "@/lib/node-stream-to-web";
 import { externalRuntimeFilesystem as fs } from "@/lib/external-runtime-filesystem";
 import { requireUserId } from "@/lib/server-auth";
 import { ApiError, apiErrorResponse } from "@/lib/hermes/route-helpers.ts";
@@ -75,7 +75,7 @@ export async function GET(
 
     const range = requestedRange(request.headers.get("range"), served.byteSize);
     const stream = fs.createReadStream(served.path, range ?? undefined);
-    const body = Readable.toWeb(stream) as ReadableStream<Uint8Array>;
+    const body = nodeStreamToWeb(stream) as ReadableStream<Uint8Array>;
 
     return range
       ? new Response(body, {

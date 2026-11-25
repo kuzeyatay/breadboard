@@ -10,7 +10,7 @@ import { notifyHermesSessionsChanged } from "@/lib/hermes/session-client";
 import BotAvatar from "./bot-avatar";
 import BotEditor from "./bot-editor";
 import LoadingRows from "../hermes/loading-rows";
-import { BOTS_CHANGED_EVENT, BOTS_AUTH_CHANGED_EVENT, loadCachedBots, peekCachedBots } from "@/lib/bots/client-cache";
+import { BOTS_CHANGED_EVENT, BOTS_AUTH_CHANGED_EVENT, loadCachedBots, notifyBotsChanged, peekCachedBots } from "@/lib/bots/client-cache";
 import { BREAD_BOT, botHandle } from "@/lib/bots/mentions";
 
 export { BOTS_CHANGED_EVENT } from "@/lib/bots/client-cache";
@@ -68,7 +68,7 @@ export default function BotsPanel({ onNavigate }: { onNavigate: () => void }) {
   async function save(input: BotInput) {
     if (busy) return;
     setBusy(true); setError(null);
-    try { await mutate(editor?.id ? "PATCH" : "POST", { ...input, ...(editor?.id ? { id: editor.id } : {}) }); window.dispatchEvent(new Event(BOTS_CHANGED_EVENT)); closeEditor(); await load(); }
+    try { await mutate(editor?.id ? "PATCH" : "POST", { ...input, ...(editor?.id ? { id: editor.id } : {}) }); notifyBotsChanged(); closeEditor(); await load(); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "The bot could not be saved."); }
     finally { setBusy(false); }
   }
@@ -87,7 +87,7 @@ export default function BotsPanel({ onNavigate }: { onNavigate: () => void }) {
   }
   async function remove(id: string) {
     setBusy(true); setError(null);
-    try { await mutate("DELETE", { id }); setRemoving(null); window.dispatchEvent(new Event(BOTS_CHANGED_EVENT)); await load(); }
+    try { await mutate("DELETE", { id }); setRemoving(null); notifyBotsChanged(); await load(); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "The bot could not be removed."); }
     finally { setBusy(false); }
   }

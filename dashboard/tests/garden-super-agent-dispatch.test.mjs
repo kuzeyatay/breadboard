@@ -97,7 +97,7 @@ async function dispatch(payload, { title = 'New chat', orderIndex = 0, commandRe
   const noop = () => {};
   const empty = () => "";
   const scope = { hermesPromptText, normalizeChatTextSelectionReference, parseBrowserTerminalAccess,
-    answerFeedbackContext: empty, codeOriginPrompt: empty,
+    answerFeedbackContext: empty, recentActivityContext: empty, withGardenConnections: text => text, codeOriginPrompt: empty,
     browserTerminalPrompt: () => "", setBrowserTerminalContext: () => {},
     resolveUnifiedWorkflowContinuation: () => workflowContinuation,
     selectedGardenDocumentQuestionPrompt: functions("lib/hermes/garden-reader.ts", ["selectedGardenDocumentQuestionPrompt"], {}, "selectedGardenDocumentQuestionPrompt"),

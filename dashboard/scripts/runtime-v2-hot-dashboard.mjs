@@ -125,7 +125,11 @@ export function shouldShadowProjectDotenv(environment = process.env) {
  * an inherited shell variable.
  */
 export function pinHotDashboardOutput(environment = process.env) {
-  environment.BREADBOARD_NEXT_DIST_DIR = HOT_DASHBOARD_DIST_DIR;
+  // The Electron fixture uses a disposable data tree. Its compiler needs its
+  // own Next lock while the developer's desktop is open on this checkout.
+  const dataRoot = (environment.BREADBOARD_DATA_DIR ?? "").replaceAll("\\", "/");
+  const qaRun = /\/breadboard-qa-runtime\/[\w-]+\/user-data\/Data\/?$/i.test(dataRoot);
+  environment.BREADBOARD_NEXT_DIST_DIR = qaRun ? ".next-qa-hot" : HOT_DASHBOARD_DIST_DIR;
 }
 
 const thisFile = fileURLToPath(import.meta.url);

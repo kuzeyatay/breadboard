@@ -1,4 +1,4 @@
-import { Readable } from "node:stream";
+import { nodeStreamToWeb } from "@/lib/node-stream-to-web";
 import { NextResponse } from "next/server";
 import { externalRuntimeFilesystem as fs } from "@/lib/external-runtime-filesystem";
 import { requireUserId } from "@/lib/server-auth";
@@ -28,7 +28,7 @@ export async function GET(request: Request) {
       if (!blob) throw new ApiError(404, "video_studio_blob_missing", "That chat video was not found.");
       file = { path: blob.path, mimeType: BLOB_TYPES[blob.format] ?? "application/octet-stream", filename: `${blob.blobId}.${blob.format}` };
     } else throw new ApiError(400, "video_studio_media_argument", "Name an artifact or a chat video.");
-    const stream = Readable.toWeb(fs.createReadStream(file.path)) as ReadableStream<Uint8Array>;
+    const stream = nodeStreamToWeb(fs.createReadStream(file.path)) as ReadableStream<Uint8Array>;
     return new Response(stream, { headers: {
       "Content-Type": file.mimeType, "Content-Length": String(fs.statSync(file.path).size),
       "Content-Disposition": `inline; filename="${encodeURIComponent(file.filename)}"`, "Cache-Control": "private, no-store",

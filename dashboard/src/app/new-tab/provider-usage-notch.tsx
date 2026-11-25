@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, type CSSProperties } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { Activity, RefreshCw } from "lucide-react";
+import { loadingIconMotion } from "@/app/components/loading-icon-motion";
 import {
   notchActivityElapsed,
   notchActivityLabel,
@@ -36,7 +37,7 @@ function ProviderGlyph({ provider }: { provider: NotchProviderId }) {
 function ActivityArc({ state }: { state: NotchActivityState }) {
   if (state === "idle") return null;
   if (state === "working") return (
-    <svg viewBox="0 0 48 48" className={styles.activityArc} data-agent-state={state} aria-hidden="true">
+    <svg key="working" {...loadingIconMotion} viewBox="0 0 48 48" className={styles.activityArc} data-agent-state={state} aria-hidden="true">
       <circle cx="24" cy="24" r="15" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" pathLength="100" strokeDasharray="25 75" />
     </svg>
   );
@@ -56,7 +57,7 @@ function UsageRing({ provider, used, loading, stale, activity }: { provider: Not
         <circle cx="24" cy="24" r="20.8" fill="none" className={styles.ringProgress} strokeWidth="3.3" strokeLinecap="round" pathLength="100" strokeDasharray="100" strokeDashoffset={100 - (remaining ?? 0)} transform="rotate(-90 24 24)" opacity={remaining === 0 || remaining === null ? 0 : 1} />
       </svg>
       <ProviderGlyph provider={provider} />
-      {loading && activity === "idle" && <svg viewBox="0 0 48 48" className={styles.refreshArc} aria-hidden="true"><circle cx="24" cy="24" r="15" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" pathLength="100" strokeDasharray="20 80" /></svg>}
+      {loading && activity === "idle" && <svg {...loadingIconMotion} viewBox="0 0 48 48" className={styles.refreshArc} aria-hidden="true"><circle cx="24" cy="24" r="15" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" pathLength="100" strokeDasharray="20 80" /></svg>}
       <ActivityArc state={activity} />
       {stale && !loading && <span className={styles.staleDot} aria-hidden="true" />}
     </span>
@@ -65,7 +66,7 @@ function UsageRing({ provider, used, loading, stale, activity }: { provider: Not
 
 function StatusRing({ state }: { state: NotchActivityState }) {
   const fraction = state === "working" ? 75 : state === "waiting" ? 50 : 100;
-  return <svg viewBox="0 0 12 12" className={`${styles.sessionStateRing} ${styles[`sessionState${state[0].toUpperCase()}${state.slice(1)}`]}`} data-session-state={state} aria-hidden="true">
+  return <svg {...(state === "working" ? loadingIconMotion : {})} viewBox="0 0 12 12" className={`${styles.sessionStateRing} ${styles[`sessionState${state[0].toUpperCase()}${state.slice(1)}`]}`} data-session-state={state} aria-hidden="true">
     <circle cx="6" cy="6" r="4.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" pathLength="100" strokeDasharray={`${fraction} 100`} transform="rotate(-90 6 6)" />
   </svg>;
 }
@@ -191,7 +192,7 @@ export default function ProviderUsageNotch() {
                     <ProviderGlyph provider={provider.id} />
                     <h2>{provider.label} Usage</h2>
                     <button type="button" className={styles.refresh} disabled={reading?.loading || coolingDown} aria-label={`Refresh ${provider.label} usage`} title={coolingDown ? "Waiting for the provider’s retry window" : "Refresh usage"} onClick={() => void usage.refresh(provider, model, true)}>
-                      <RefreshCw size={12} aria-hidden="true" className={reading?.loading ? styles.spinning : undefined} />
+                      <RefreshCw {...(reading?.loading ? loadingIconMotion : {})} size={12} aria-hidden="true" className={reading?.loading ? styles.spinning : undefined} />
                     </button>
                   </header>
                   <div className={styles.windows}>

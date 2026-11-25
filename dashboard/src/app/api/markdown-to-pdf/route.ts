@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { Stats } from "node:fs";
 import { externalRuntimePath as path } from "@/lib/external-runtime-path";
-import { Readable } from "node:stream";
+import { nodeStreamToWeb } from "@/lib/node-stream-to-web";
 import { externalRuntimeFilesystem as fs } from "@/lib/external-runtime-filesystem";
 import { parseMarkdownFrontmatter } from "@/lib/markdown-render/frontmatter";
 import { renderMarkdownPdfDownloadViaRuntime } from "@/lib/office/runtime-v2";
@@ -122,7 +122,7 @@ function promotePdf(source: string, target: string): Stats {
 }
 
 function pdfResponse(filePath: string, fileName: string, metadata: Stats): Response {
-  const body = Readable.toWeb(fs.createReadStream(filePath)) as ReadableStream<Uint8Array>;
+  const body = nodeStreamToWeb(fs.createReadStream(filePath)) as ReadableStream<Uint8Array>;
   return new Response(body, {
     headers: {
       "Content-Type": "application/pdf",

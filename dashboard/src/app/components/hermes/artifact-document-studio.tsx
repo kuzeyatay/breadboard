@@ -8,6 +8,8 @@ import type {
   ArtifactReviewComment,
 } from "@/lib/hermes/artifact-editor-types";
 import { buildContext, tidy } from "@/vendor/human-review/anchor-text";
+import ArtifactPreviewLoading from "./artifact-preview-loading";
+import { useLoadingTextReveal } from "../loading-text-reveal";
 
 interface EditorPayload {
   mode: ArtifactEditorMode;
@@ -187,11 +189,12 @@ export default function ArtifactDocumentStudio({ artifact, onSaved, onAskAi }: P
     onAskAi(saved, aiReviewPrompt(saved, comments, overall));
   }, [comments, dirty, onAskAi, overall, payload, save]);
 
+  const documentReveal = useLoadingTextReveal(loading);
   if (loading) {
-    return <div className="grid h-full min-h-[30rem] place-items-center text-sm text-[var(--ink-muted)]">Opening document editor…</div>;
+    return <div className="grid h-full min-h-[30rem] place-items-center"><ArtifactPreviewLoading label="Opening document editor…" /></div>;
   }
   if (!payload) {
-    return <div className="m-5 rounded-lg bg-red-50 p-4 text-sm text-red-700">{error || "The document editor is unavailable."}</div>;
+    return <div ref={documentReveal} className="m-5 rounded-lg bg-red-50 p-4 text-sm text-red-700">{error || "The document editor is unavailable."}</div>;
   }
 
   const sourceMode = payload.mode === "source" || payload.mode === "file-text";
@@ -236,6 +239,7 @@ export default function ArtifactDocumentStudio({ artifact, onSaved, onAskAi }: P
         {savedMessage ? <p className="border-b border-emerald-200 bg-emerald-50 px-4 py-2 text-xs text-emerald-700">{savedMessage}</p> : null}
         {sourceMode ? (
           <textarea
+            ref={documentReveal}
             aria-label="Editable document content"
             value={content}
             onChange={(event) => setContent(event.target.value)}
@@ -244,7 +248,7 @@ export default function ArtifactDocumentStudio({ artifact, onSaved, onAskAi }: P
             className="min-h-0 flex-1 resize-none bg-[var(--paper-raised)] p-5 font-mono text-sm leading-6 text-[var(--ink)] outline-none"
           />
         ) : (
-          <div className="min-h-0 flex-1 space-y-3 overflow-auto bg-[var(--neu-surface-pressed)] p-4">
+          <div ref={documentReveal} className="min-h-0 flex-1 space-y-3 overflow-auto bg-[var(--neu-surface-pressed)] p-4">
             {visibleBlocks.map((block) => (
               <label key={block.anchor} className="block rounded-xl border border-[var(--line)] bg-[var(--paper-raised)] p-3 shadow-sm">
                 <span className="mb-2 flex items-center justify-between gap-3 text-[11px] text-[var(--ink-muted)]">

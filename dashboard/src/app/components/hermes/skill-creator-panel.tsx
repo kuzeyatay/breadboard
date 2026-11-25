@@ -1,7 +1,7 @@
 "use client";
 
 import SkillAccessReview from "./skill-access-review";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   validateSkillDraft,
   type SkillReferenceDraft,
@@ -13,6 +13,7 @@ import {
 // command registry.
 
 type CreatorReport = {
+  localHash: string;
   name: string;
   slashCommand?: string;
   files: string[];
@@ -44,6 +45,18 @@ export default function SkillCreatorPanel({ runtimeSessionId, onBack, onInstalle
   const [report, setReport] = useState<CreatorReport | null>(null);
   const [approvedPermissions, setApprovedPermissions] = useState<Set<string>>(new Set());
   const [installedToken, setInstalledToken] = useState<string | null>(null);
+  const [pending, setPending] = useState<CreatorReport[]>([]);
+  useEffect(() => {
+    const controller = new AbortController();
+    void fetch("/api/hermes/skills/create", { signal: controller.signal, cache: "no-store" })
+      .then(async response => {
+        if (!response.ok) return;
+        const body = await response.json();
+        if (!controller.signal.aborted && Array.isArray(body?.drafts)) setPending(body.drafts);
+      })
+      .catch(() => {});
+    return () => controller.abort();
+  }, []);
 
   const validation = useMemo(
     () => validateSkillDraft({ name, description, instructions, references }),
@@ -119,6 +132,7 @@ export default function SkillCreatorPanel({ runtimeSessionId, onBack, onInstalle
           decision,
           runtimeSessionId,
           approvedPermissions: [...approvedPermissions],
+          expectedHash: report.localHash,
           classificationOverride:
             report.classification.classification ===
             "eligible_coding_conditional"
@@ -129,6 +143,7 @@ export default function SkillCreatorPanel({ runtimeSessionId, onBack, onInstalle
       });
       const payload = (await response.json().catch(() => ({}))) as { message?: string; error?: string };
       if (!response.ok) throw new Error(payload.message ?? payload.error ?? `Could not ${decision} the skill.`);
+      setPending(current => current.filter(item => item.name !== report.name));
       if (decision === "promote") {
         setInstalledToken(report.slashCommand ?? report.name);
         await onInstalledChange?.();
@@ -176,9 +191,11 @@ export default function SkillCreatorPanel({ runtimeSessionId, onBack, onInstalle
         Create reusable instructions for a task. Review the skill before enabling it.
       </p>
 
+      {!report && pending.map(item => <button type="button" key={item.name} className="mt-2 block text-sm text-[var(--botanical)]"
+        onClick={() => { setReport(item); setApprovedPermissions(new Set()); }}>Review {item.slashCommand ?? item.name}</button>)}
       {report ? (
         <div className="mt-4 border-t border-[var(--line)] pt-4">
-          <h4 className="mb-3 text-sm font-semibold text-[var(--ink-heading)]">Install {report.name}</h4>
+          <h4 className="mb-3 text-sm font-semibold text-[var(--ink-heading)]">Install {report.slashCommand ?? report.name}</h4>
           {report.nameCollision ? <p className="mb-3 text-xs text-[#9a6b19]">Installing replaces the skill you already have with this name.</p> : null}
           <SkillAccessReview report={report} approved={approvedPermissions} onChange={setApprovedPermissions} disabled={busy} />
           {message ? <p role="status" className="mt-3 rounded-lg bg-[var(--paper-surface)] px-3 py-2 text-xs text-[var(--ink)]">{message}</p> : null}

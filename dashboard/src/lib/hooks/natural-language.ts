@@ -18,6 +18,7 @@ export const LIFECYCLE_HOOK_PROVIDERS = [
   "chat_completed",
   "session_started",
   "prompt_submitted",
+  "message_starred",
   "tool_started",
   "tool_used",
 ] as const;
@@ -141,6 +142,11 @@ function readTrigger(
   lead: string,
 ): { provider: string; matcher: string | null; recognized: boolean } {
   const lower = trigger.toLowerCase();
+  const topic = MENTIONS.exec(trigger);
+  const matcher = topic ? matcherFromTopic(topic[1]) : null;
+  if (/\b(?:stars?|starred|starring)\b/.test(lower) && /\b(?:answers?|messages?|responses?|repl(?:y|ies))\b/.test(lower)) {
+    return { provider: "message_starred", matcher, recognized: true };
+  }
   if (TOOL_EVENT.test(lower)) {
     const named = NAMED_TOOLS.exec(trigger);
     return {
@@ -149,8 +155,6 @@ function readTrigger(
       recognized: true,
     };
   }
-  const topic = MENTIONS.exec(trigger);
-  const matcher = topic ? matcherFromTopic(topic[1]) : null;
   if (CHAT_FINISHED.test(lower)) return { provider: "chat_completed", matcher, recognized: true };
   if (SESSION_STARTED.test(lower)) return { provider: "session_started", matcher: null, recognized: true };
   if (PROMPT_SUBMITTED.test(lower)) return { provider: "prompt_submitted", matcher, recognized: true };

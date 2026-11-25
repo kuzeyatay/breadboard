@@ -566,7 +566,7 @@ test("an incomplete cloned voice can be repaired but cannot pretend to play", ()
   assert.match(speechSettings, /Finish clone/);
   assert.match(speechSettings, /createdProfileId/);
   assert.match(speechSettings, /method: "DELETE"/);
-  assert.match(synthesis, /\/profiles\/\$\{encodeURIComponent\(settings\.profileId\)\}\/samples/);
+  assert.match(synthesis, /\/profiles\/\$\{encodeURIComponent\(profile\.id\)\}\/samples/);
   assert.match(sampleUpload, /Voicebox could not decode that recording/);
 });
 

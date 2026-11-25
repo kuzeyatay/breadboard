@@ -14,6 +14,7 @@ import { RefreshCw } from 'lucide-react';
 import LinkContextMenu from './link-context-menu';
 import RailDivider from './hermes/rail-divider';
 import ThoughtTopologyLoadingDots from './thought-topology-loading-dots';
+import { useLoadingTextReveal } from './loading-text-reveal';
 import { useRailResize } from './hermes/use-rail-resize';
 import { useQuartzViewLease } from '@/app/garden/use-quartz-view-lease';
 import {
@@ -454,6 +455,7 @@ function KnowledgeGraph({
     : previewState.url === quartzPreviewUrl
       ? previewState.status
       : 'loading';
+  const previewNoticeReveal = useLoadingTextReveal(loading || (graph.nodeCount > 0 && previewStatus === 'loading'));
 
   useEffect(() => {
     const handlePreviewMessage = (event: MessageEvent) => {
@@ -534,7 +536,7 @@ function KnowledgeGraph({
             {loading ? (
               <ThoughtTopologyLoadingDots label="Loading garden preview" />
             ) : graph.nodeCount === 0 ? (
-              <div className="h-full flex items-center justify-center text-xs text-gray-700 px-8 text-center">
+              <div ref={previewNoticeReveal} className="h-full flex items-center justify-center text-xs text-gray-700 px-8 text-center">
                 Upload a source to grow the map.
               </div>
             ) : (
@@ -557,7 +559,7 @@ function KnowledgeGraph({
                 />
                 {previewStatus !== 'ready' ? (
                   previewStatus === 'error' ? (
-                    <div className="absolute inset-0 flex items-center justify-center px-8 text-center text-xs text-gray-600">
+                    <div ref={previewNoticeReveal} className="absolute inset-0 flex items-center justify-center px-8 text-center text-xs text-gray-600">
                       Preview unavailable.
                     </div>
                   ) : (

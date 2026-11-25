@@ -801,19 +801,20 @@ function BrowserContent({
           <div className="browser-start-copy">
             <AnimatedBrowserGreeting greeting={chatGreeting.greeting} />
             {startSearch}
-            {!privateBrowsing && Object.keys(chatGreeting.suggestionSources).length > 0 ? (
-              <div className="mx-auto mt-4 w-full max-w-xl">
-                <ChatSuggestionCards suggestions={chatGreeting.suggestions}
-                  suggestionScopeKey={chatGreeting.suggestionScopeKey}
-                  suggestionDetails={chatGreeting.suggestionDetails}
-                  onSelectSuggestion={(text, conversationId) => {
-                    setRecommendationDraft({ text, conversationId, selectionKey });
-                    setTerminalLoaded(true);
-                    setActivePanel('terminal');
-                    setBrowserPanelOpen(true);
-                  }} />
-              </div>
-            ) : null}
+            {!privateBrowsing && (
+              <ChatSuggestionCards
+                className="mx-auto mt-4"
+                suggestions={chatGreeting.suggestions}
+                suggestionScopeKey={chatGreeting.suggestionScopeKey}
+                suggestionDetails={chatGreeting.suggestionDetails}
+                onSelectSuggestion={(text, conversationId) => {
+                  setRecommendationDraft({ text, conversationId, selectionKey });
+                  setTerminalLoaded(true);
+                  setActivePanel('terminal');
+                  setBrowserPanelOpen(true);
+                }}
+              />
+            )}
             <BrowserQuickLinks navigate={navigate} ownerKey={restoreOwnerKey} active={isActive} />
           </div>
         ) : null}

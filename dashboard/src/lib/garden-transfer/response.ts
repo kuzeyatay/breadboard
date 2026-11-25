@@ -7,7 +7,7 @@
  */
 
 import { TransferError } from "./format.ts";
-import { Readable } from "node:stream";
+import { nodeStreamToWeb } from "../node-stream-to-web.ts";
 import type { TransferDownload } from "./export.ts";
 
 function statusOf(error: unknown): number {
@@ -30,7 +30,7 @@ export function transferErrorResponse(error: unknown): Response {
 
 export function transferDownloadResponse(download: TransferDownload, head = false): Response {
   if (head) download.stream.destroy();
-  return new Response(head ? null : Readable.toWeb(download.stream) as ReadableStream<Uint8Array>, {
+  return new Response(head ? null : nodeStreamToWeb(download.stream) as ReadableStream<Uint8Array>, {
     headers: {
       "Content-Type": download.mimeType,
       "Content-Disposition": `attachment; filename="${download.filename.replace(/["\r\n]/g, "-")}"`,

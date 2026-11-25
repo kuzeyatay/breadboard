@@ -458,7 +458,7 @@ export async function openGardenAgentChat(
       internalContinuation: payload.internalAgentContinuation === true,
       hasActiveGoal: Boolean(existingGoal && existingGoal.status !== "complete"),
     };
-    const goalTurn = !inlineTurnId && (goalIntent.hasActiveGoal || /^\/goal\b/i.test(text.trim()) ||
+    const goalTurn = !inlineTurnId && (existingGoal?.status === "active" || /^\/goal\b/i.test(text.trim()) ||
       shouldAutoSelectGoal({ ...goalIntent, text }));
     let prepared = prepareTurn({
       request: text,
@@ -1325,6 +1325,7 @@ export async function openGardenAgentChat(
           ...(goalEnabled ? { goalMode: {
             enabled: true,
             automatic: false,
+            ...(existingGoal && existingGoal.status !== "complete" && existingGoal.status !== "active" ? { readOnly: true } : {}),
             goalId: existingGoal?.status === "complete" ? null : existingGoal?.goal_id ?? null,
             context: { activeGardenSlug: clusterSlug, activePageSlug: page?.slug, selectedDocumentIds: selectedSlugs },
             superAgent,
@@ -1678,6 +1679,10 @@ function legacyGardenEventStream(
         if (!run || session.row.conversation_id === null) return;
         const dispatch = parseRuntimeRunDispatch(run);
         if (!dispatch.goalMode?.enabled || !dispatch.conversationPublicId) return;
+        if (dispatch.goalMode.readOnly) {
+          scheduleGoalContinuation(session.row.conversation_id, runId);
+          return;
+        }
         try {
           const goalId = dispatch.goalMode.goalId ?? readGoalModeState(dispatch.conversationPublicId)?.goal_id;
           if (!goalId) return;

@@ -50,12 +50,15 @@
     ".next-verify/types/**/*.ts",
     ".next-verify/dev/types/**/*.ts",
     ".next-theme-smoke/types/**/*.ts",
-    ".next-theme-smoke/dev/types/**/*.ts"
+    ".next-theme-smoke/dev/types/**/*.ts",
+    ".next-qa-hot/types/**/*.ts",
+    ".next-qa-hot/dev/types/**/*.ts"
   ],
   "exclude": [
     "node_modules",
     "scripts",
     ".next-dev",
+    ".next-qa-hot",
     ".next-desktop",
     ".next-production",
     ".next-production-final",

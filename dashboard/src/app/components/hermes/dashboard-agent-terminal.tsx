@@ -10098,7 +10098,7 @@ onClearCareerOps={() => {
                         cards={<ChatSuggestionCards
                           suggestions={(newChatWorkspace ? chatGreeting.suggestions : []).slice(0, 2)}
                           suggestionDetails={chatGreeting.suggestionDetails}
-                          suggestionScopeKey={newChatWorkspace?.slug ?? ""}
+                          suggestionScopeKey={JSON.stringify([newChatWorkspace?.slug, chatGreeting.suggestionScopeKey])}
                           disabled={runtimeUnavailable}
                           onSelectSuggestion={fillComposerWithPrompt}
                         />}

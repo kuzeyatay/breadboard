@@ -11,6 +11,7 @@ import { parseChatTimestamp } from "@/lib/chat-time-separators";
 import ThinkingOrb, { orbStateForLabel } from "@/app/components/effects/thinking-orb";
 import BotAvatar from "./bots/bot-avatar";
 import { useConversationBot } from "./bots/bot-conversation";
+import { useLoadingTextReveal } from "./loading-text-reveal";
 
 function timestamp(value: string | number | undefined): number | undefined {
   if (typeof value === "number" && Number.isFinite(value)) return value;
@@ -57,6 +58,7 @@ export default function AssistantResponseMeta({
   onDisclosureToggle?: () => void;
 }) {
   const bot = useConversationBot();
+  const labelReveal = useLoadingTextReveal(active);
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
@@ -155,9 +157,9 @@ export default function AssistantResponseMeta({
       ) : active ? (
         <ThinkingOrb state={orbStateForLabel(label)} size={20} className="self-center" />
       ) : null}
-      <span className={`assistant-response-label ${shimmer ? "thinking-shimmer" : ""}`}>{displayLabel}</span>
+      <span ref={labelReveal} className={`assistant-response-label ${shimmer ? "thinking-shimmer" : ""}`}>{displayLabel}</span>
       {metadata ? (
-        <span className="assistant-response-metrics" title={usageBreakdown}>
+        <span ref={labelReveal} className="assistant-response-metrics" title={usageBreakdown}>
           (
           {elapsedMs === undefined
             ? null

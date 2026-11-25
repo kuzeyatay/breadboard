@@ -1,5 +1,7 @@
 'use client';
 
+import { ReplyText } from './loading-text-reveal';
+
 import { useState, type ReactNode } from 'react';
 import { normalizeGenerativeUiResources, productForAction, safeProductUrl, type GenerativeUiAction } from '@/lib/generative-ui/contracts';
 import ChatMarkdown from './chat-markdown';
@@ -57,6 +59,6 @@ export default function AssistantRichResponse({ message, onSend, legacyChatSessi
         activeProductComparison={activeSelection ? { resourceId: activeSelection.resource.id, productIds: activeSelection.compareProductIds } : null} />
       {activeSelection && <ProductDetailsPanel selection={activeSelection} onClose={() => setSelection(null)} onAction={onAction} />}
     </div> : null}
-    {message.content && (markdown ?? <ChatMarkdown content={message.content} compact />)}
+    <ReplyText>{message.content && (markdown ?? <ChatMarkdown content={message.content} compact />)}</ReplyText>
   </div>;
 }

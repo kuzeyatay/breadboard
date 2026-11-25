@@ -23,6 +23,7 @@ export interface ComposerBorderBeamProps {
    * typing starts: an invitation to write, not a distraction from writing.
    */
   active: boolean;
+  sharedClock?: boolean;
   className?: string;
 }
 
@@ -36,6 +37,7 @@ export interface ComposerBorderBeamProps {
 export default function ComposerBorderBeam({
   children,
   active,
+  sharedClock = false,
   className,
 }: ComposerBorderBeamProps) {
   const theme = useSurfaceTheme();
@@ -44,17 +46,17 @@ export default function ComposerBorderBeam({
 
   useEffect(() => {
     if (!surface.current) return;
-    const controller = startComposerBeam(surface.current);
+    const controller = startComposerBeam(surface.current, sharedClock);
     motion.current = controller;
     return () => {
       controller.dispose();
       motion.current = null;
     };
-  }, []);
+  }, [sharedClock]);
 
   useEffect(() => {
     motion.current?.setActive(active);
-  }, [active]);
+  }, [active, sharedClock]);
 
   return (
     <div className={`relative${className ? ` ${className}` : ""}`}>

@@ -271,7 +271,7 @@ export function Composer({
 
         {!value && !disabled && personalize && roomCards?.scope===cardScope && roomCards.items.map(item=>
           <button key={item} type="button" className="mb-1 mr-2 rounded-md border px-2 py-1 text-left text-xs" onClick={()=>{changeValue(item);inputRef.current?.focus();}}>{item}</button>)}
-        <ComposerBorderBeam active={value.trim() === "" && !disabled}>
+        <ComposerBorderBeam active={value.trim() === "" && !disabled} sharedClock>
         <div
           data-buzz-composer
           className="neu-composer buzz-composer relative rounded-[30px] p-2"

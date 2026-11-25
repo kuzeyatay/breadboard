@@ -1,4 +1,4 @@
-import { externalRuntimeFilesystem as fs } from "@/lib/external-runtime-filesystem";
+import { fileContentResponse } from "@/lib/file-content-response";
 import { requireUserId } from "@/lib/server-auth";
 import { apiErrorResponse, requireEnabled, ApiError } from "@/lib/hermes/route-helpers.ts";
 import { artifactFile, getArtifactForUser, ArtifactStoreError } from "@/lib/hermes/artifact-store.ts";
@@ -19,13 +19,11 @@ export async function GET(request: Request, { params }: { params: Promise<{ arti
     const requestedVersion = Number(url.searchParams.get("version") ?? artifact.current_version);
     if (!Number.isInteger(requestedVersion) || requestedVersion <= 0) throw new ApiError(400, "invalid_artifact_version", "A valid version is required.");
     const file = artifactFile({ artifact, version: requestedVersion, purpose: "download" });
-    return new Response(fs.readFileSync(file.path), {
-      headers: {
-        "Content-Type": file.mimeType,
-        "Content-Disposition": `attachment; filename="${file.filename.replace(/["\r\n]/g, "-")}"`,
-        "Cache-Control": "private, no-store",
-        "X-Content-Type-Options": "nosniff",
-      },
+    return fileContentResponse(request, file.path, file.size, {
+      "Content-Type": file.mimeType,
+      "Content-Disposition": `attachment; filename="${file.filename.replace(/["\r\n]/g, "-")}"`,
+      "Cache-Control": "private, no-store",
+      "X-Content-Type-Options": "nosniff",
     });
   } catch (error) {
     if (error instanceof ArtifactStoreError) return new Response(JSON.stringify({ error: error.message, code: error.code }), { status: error.status, headers: { "Content-Type": "application/json" } });

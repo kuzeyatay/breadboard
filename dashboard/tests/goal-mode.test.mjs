@@ -123,3 +123,39 @@ test("Goal Mode renders Goal's continuation and completion-audit contract", () =
   assert.match(section, new RegExp(`connection="${GOAL_MODE_CONNECTION}"`));
   assert.match(section, /update_goal/);
 });
+
+test("editing a goal objective keeps its id and usage, as Codex's goal editor does", async () => {
+  const { editGoalModeObjective, goalObjectiveUpdatedPrompt, setGoalModeStatus, extendGoalModeBudget } =
+    await import("../src/lib/goal-mode.ts");
+  const id = "edit-objective-conversation";
+  const original = activateGoalMode({ conversationPublicId: id, objective: "keep polishing", tokenBudget: 40, env,
+    now: new Date("2026-11-01T00:00:00.000Z") });
+  const accounted = accountGoalModeTurn({ conversationPublicId: id, goalId: original.goal_id, runId: "r1",
+    startedAt: "2026-11-01T00:00:00Z", tokensUsed: 50, env, now: new Date("2026-11-01T00:00:12Z") });
+  assert.equal(accounted.status, "budget_limited");
+
+  // Over budget: the edit asks for active, the budget keeps it limited.
+  const edited = editGoalModeObjective({ conversationPublicId: id, objective: "  keep polishing with clearer wording ", env });
+  assert.equal(edited.objectiveChanged, true);
+  assert.equal(edited.state.objective, "keep polishing with clearer wording");
+  assert.equal(edited.state.status, "budget_limited");
+  assert.equal(edited.state.goal_id, original.goal_id);
+  assert.equal(edited.state.tokens_used, 50);
+  assert.equal(edited.state.time_used_seconds, 12);
+  assert.equal(edited.state.created_at, original.created_at);
+
+  // A paused goal stays paused through an edit.
+  extendGoalModeBudget({ conversationPublicId: id, tokenBudget: null, env });
+  setGoalModeStatus({ conversationPublicId: id, status: "paused", env });
+  const paused = editGoalModeObjective({ conversationPublicId: id, objective: "a paused rewording", env });
+  assert.equal(paused.state.status, "paused");
+
+  // Same text is not a change, and an empty objective is refused.
+  assert.equal(editGoalModeObjective({ conversationPublicId: id, objective: "a paused rewording", env }).objectiveChanged, false);
+  assert.throws(() => editGoalModeObjective({ conversationPublicId: id, objective: "   ", env }));
+
+  const prompt = goalObjectiveUpdatedPrompt({ ...paused.state, objective: "use <b> & co" });
+  assert.match(prompt, /supersedes any previous thread goal objective/);
+  assert.match(prompt, /use &lt;b&gt; &amp; co/);
+  assert.equal(editGoalModeObjective({ conversationPublicId: "no-goal-here", objective: "x", env }), null);
+});

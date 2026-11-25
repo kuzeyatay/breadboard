@@ -1,5 +1,7 @@
 "use client";
 
+import { notifyBotsChanged } from "@/lib/bots/client-cache";
+
 import AssistantResponseEditor from "@/app/components/chat/assistant-response-editor";
 import { regenerateResponseText } from "@/app/components/chat/regenerate-response";
 import { normalizeUnifiedWorkflowDispatch, parseUnifiedWorkflowCommand } from "@/lib/workflows/unified-command.ts";
@@ -68,9 +70,11 @@ import {
 } from "@/app/components/hermes/queued-follow-ups";
 import { useComposerInset } from "@/app/components/chat/use-composer-inset";
 import { useSmoothStreamText } from "@/app/components/chat/use-smooth-stream-text";
+import { ReplyText, useLoadingTextReveal } from "@/app/components/loading-text-reveal";
 import ChatDisclaimer from "@/app/components/chat/chat-disclaimer";
 import CollapsibleUserMessage from "@/app/components/chat/collapsible-user-message";
 import ChatGreetingEmptyState from "@/app/components/hermes/chat-greeting-empty-state";
+import { SuggestionEmptyStatePresence } from "@/app/components/hermes/suggestion-presence";
 import type { ChatGreeting } from "@/lib/hermes/chat-greeting";
 import { useChatGreeting, type SuggestionDetail } from "@/app/components/hermes/use-chat-greeting";
 import { useChatDraft } from "@/app/components/hermes/use-chat-draft";
@@ -189,6 +193,8 @@ import {
 import StarredMessagesPanel from "@/app/components/hermes/starred-messages-panel";
 import ArchivedChatsPanel from "@/app/components/hermes/archived-chats-panel";
 import { HERMES_SESSIONS_CHANGED_EVENT, notifyHermesSessionsChanged } from "@/lib/hermes/session-client";
+import { WORKSPACE_ORIGIN_LABEL } from "@/lib/conversations/origin-label";
+import { deleteChatSession } from "@/app/components/hermes/history-client";
 import { initialStarredMessageTarget, useStarredMessageJump, type StarredMessageTarget } from "@/app/components/use-starred-message-jump";
 import {
   DEFAULT_CHAT_HIGHLIGHT_COLOR,
@@ -805,6 +811,40 @@ interface ChatSession {
   active?: boolean;
   /** Changes whenever the newest durable assistant message changes. */
   latestAssistantVersion?: string | null;
+  /** The rail's source prefix, as the Terminal names it: "Workspace" or "Code". */
+  originLabel?: string;
+}
+
+/**
+ * A chat of this garden that lives outside the workspace (Explore Assistant,
+ * PDF Assistant). It is a canonical conversation addressed by its `conv_` id,
+ * so it opens in the Terminal hub rather than in this transcript.
+ */
+interface LinkedGardenChat {
+  id: string;
+  title: string;
+  updated_at: string;
+  originLabel: string;
+  pinned: boolean;
+  highlight: string | null;
+  active: boolean;
+}
+
+function parseLinkedGardenChats(value: unknown): LinkedGardenChat[] | null {
+  if (!Array.isArray(value)) return null;
+  return value.filter(
+    (row): row is LinkedGardenChat =>
+      Boolean(row) &&
+      typeof row.id === "string" &&
+      row.id.startsWith("conv_") &&
+      typeof row.title === "string" &&
+      typeof row.originLabel === "string",
+  );
+}
+
+/** Linked rows carry `conv_` ids; the workspace's own chats are numbered. */
+function isLinkedRailChat(chatId: string): boolean {
+  return chatId.startsWith("conv_");
 }
 
 /** One row of the rail's own feed: the chat without its transcript. */
@@ -821,6 +861,7 @@ interface ChatSessionSummary {
   highlight: string | null;
   active: boolean;
   latestAssistantVersion: string | null;
+  originLabel?: string;
 }
 
 /**
@@ -856,6 +897,7 @@ function mergeChatSummaries(
       // Without it the first full read after a poll looks like a new answer in
       // every chat and announces (and refetches) all of them.
       latestAssistantVersion: row.latestAssistantVersion,
+      originLabel: row.originLabel ?? held?.originLabel,
     };
   });
 }
@@ -2274,10 +2316,11 @@ const ChatTranscript = memo(function ChatTranscript({
   // The artifact query is part of opening a chat. Keeping this cover outside
   // the provider prevents any message row from painting before its file cards
   // can mount from the warmed cache in that same reveal.
+  const transcriptReveal = useLoadingTextReveal(loadingChats);
   if (onRetryLoad) {
     return (
       <div role="alert" className="flex flex-col items-center justify-center gap-3 py-28 text-sm text-gray-400">
-        <p>This chat could not be loaded.</p>
+        <p ref={transcriptReveal}>This chat could not be loaded.</p>
         <button
           type="button"
           onClick={onRetryLoad}
@@ -2307,29 +2350,23 @@ const ChatTranscript = memo(function ChatTranscript({
         contributes no content width at all. Without it the column collapses to
         zero and each message is drawn at its min-content width, one word per
         line, down the middle of the pane. */}
-      <div className="w-full max-w-5xl mx-auto flex flex-col gap-6">
-        {messages.length === 0 ? (
-          // The same greeting empty state the terminals draw, with this
-          // garden's name in its questions and openers. The Save page hint —
-          // the one thing the old heading said that mattered — survives as
-          // the footnote.
-          <div className="py-16">
-            <ChatGreetingEmptyState
-              greeting={greeting}
-              suggestions={greetingSuggestions}
-              suggestionDetails={greetingSuggestionDetails}
-              suggestionScopeKey={JSON.stringify([clusterSlug, temporaryChat])}
-              onSelectSuggestion={onSelectSuggestion}
-              footnote={
-                <>
-                  After the conversation, hit{" "}
-                  <span className="text-gray-500">Save page</span> to keep the
-                  answer in your lessons
-                </>
-              }
-            />
-          </div>
-        ) : null}
+      <div ref={transcriptReveal} className="relative w-full max-w-5xl mx-auto flex flex-col gap-6">
+        <SuggestionEmptyStatePresence visible={messages.length === 0} className="py-16">
+          <ChatGreetingEmptyState
+            greeting={greeting}
+            suggestions={greetingSuggestions}
+            suggestionDetails={greetingSuggestionDetails}
+            suggestionScopeKey={JSON.stringify([clusterSlug, temporaryChat])}
+            onSelectSuggestion={onSelectSuggestion}
+            footnote={
+              <>
+                After the conversation, hit{" "}
+                <span className="text-gray-500">Save page</span> to keep the
+                answer in your lessons
+              </>
+            }
+          />
+        </SuggestionEmptyStatePresence>
 
         {transcriptRows.length > 0 ? (
           <VirtualizedMessageList
@@ -2837,13 +2874,13 @@ const ChatTranscript = memo(function ChatTranscript({
                               live={i === lastAssistantIndex && !delegatedAgentActive && isLiveConnection(connection)}
                               notes={msg.progressNotes}
                               answer={storedAssistantContent}
-                              renderPanel={(hideNotes) => (
+                              renderPanel={(hideNotes, notesOnly) => (
                             <ActivityPanel
                               activities={
                                 i === lastAssistantIndex ? activities : []
                               }
                               progressNotes={hideNotes ? [] : thinkingUpdates}
-                              reasoning={msg.thinking}
+                              reasoning={notesOnly ? undefined : msg.thinking}
                               answerContent={storedAssistantContent}
                               connection={
                                 // A worker running behind this row keeps it
@@ -3714,9 +3751,9 @@ const ChatTranscript = memo(function ChatTranscript({
                               onSave={(text) => onEditAssistant(i, text)}
                               onCancel={() => setEditingAssistantIndex(null)}
                             />
-                          ) : visibleAssistantContent ? (
-                            <div className="w-full text-sm leading-relaxed text-gray-200">
-                              <SelectableAssistantMarkdown
+                          ) : (
+                            <ReplyText className="w-full text-sm leading-relaxed text-gray-200">
+                              {visibleAssistantContent ? <SelectableAssistantMarkdown
                                 content={visibleAssistantContent}
                                 sourceMessageId={messageSelectionSourceId(
                                   msg,
@@ -3729,9 +3766,9 @@ const ChatTranscript = memo(function ChatTranscript({
                                 }
                                 onSelection={onTextSelection}
                                 onOpenAnnotation={onOpenAnnotation}
-                              />
-                            </div>
-                          ) : null}
+                              /> : null}
+                            </ReplyText>
+                          )}
                           {msg.uiResources?.length ? (
                             <GenerativeUiRenderer
                               resources={msg.uiResources}
@@ -3967,6 +4004,7 @@ export default function WorkspaceClient({
   const [movingSlug, setMovingSlug] = useState<string | null>(null);
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [loadingDocs, setLoadingDocs] = useState(true);
+  const documentsReveal = useLoadingTextReveal(loadingDocs);
   // Failed uploads the server kept (bytes + request) so they can be resumed
   // without uploading again; listed above the source documents.
   const [graphRefreshVersion, setGraphRefreshVersion] = useState(0);
@@ -3982,6 +4020,7 @@ export default function WorkspaceClient({
   const [savedLinks, setSavedLinks] = useState<SavedLinkInfo[]>([]);
   const [linkSearch, setLinkSearch] = useState("");
   const [linksLoading, setLinksLoading] = useState(true);
+  const linksReveal = useLoadingTextReveal(linksLoading);
   const [newLinkTitle, setNewLinkTitle] = useState("");
   const [newLinkUrl, setNewLinkUrl] = useState("");
   const [newLinkScope, setNewLinkScope] = useState<"site" | "section" | "page">("page");
@@ -4044,6 +4083,7 @@ export default function WorkspaceClient({
 
   // Chat
   const [chatSessions, setChatSessions] = useState<ChatSession[]>([]);
+  const [linkedChats, setLinkedChats] = useState<LinkedGardenChat[]>([]);
   const chatSessionsRef = useRef(chatSessions);
   chatSessionsRef.current = chatSessions;
   // Transcripts load per chat, on open or hover; the list itself is rows only.
@@ -4536,6 +4576,7 @@ export default function WorkspaceClient({
   const [otherGardens, setOtherGardens] = useState<{ slug: string; name: string }[]>([]);
   const [importGardenSlug, setImportGardenSlug] = useState("");
   const [importGardenDocs, setImportGardenDocs] = useState<DocInfo[] | null>(null);
+  const importListReveal = useLoadingTextReveal(Boolean(importGardenSlug) && importGardenDocs === null);
   const [importingDocSlug, setImportingDocSlug] = useState<string | null>(null);
   const [uploadLabel, setUploadLabel] = useState("");
   const [isHandwriting, setIsHandwriting] = useState(false);
@@ -5133,6 +5174,8 @@ export default function WorkspaceClient({
         (session) => !deletingChatIds.current.has(session.id),
       );
       if (chatHistoryEpoch.current !== epoch || archivingChatIds.current.size > 0) return;
+      const linked = parseLinkedGardenChats(data.linkedChats);
+      if (linked) setLinkedChats(linked);
       setChatSessions((previous) => {
         const visible = mergeChatSummaries(previous, sessions, loadedTranscriptsRef.current);
         const mountedTemporary = previous.find(
@@ -5323,9 +5366,11 @@ export default function WorkspaceClient({
         cache: "no-store",
       });
       if (!res.ok) throw new Error("Chats could not be loaded.");
-      const data = (await res.json()) as { sessions?: ChatSessionSummary[] };
+      const data = (await res.json()) as { sessions?: ChatSessionSummary[]; linkedChats?: unknown };
       if (chatHistoryEpoch.current !== epoch || archivingChatIds.current.size > 0) return;
       const rows = Array.isArray(data.sessions) ? data.sessions : [];
+      const linked = parseLinkedGardenChats(data.linkedChats);
+      if (linked) setLinkedChats(linked);
       setChatSessions((previous) => {
         const visible = mergeChatSummaries(previous, rows, loadedTranscriptsRef.current);
         const mountedTemporary = previous.find(
@@ -5371,6 +5416,8 @@ export default function WorkspaceClient({
     id: String(session.id),
     href: `/gardens/${encodeURIComponent(clusterSlug)}?chat=${encodeURIComponent(String(session.id))}`,
     title: session.title,
+    // Same prefix the Terminal shows, minus the garden this rail already is.
+    titlePrefix: session.originLabel ?? WORKSPACE_ORIGIN_LABEL,
     updatedAt: session.updated_at,
     // The poll is ten seconds behind a turn this tab is running, so a chat
     // streaming here speaks for itself.
@@ -5379,6 +5426,29 @@ export default function WorkspaceClient({
     highlight: session.highlight ?? null,
     unread: unreadChats.has(String(session.id)),
     }));
+  // The garden's other assistants sit among its workspace chats, ordered the
+  // way the Terminal orders its hub: pinned first, then most recent activity.
+  // Both feeds use SQLite's datetime text, so the strings compare in order.
+  const gardenRailChats: TerminalSidebarChat[] = linkedChats.length === 0
+    ? sidebarChats
+    : [
+        ...sidebarChats,
+        ...linkedChats.map((chat) => ({
+          id: chat.id,
+          href: `/dashboard?terminalChat=${encodeURIComponent(chat.id)}`,
+          title: chat.title,
+          titlePrefix: chat.originLabel,
+          updatedAt: chat.updated_at,
+          active: chat.active,
+          pinned: chat.pinned,
+          highlight: chat.highlight,
+          unread: false,
+        })),
+      ].sort((a, b) =>
+        a.pinned !== b.pinned
+          ? (a.pinned ? -1 : 1)
+          : b.updatedAt.localeCompare(a.updatedAt),
+      );
   // The first turn creates the durable garden chat, but the draft already
   // represents a conversation to the person typing it. Show that selected row
   // immediately; sending replaces it with the real numbered chat.
@@ -5398,9 +5468,9 @@ export default function WorkspaceClient({
           highlight: null,
           unread: false,
         },
-        ...sidebarChats,
+        ...gardenRailChats,
       ]
-    : sidebarChats;
+    : gardenRailChats;
 
   // A chat counts as read while its transcript is the one on screen.
   const viewingChatId = activeChatId === null ? null : String(activeChatId);
@@ -7929,6 +7999,10 @@ export default function WorkspaceClient({
     });
     if (!confirmed) return;
     setRailError(null);
+    if (isLinkedRailChat(chat.id)) {
+      if ((await deleteLinkedChats([chat])) > 0) setRailError("This chat could not be deleted.");
+      return;
+    }
     if (!(await handleDeleteChat(Number(chat.id)))) {
       setRailError("This chat could not be deleted.");
     }
@@ -7951,7 +8025,10 @@ export default function WorkspaceClient({
     // time would empty the rail one row per round trip — ten chats would look
     // like ten small waits — and each of those calls would rebuild the list
     // from this render's chats, putting the rows still queued behind it back.
+    const linked = chats.filter((chat) => isLinkedRailChat(chat.id));
+    const linkedDelete = deleteLinkedChats(linked);
     const targets = chats
+      .filter((chat) => !isLinkedRailChat(chat.id))
       .map((chat) => Number(chat.id))
       .filter((id) => canDeleteChat(id));
     const targetIds = new Set(targets);
@@ -7962,13 +8039,14 @@ export default function WorkspaceClient({
       selectChat(remaining[0]?.id ?? null);
     // Chats this reader may not delete never left the rail, so they count as
     // failures without a request being sent.
-    let failed = chats.length - targets.length;
+    let failed = chats.length - linked.length - targets.length;
     // The requests still go one at a time: each delete stops that chat's live
     // work before removing its rows, so a partial result is possible and has
     // to be reported.
     for (const id of targets) {
       if (!(await sendChatDelete(id))) failed += 1;
     }
+    failed += await linkedDelete;
     if (failed > 0) {
       setRailError(
         failed === 1 && chats.length === 1
@@ -7985,11 +8063,74 @@ export default function WorkspaceClient({
    * make the pen feel stuck. The epoch guard keeps the next reconcile from
    * answering with a snapshot taken before the change.
    */
+  /**
+   * An Explore/PDF Assistant row is a canonical conversation, so its marks,
+   * title and archive go through the same route the Terminal's rail uses.
+   */
+  async function patchLinkedChat(
+    chat: TerminalSidebarChat,
+    body: { pinned?: boolean; highlight?: string | null; archived?: boolean; title?: string },
+    failure: string,
+  ) {
+    const original = linkedChats.find((item) => item.id === chat.id);
+    if (!original) return;
+    setRailError(null);
+    chatHistoryEpoch.current += 1;
+    setLinkedChats((current) =>
+      body.archived
+        ? current.filter((item) => item.id !== chat.id)
+        : current.map((item) => (item.id === chat.id ? { ...item, ...body } : item)),
+    );
+    try {
+      const res = await fetch(`/api/hermes/sessions/${encodeURIComponent(chat.id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error(failure);
+    } catch {
+      setRailError(failure);
+      setLinkedChats((current) =>
+        current.some((item) => item.id === chat.id)
+          ? current.map((item) => (item.id === chat.id ? original : item))
+          : [...current, original],
+      );
+    } finally {
+      chatHistoryEpoch.current += 1;
+      notifyHermesSessionsChanged("dashboard_terminal");
+    }
+  }
+
+  /** Delete linked rows the way the Terminal does; a refusal brings the row back. */
+  async function deleteLinkedChats(chats: TerminalSidebarChat[]): Promise<number> {
+    if (chats.length === 0) return 0;
+    const targets = new Set(chats.map((chat) => chat.id));
+    const originals = linkedChats.filter((item) => targets.has(item.id));
+    chatHistoryEpoch.current += 1;
+    setLinkedChats((current) => current.filter((item) => !targets.has(item.id)));
+    let failed = 0;
+    for (const chat of chats) {
+      const result = await deleteChatSession(chat.id);
+      if (!result.deleted) {
+        failed += 1;
+        const original = originals.find((item) => item.id === chat.id);
+        if (original) setLinkedChats((current) => [...current, original]);
+      }
+    }
+    chatHistoryEpoch.current += 1;
+    notifyHermesSessionsChanged("dashboard_terminal");
+    return failed;
+  }
+
   async function patchChatMark(
     chat: TerminalSidebarChat,
     body: { pinned?: boolean; highlight?: string | null; archived?: boolean },
     failure: string,
   ) {
+    if (isLinkedRailChat(chat.id)) {
+      await patchLinkedChat(chat, body, failure);
+      return;
+    }
     const id = Number(chat.id);
     const original = chatSessions.find((session) => session.id === id);
     if (!original || original.isOwn === false || archivingChatIds.current.has(id)) return;
@@ -8045,6 +8186,13 @@ export default function WorkspaceClient({
 
   /** The rail hands back the typed title; a public chat is never renamed here. */
   function renameChatFromRail(chat: TerminalSidebarChat, title: string) {
+    if (isLinkedRailChat(chat.id)) {
+      const cleaned = title.trim().replace(/\s+/g, " ");
+      if (cleaned && cleaned !== chat.title) {
+        void patchLinkedChat(chat, { title: cleaned }, "This chat could not be renamed.");
+      }
+      return;
+    }
     const session = chatSessions.find((item) => item.id === Number(chat.id));
     if (!session || session.isOwn === false) return;
     const cleaned = title.trim().replace(/\s+/g, " ");
@@ -14931,6 +15079,7 @@ if (careerOpsAgent) {
             finalMessages = messagesWithAssistant();
             updateChatMessages(sessionId, finalMessages);
           } else if (event.type === "tool" && event.status === "completed") {
+            if (event.toolName === "bot_manage") notifyBotsChanged();
             if (event.toolName === "garden_import_source") handleGardenSourceImportResult(event.details);
             const resources = normalizeGenerativeUiResources(event.uiResources);
             if (resources.length) {
@@ -17019,7 +17168,7 @@ if (careerOpsAgent) {
 
   function renderMarkdownRows(items: DocInfo[]) {
     return (
-      <ul className="py-1">
+      <ul ref={documentsReveal} className="py-1">
         {items.map((doc, index) => {
           const isSource = doc.type === "source-document";
           const isSelectedForChat =
@@ -17702,6 +17851,7 @@ if (careerOpsAgent) {
     const isRootDrop = dragOverFolder === "";
     return (
       <div
+        ref={documentsReveal}
         onDragOver={(e) => {
           e.preventDefault();
           e.dataTransfer.dropEffect = "move";
@@ -18007,7 +18157,7 @@ if (careerOpsAgent) {
               ) : documentSourceDocuments.length === 0 ? (
                 !isUploading && !hasRestoredUploads && uploadRecoveries.length === 0 && (
                   <div className="flex flex-col items-center py-6 px-4 text-center">
-                    <p className="text-xs text-gray-600 mb-2">
+                    <p ref={documentsReveal} className="text-xs text-gray-600 mb-2">
                       No source documents yet
                     </p>
                     <button
@@ -18020,7 +18170,7 @@ if (careerOpsAgent) {
                 )
               ) : filteredSourceDocuments.length === 0 ? (
                 <div className="flex flex-col items-center px-4 py-6 text-center">
-                  <p className="text-xs text-gray-600">
+                  <p ref={documentsReveal} className="text-xs text-gray-600">
                     No PDFs match {sourceDocSearch.trim()}
                   </p>
                   <button
@@ -18209,12 +18359,12 @@ if (careerOpsAgent) {
                 <Spinner className="h-4 w-4 text-gray-700" />
               </div>
             ) : savedLinks.length === 0 ? (
-              <div className="px-4 py-4 text-center">
+              <div ref={linksReveal} className="px-4 py-4 text-center">
                 <p className="text-xs text-gray-600">No saved links yet.</p>
               </div>
             ) : filteredSavedLinks.length === 0 ? (
               <div className="flex flex-col items-center px-4 py-6 text-center">
-                <p className="text-xs text-gray-600">
+                <p ref={linksReveal} className="text-xs text-gray-600">
                   No links match {linkSearch.trim()}
                 </p>
                 <button
@@ -18226,7 +18376,7 @@ if (careerOpsAgent) {
                 </button>
               </div>
             ) : (
-              <ul className="py-1">
+              <ul ref={linksReveal} className="py-1">
                 {filteredSavedLinks.map((link) => {
                   const sourceDocument = sourceDocuments.find((doc) =>
                     doc.relPath === link.sourceRelPath || doc.slug === link.sourceSlug,
@@ -18720,11 +18870,19 @@ if (careerOpsAgent) {
             setSidePanel((current) => (current === panel ? null : panel));
           }}
           onOpenSearch={() => setSearchOpen(true)}
-          onPrefetchChat={(chat) => prefetchChatTranscript(chat.id)}
+          onPrefetchChat={(chat) => {
+            if (!isLinkedRailChat(chat.id)) prefetchChatTranscript(chat.id);
+          }}
           onOpenChat={(chat) => {
             if (chat.pending) {
               setSidePanel(null);
               textareaRef.current?.focus();
+              return;
+            }
+            // Explore/PDF Assistant chats continue in the Terminal hub, which
+            // keeps their source garden and page context.
+            if (isLinkedRailChat(chat.id)) {
+              if (chat.href) router.push(chat.href);
               return;
             }
             openChatById(chat.id);
@@ -18891,7 +19049,7 @@ if (careerOpsAgent) {
                   </div>
                 ) : documentSourceDocuments.length === 0 ? (
                   <div className="flex flex-col items-center py-6 px-4 text-center">
-                    <p className="text-xs text-gray-600 mb-2">
+                    <p ref={documentsReveal} className="text-xs text-gray-600 mb-2">
                       No source documents yet
                     </p>
                     <button
@@ -18903,7 +19061,7 @@ if (careerOpsAgent) {
                   </div>
                 ) : filteredSourceDocuments.length === 0 ? (
                   <div className="flex flex-col items-center px-4 py-6 text-center">
-                    <p className="text-xs text-gray-600">
+                    <p ref={documentsReveal} className="text-xs text-gray-600">
                       No PDFs match {sourceDocSearch.trim()}
                     </p>
                     <button
@@ -19018,7 +19176,7 @@ if (careerOpsAgent) {
                 </div>
               ) : markdownDocuments.length === 0 && folders.length === 0 ? (
                 <div className="flex flex-col items-center py-6 px-4 text-center">
-                  <p className="text-xs text-gray-600 mb-2">
+                  <p ref={documentsReveal} className="text-xs text-gray-600 mb-2">
                     No lesson pages yet
                   </p>
                   <button
@@ -19240,6 +19398,11 @@ if (careerOpsAgent) {
                   onNext: () => showAttempt(Math.min(attempts.length - 1, attemptIndex + 1)),
                 } : undefined}
                 newQuestionRequest={openAnswer.newQuestion}
+                // A running Ask here answer shows the approval or question it waits on.
+                pendingPermission={thread.pending ? agentActivity.pendingPermission : null}
+                onPermissionDecision={stableTranscriptPermission}
+                pendingClarification={thread.pending ? agentActivity.pendingClarification : null}
+                onClarificationAnswer={stableTranscriptClarification}
                 selection={thread.selection}
                 suggestionSelection={thread.selection}
                 suggestionModel={model}
@@ -20646,13 +20809,14 @@ onClearCareerOps={() => {
                       {importGardenDocs === null ? (
                         <div className="flex justify-center py-2"><Spinner className="w-4 h-4 text-gray-400" /></div>
                       ) : importGardenDocs.length === 0 ? (
-                        <p className="text-[11px] text-gray-600">No documents in that garden.</p>
+                        <p ref={importListReveal} className="text-[11px] text-gray-600">No documents in that garden.</p>
                       ) : (
                         importGardenDocs.map((doc) => (
                           <button
                             key={doc.slug}
                             type="button"
                             disabled={importingDocSlug !== null}
+                            ref={importListReveal}
                             onClick={() => void addDocumentFromGarden(doc)}
                             className="flex w-full items-center gap-2 rounded-lg bg-gray-800/50 px-3 py-2 text-left text-xs text-gray-300 hover:text-white disabled:opacity-60"
                           >

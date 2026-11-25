@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } fro
 import { createPortal } from "react-dom";
 import dynamic from "next/dynamic";
 import { Captions, Clapperboard, Download, FileText, X } from "lucide-react";
-import ChatMarkdown from "@/app/components/chat-markdown";
 import { gardenDocumentNoteSlug } from "@/lib/garden-document-route";
 import { audioAttachmentFormat } from "@/lib/audio-attachments";
 import { videoAttachmentFormat } from "@/lib/video-attachments";
@@ -17,12 +16,12 @@ const loadFileViewer = () => import("./garden-file-viewer");
 const loadPdfViewer = () => import("@/app/gardens/[clusterSlug]/pdf/[slug]/pdf-viewer-client");
 const FileViewer = dynamic(loadFileViewer, { ssr: false });
 const PdfViewer = dynamic(loadPdfViewer, { ssr: false });
+const ChatMarkdown = dynamic(() => import("@/app/components/chat-markdown"));
 
 interface SourceDoc { slug: string; relPath: string; type: string; title: string; sourceType: string; sourceFile: string; sourcePdf: string; sourceMedia: string }
 type Source = { cluster: string; doc: SourceDoc; kind: "pdf" | "audio" | "video" | "word"; file?: GardenFileEntry };
 type Bounds = { left: number; top: number; width: number; height: number };
 
-const normal = (slug: string) => slug.toLowerCase().replace(/\s+/g, "-");
 function kindOf(doc: SourceDoc): Source["kind"] | null {
   if (doc.type !== "source-document") return null;
   if (doc.sourcePdf) return "pdf";
@@ -52,25 +51,17 @@ export default function GardenSourceView({ iframeRef, quartzOrigin, onAsk }: { i
   // Each new page resets Quartz's own "file view open"; this re-announces it for the page now showing.
   const [noteTick, setNoteTick] = useState(0);
   usePageLoading(pending);
-  const documents = useRef(new Map<string, Promise<SourceDoc[]>>()), ticket = useRef(0), shown = useRef(false), shownNote = useRef("");
+  const ticket = useRef(0), shown = useRef(false), shownNote = useRef("");
   const post = useCallback((message: object) => { if (quartzOrigin) iframeRef.current?.contentWindow?.postMessage(message, quartzOrigin); }, [iframeRef, quartzOrigin]);
 
   useEffect(() => {
-    const listFor = (cluster: string, fresh = false) => {
-      let list = documents.current.get(cluster);
-      if (!list || fresh) {
-        list = fetch(`/api/documents?clusterSlug=${encodeURIComponent(cluster)}`, { cache: "no-store" })
-          .then(response => response.ok ? response.json() : { documents: [] })
-          .then((body: { documents?: SourceDoc[] }) => body.documents ?? [])
-          .catch(() => { documents.current.delete(cluster); return []; });
-        documents.current.set(cluster, list);
-      }
-      return list;
-    };
-    const onNote = (event: Event) => {
+    let lookup: AbortController | undefined;
+    const onNote = async (event: Event) => {
       const { cluster, slug } = (event as CustomEvent<{ cluster: string; slug: string }>).detail ?? {};
       // Quartz re-announces the page it is on; keep what is showing (and any unsaved Word edits).
-      if (shown.current && shownNote.current === `${cluster}/${slug}`) return;
+      if ((lookup || shown.current) && shownNote.current === `${cluster}/${slug}`) return;
+      lookup?.abort();
+      lookup = undefined;
       const mine = ++ticket.current;
       setSource(null); setRaw(false); setEditing(false); shown.current = false; shownNote.current = `${cluster}/${slug}`;
       const sourceNote = Boolean(cluster && slug && /^sources\//i.test(slug));
@@ -78,18 +69,32 @@ export default function GardenSourceView({ iframeRef, quartzOrigin, onAsk }: { i
       if (!cluster || !slug) return;
       // Quartz hides every …/sources/<note> until answered; a note this view does not cover gets "none".
       if (!sourceNote) { if (/(^|\/)sources\/[^/]+$/i.test(slug)) post({ type: "second-brain:source-none" }); return; }
-      const find = (list: SourceDoc[]) => list.find(entry => normal(gardenDocumentNoteSlug(entry)) === normal(slug));
-      // The list is fetched once per Garden; a source added since then refetches it.
-      void listFor(cluster).then(list => find(list) ? list : listFor(cluster, true)).then(list => {
+      lookup = new AbortController();
+      const query = new URLSearchParams({ clusterSlug: cluster, sourceNote: slug });
+      try {
+        const response = await fetch(`/api/documents?${query}`, { cache: "no-store", signal: lookup.signal });
+        const body: { document?: SourceDoc } | null = response.ok ? await response.json() : null;
         if (mine !== ticket.current) return;
-        const doc = find(list);
+        const doc = body?.document;
         const kind = doc && kindOf(doc);
-        if (doc?.type === "source-document" && !kind && /\.docx$/i.test(doc.sourceFile)) { void openWord(cluster, doc, mine); return; }
+        if (doc?.type === "source-document" && !kind && /\.docx$/i.test(doc.sourceFile)) {
+          void loadFileViewer().catch(() => {});
+          await openWord(cluster, doc, mine);
+          return;
+        }
         // Quartz keeps a source note's text hidden until told: no original here, so show the note.
         if (!doc || !kind) { setPending(false); post({ type: "second-brain:source-none" }); return; }
+        if (kind === "pdf") void loadPdfViewer().catch(() => {});
         setSource({ cluster, doc, kind }); setPending(false); shown.current = true;
         post({ type: "second-brain:file-view", open: true });
-      });
+      } catch {
+        if (mine === ticket.current) {
+          setPending(false);
+          post({ type: "second-brain:source-none" });
+        }
+      } finally {
+        if (mine === ticket.current) lookup = undefined;
+      }
     };
     // A Word document opens as itself in the Word viewer (view, then Edit) from its Garden copy, made
     // the first time. A Word upload from before originals were kept stays on its note.
@@ -110,15 +115,14 @@ export default function GardenSourceView({ iframeRef, quartzOrigin, onAsk }: { i
       }
       if (data.type === "second-brain:source-view" && data.open === true) setRaw(false);
       // A Garden file opened from the tree takes the pane; the files bridge owns it from here.
-      if (shown.current && /^second-brain:open-file/.test(data.type)) { ticket.current++; shown.current = false; setSource(null); }
+      if ((lookup || shown.current) && /^second-brain:open-file/.test(data.type)) {
+        lookup?.abort(); lookup = undefined; ticket.current++;
+        shown.current = false; setPending(false); setSource(null);
+      }
     };
     window.addEventListener("sb:active-note", onNote);
     window.addEventListener("message", onMessage);
-    // Opening a source should not wait on setup: fetch this Garden's sources and the viewers' code now.
-    const garden = /^\/garden\/([^/?#]+)/.exec(location.pathname)?.[1];
-    if (garden) void listFor(decodeURIComponent(garden));
-    void loadPdfViewer().catch(() => {}); void loadFileViewer().catch(() => {});
-    return () => { window.removeEventListener("sb:active-note", onNote); window.removeEventListener("message", onMessage); };
+    return () => { lookup?.abort(); ticket.current++; window.removeEventListener("sb:active-note", onNote); window.removeEventListener("message", onMessage); };
   }, [iframeRef, quartzOrigin, post]);
 
   // Quartz trusts the pane request only once the files snapshot has named this window; on a fresh
@@ -150,7 +154,7 @@ export default function GardenSourceView({ iframeRef, quartzOrigin, onAsk }: { i
   // A recording's note: its generated notes go under the player, its transcript into the tab.
   useEffect(() => {
     setTranscript("");
-    if (!source || source.kind === "pdf") return;
+    if (!source || (source.kind !== "video" && source.kind !== "audio")) return;
     const controller = new AbortController();
     void fetch(`/api/documents/${encodeURIComponent(source.doc.slug)}?clusterSlug=${encodeURIComponent(source.cluster)}`, { signal: controller.signal, cache: "no-store" })
       .then(response => response.ok ? response.json() : null).then(body => { if (body?.body) setTranscript(String(body.body)); }).catch(() => {});

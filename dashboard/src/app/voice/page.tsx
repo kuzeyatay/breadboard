@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from 'react';
 import DashboardAgentTerminal from '@/app/components/hermes/dashboard-agent-terminal';
 import VoiceAssistantRuntime from '@/app/components/voice-assistant-runtime';
 import LinkedVoiceConversation from '@/app/components/linked-voice-conversation';
+import SubscriptionNarrationRelay from '@/app/components/speech/subscription-narration-relay';
 import { voiceCompanionBridge } from '@/lib/speech/voice-window';
 import { desktopTabsBridge } from '@/lib/desktop-browser-tabs';
 
@@ -50,6 +51,7 @@ export default function VoicePage() {
   }, []);
   return <main className="voice-companion-page">
     {native && <VoiceAssistantRuntime conversationOpen={open} />}
+    {native && <SubscriptionNarrationRelay />}
     {open ? conversationKey
       ? <LinkedVoiceConversation key={conversationKey} conversationKey={conversationKey} onClose={close} compact={compact} />
       : <DashboardAgentTerminal scope="mine" restoreOwnerKey="voice-companion" presentation="voice" voiceSurface={{ onClose: close, compact }} /> : null}

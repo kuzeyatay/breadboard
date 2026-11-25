@@ -1,5 +1,7 @@
 "use client";
 
+import { loadingIconMotion } from "@/app/components/loading-icon-motion";
+
 import {
   useCallback,
   useEffect,
@@ -1261,7 +1263,8 @@ function LocationPanel() {
                 className="inline-flex h-5 w-5 items-center justify-center text-gray-500 transition-colors hover:text-[var(--botanical)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--botanical)] disabled:cursor-wait disabled:opacity-50"
               >
                 <RefreshCw
-                  className={`h-3.5 w-3.5 ${checking ? "animate-spin" : ""}`}
+                  {...(checking ? loadingIconMotion : {})}
+                  className={`h-3.5 w-3.5 ${checking ? "motion-safe:animate-spin" : ""}`}
                   aria-hidden
                 />
               </button>
@@ -2327,7 +2330,8 @@ function RestartBreadboardButton() {
         className="neu-button flex items-center gap-1.5 rounded-lg border border-gray-800 px-3.5 py-2 text-sm text-gray-400 transition-colors hover:border-gray-600 hover:text-white disabled:cursor-wait disabled:opacity-60"
       >
         <RefreshCw
-          className={`h-4 w-4 shrink-0 ${busy ? "animate-spin" : ""}`}
+          {...(busy ? loadingIconMotion : {})}
+          className={`h-4 w-4 shrink-0 ${busy ? "motion-safe:animate-spin" : ""}`}
           aria-hidden
         />
         <span aria-live="polite">{busy ? "Restarting…" : "Restart Breadboard"}</span>

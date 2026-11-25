@@ -51,7 +51,15 @@ test("every Hermes chat surface shows notes inline only while the turn runs", as
   // Surfaces that render AgentRuntimePanel inherit it: terminal, side chat,
   // garden agent chat, PDF assistant.
   const panel = read("../src/app/components/hermes/agent-runtime-panel.tsx");
-  assert.match(panel, /<InlineProgressNotes timeline=\{progressLayout\.timeline\}/);
+  assert.match(panel, /<InlineProgressNotes timeline=\{liveTimeline\} live waiting=\{awaitingSteerReply\} \/>/);
+  // The streaming draft is held back until it is a note (sealed) or the answer
+  // (turn over), so the answer is never shown as a dot first; it then types in.
+  assert.match(panel, /const answerBody = liveDraft \? "" : responseContent;/);
+  assert.match(panel, /if \(liveDraft\.trim\(\)\) holdAnswer\(heldAnswerKey\);/);
+  assert.match(panel, /<TypeInAnswer id=\{heldAnswerKey\} content=\{answerBody\}>/);
+  assert.doesNotMatch(panel, /text: liveDraft/);
+  // The finished disclosure lists the notes, not reasoning summaries.
+  assert.match(panel, /reasoning=\{intermediateResponses && thinkingUpdates\.length \? undefined : message\.reasoning\}/);
   assert.match(panel, /const progressLayout =\s*liveIntermediateTurn/);
   assert.match(panel, /progressNotes=\{liveIntermediateTurn \? \[\] : thinkingUpdates\}/);
   for (const surface of [

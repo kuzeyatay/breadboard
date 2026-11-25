@@ -21,6 +21,7 @@ import { synthesizeWebSpeech } from "./web-speech.ts";
 import { voiceboxFetch, voiceboxJson, voiceboxResponseError } from "./voicebox-client.ts";
 import { applyPronunciations } from './pronunciation.ts';
 import { CONVERSATION_DELIVERY } from './conversation-delivery.ts';
+import { readWithSubscriptionVoice } from './narration-relay.ts';
 
 interface VoiceProfile {
   id: string;
@@ -52,12 +53,21 @@ export async function synthesizeSpeech({
   signal,
   streaming = false,
   delivery = 'reading',
+  localFallback = false,
+  localOnly = false,
 }: {
   userId: number;
   text: unknown;
   signal?: AbortSignal;
   streaming?: boolean;
   delivery?: 'reading' | 'conversation';
+  /**
+   * Server-side callers with no page attached (agent narration): read with the
+   * local Voicebox voice when the selected provider only runs in a page.
+   */
+  localFallback?: boolean;
+  /** With `localFallback`: skip the ChatGPT voice and read with Voicebox straight away. */
+  localOnly?: boolean;
 }): Promise<Response> {
   const settings = getSpeechSettings(userId);
   if (!settings.enabled) {
@@ -72,7 +82,30 @@ export async function synthesizeSpeech({
   }
 
   if (settings.speechProvider === "chatgpt") {
-    throw new RouteError(409, "Subscription speech requires the browser audio connection. Reload Breadboard and try again.");
+    // Subscription speech is a WebRTC session that only a Breadboard page can
+    // hold. Server-side callers (agent narration) hand the script to the
+    // desktop's voice window, which reads it in the ChatGPT voice; without one
+    // they read with the local Voicebox voice, and the response header says so.
+    if (!localFallback) {
+      throw new RouteError(409, "Subscription speech requires the browser audio connection. Reload Breadboard and try again.");
+    }
+    let reason = "Breadboard was asked to use the local voice.";
+    if (!localOnly) {
+      try {
+        // The page applies the saved pronunciations itself; send the script as written.
+        const wav = await readWithSubscriptionVoice(userId, input, signal);
+        return new Response(wav.slice().buffer, { headers: { "Content-Type": "audio/wav", [SPEECH_VOICE_HEADER]: "chatgpt" } });
+      } catch (error) {
+        if (signal?.aborted) throw error;
+        reason = error instanceof Error ? error.message : "The ChatGPT voice could not read it.";
+      }
+    }
+    const profile = await localFallbackProfile(settings.profileId, signal);
+    const response = await synthesizeVoiceboxSpeech(settings, profile, spoken, delivery, signal);
+    const headers = new Headers(response.headers);
+    headers.set(SPEECH_VOICE_HEADER, "voicebox");
+    headers.set(SPEECH_FALLBACK_HEADER, `voicebox; voice=${encodeURIComponent(profile.name)}; reason=${encodeURIComponent(reason)}`);
+    return new Response(response.body, { status: response.status, headers });
   }
   if (settings.speechProvider === "elevenlabs") {
     return synthesizeElevenLabsSpeech(userId, spoken, settings.elevenlabsVoiceId, settings.elevenlabsModel, signal, streaming);
@@ -88,9 +121,98 @@ export async function synthesizeSpeech({
     `/profiles/${encodeURIComponent(settings.profileId)}`,
     { signal },
   );
+  return synthesizeVoiceboxSpeech(settings, profile, spoken, delivery, signal);
+}
+
+/** Set on audio that was read by Voicebox in place of the selected provider. */
+export const SPEECH_FALLBACK_HEADER = "X-Breadboard-Speech-Fallback";
+/** Which voice read a subscription-speech request: `chatgpt` or `voicebox`. */
+export const SPEECH_VOICE_HEADER = "X-Breadboard-Speech-Voice";
+
+export interface NarrationClip {
+  text: string;
+  audio: Uint8Array;
+  contentType: string;
+}
+
+/**
+ * Read several narration lines for a video, all in one voice.
+ *
+ * With subscription speech selected the voice window reads them in the ChatGPT
+ * voice. If it cannot read one, every line is read again by Voicebox: a film
+ * whose narrator changes halfway is worse than one in the local voice.
+ * `fallback` describes the stand-in when that happened.
+ */
+export async function synthesizeNarrationLines({
+  userId,
+  lines,
+  signal,
+}: {
+  userId: number;
+  lines: string[];
+  signal?: AbortSignal;
+}): Promise<{ clips: NarrationClip[]; fallback: { voice: string; reason: string } | null }> {
+  const read = async (localOnly: boolean) => {
+    const clips: NarrationClip[] = [];
+    let fallback: { voice: string; reason: string } | null = null;
+    for (const text of lines) {
+      const speech = await synthesizeSpeech({ userId, text, signal, localFallback: true, localOnly });
+      const audio = new Uint8Array(await speech.arrayBuffer());
+      if (!audio.byteLength) throw new RouteError(502, `The voice returned no audio for line ${clips.length + 1}.`);
+      clips.push({ text, audio, contentType: speech.headers.get("content-type") ?? "" });
+      const header = speech.headers.get(SPEECH_FALLBACK_HEADER);
+      if (header && !fallback) {
+        const field = (name: string) => decodeURIComponent(header.match(new RegExp(`${name}=([^;]*)`))?.[1] ?? "");
+        fallback = { voice: field("voice") || "Voicebox", reason: field("reason") };
+        // Lines already read in the ChatGPT voice would not match the rest.
+        if (!localOnly && clips.length > 1) return { clips: [], fallback, restart: true };
+        localOnly = true;
+      }
+    }
+    return { clips, fallback, restart: false };
+  };
+  const first = await read(false);
+  if (!first.restart) return { clips: first.clips, fallback: first.fallback };
+  const again = await read(true);
+  // The first pass knows why the ChatGPT voice gave up; the second only knows it was skipped.
+  return { clips: again.clips, fallback: first.fallback ?? again.fallback };
+}
+
+/**
+ * The Voicebox voice that stands in for subscription speech: the profile saved
+ * in speech settings when there is one, else a preset, else the first voice.
+ */
+async function localFallbackProfile(profileId: string | null, signal?: AbortSignal): Promise<VoiceProfile> {
+  let profiles: VoiceProfile[];
+  try {
+    profiles = await voiceboxJson<VoiceProfile[]>("/profiles", { signal });
+  } catch (error) {
+    throw new RouteError(
+      503,
+      `Subscription speech needs a Breadboard window, and the local Voicebox fallback is not answering: ${error instanceof Error ? error.message : "unavailable"}`,
+    );
+  }
+  if (!Array.isArray(profiles) || profiles.length === 0) {
+    throw new RouteError(
+      409,
+      "Subscription speech needs a Breadboard window, and Voicebox has no voices to fall back to. Add one in Intelligence → Settings → Speech.",
+    );
+  }
+  return (profileId ? profiles.find((profile) => profile.id === profileId) : undefined)
+    ?? profiles.find((profile) => profile.voice_type === "preset")
+    ?? profiles[0];
+}
+
+async function synthesizeVoiceboxSpeech(
+  settings: ReturnType<typeof getSpeechSettings>,
+  profile: VoiceProfile,
+  spoken: string,
+  delivery: 'reading' | 'conversation',
+  signal?: AbortSignal,
+): Promise<Response> {
   if (profile.voice_type === "cloned") {
     const samples = await voiceboxJson<unknown[]>(
-      `/profiles/${encodeURIComponent(settings.profileId)}/samples`,
+      `/profiles/${encodeURIComponent(profile.id)}/samples`,
       { signal },
     );
     if (samples.length === 0) {
@@ -112,7 +234,7 @@ export async function synthesizeSpeech({
       headers: { "Content-Type": "application/json" },
       signal,
       body: JSON.stringify({
-        profile_id: settings.profileId,
+        profile_id: profile.id,
         text: spoken,
         language: settings.language,
         engine,

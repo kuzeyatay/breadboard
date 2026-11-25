@@ -3,6 +3,7 @@
 import { ThinkingOrb as Orb } from "thinking-orbs";
 import type { VolumetricOrbState } from "./orb-state";
 import { useSurfaceTheme } from "./use-surface-theme";
+import { loadingIconMotion } from "../loading-icon-motion";
 
 export {
   VOLUMETRIC_ORB_STATES,
@@ -39,19 +40,17 @@ export default function ThinkingOrb({
 }: ThinkingOrbProps) {
   const theme = useSurfaceTheme();
   return (
-    <Orb
-      state={state}
-      data-orb-state={state}
-      size={size}
-      // Until the theme resolves, let the library's own detection stand rather
-      // than painting light ink on paper for a frame.
-      theme={theme ?? "auto"}
-      paused={paused}
-      aria-hidden
-      role="presentation"
-      // `bb-thinking-orb` pales the ink to the label's weight; see globals.css.
-      className={className ? `bb-thinking-orb ${className}` : "bb-thinking-orb"}
-      style={{ flex: "none" }}
-    />
+    <span {...loadingIconMotion} aria-hidden="true" className={className} style={{ display: "inline-flex", flex: "none" }}>
+      <Orb
+        state={state}
+        data-orb-state={state}
+        size={size}
+        theme={theme ?? "auto"}
+        paused={paused}
+        aria-hidden
+        role="presentation"
+        className="bb-thinking-orb"
+      />
+    </span>
   );
 }

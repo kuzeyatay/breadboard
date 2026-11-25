@@ -141,7 +141,7 @@ export default function ChatgptWebTabAgent() {
     const { signal } = controller;
 
     void (async () => {
-      const session = await getSession().catch(() => null);
+      const session = await getSession({ broadcast: false }).catch(() => null);
       if (!session || signal.aborted) return;
       const locks = typeof navigator !== "undefined" ? navigator.locks : undefined;
       if (locks && typeof locks.request === "function") {

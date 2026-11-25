@@ -41,6 +41,23 @@ test("overlapping refreshes keep the latest request even when replies arrive out
   } finally { unsubscribe(); delete globalThis.window; }
 });
 
+test("ambient motion follows both presented panes and sleeps in retained and prewarmed tabs", async () => {
+  const { store, push, state, unsubscribe } = await fixture();
+  try {
+    const tabs = state(2);
+    push({ ...tabs, visibleIds: [1, 2], windowFocused: false });
+    assert.equal(store.isAmbientTabPresented(), true);
+    push({ ...tabs, visibleIds: [2] });
+    assert.equal(store.isAmbientTabPresented(), false);
+    push({ ...tabs, visibleIds: [1], preparingNewTab: true });
+    assert.equal(store.isAmbientTabPresented(), false);
+    push({ ...tabs, activeId: 1, visibleId: null });
+    assert.equal(store.isAmbientTabPresented(), false);
+    push({ ...tabs, visibleId: 1 });
+    assert.equal(store.isAmbientTabPresented(), true);
+  } finally { unsubscribe(); delete globalThis.window; }
+});
+
 test("a refresh from a disconnected renderer cannot overwrite a reconnected tab store", async () => {
   const { store, reads, state, unsubscribe } = await fixture();
   const refresh = store.refreshDesktopTabsState();

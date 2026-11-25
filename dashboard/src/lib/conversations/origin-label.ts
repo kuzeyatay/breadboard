@@ -13,9 +13,29 @@ export function conversationOriginLabel(origin: ConversationOrigin): string {
     : origin.surface === "quartz_ai"
       ? "Page AI"
       : origin.historySurface === "assistant"
-        ? "Assistant"
-        : "Workspace";
+        ? EXPLORE_ASSISTANT_ORIGIN_LABEL
+        : WORKSPACE_ORIGIN_LABEL;
   return [origin.gardenName?.trim(), surface].filter(Boolean).join(": ");
+}
+
+/** The garden's own chat rail. */
+export const WORKSPACE_ORIGIN_LABEL = "Workspace";
+/** The Assistant inside a garden's Quartz reader. */
+export const EXPLORE_ASSISTANT_ORIGIN_LABEL = "Explore Assistant";
+export const PDF_ASSISTANT_ORIGIN_LABEL = "PDF Assistant";
+
+/**
+ * The prefix a garden's own rail shows: the Terminal's label without the garden
+ * name, since the reader is already in that garden ("Code", "Workspace", ...).
+ */
+export function gardenChatOriginLabel(input: {
+  originLabel?: string | null;
+  surface: HermesSurface;
+  historySurface?: string | null;
+}): string {
+  const stored = input.originLabel?.trim();
+  if (stored) return stored === "PDF" ? PDF_ASSISTANT_ORIGIN_LABEL : stored;
+  return conversationOriginLabel({ surface: input.surface, historySurface: input.historySurface });
 }
 
 /** Bread inside the Code tab's VS Code: its chats read "Code: <title>" in the Terminal. */

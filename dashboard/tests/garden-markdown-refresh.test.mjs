@@ -33,6 +33,8 @@ const stubs = new Map([
   ["./use-canonical-garden-folders", "export const useCanonicalGardenFolders=()=>{}"],
   ["./use-quartz-reader-layout", "export const useQuartzReaderLayout=()=>({readerLayoutStyle:{},setAssistantWidth:()=>{}})"],
   ["./garden-markdown-artifacts", "export default ()=>null"],
+  ["./garden-files-bridge", "export default ()=>null"],
+  ["../garden-files-bridge", "export default ()=>null"],
   ["../use-quartz-reader-layout", "export const useQuartzReaderLayout=()=>({readerLayoutStyle:{},setAssistantWidth:()=>{}})"],
   ["@/app/components/hermes/garden-assistant-switch", "import React from 'react';export default ({activeMarkdown})=>React.createElement('output',{'data-assistant-context':true},JSON.stringify(activeMarkdown))"],
   ...["../quartz-inline-answer-popover", "../garden-markdown-artifacts", "../garden-source-view"].map(name => [name, "export default ()=>null"]),
@@ -130,7 +132,9 @@ async function fixture(run, library = false, options = {}) {
       return route.fulfill({ contentType: "text/html", body: `<style>iframe{width:100%;height:1000px}body{margin:0}</style><div id="root"></div><script>${host.outputFiles[0].text}</script>` });
     });
     await page.route(`${quartzOrigin}/**`, async route => {
-      const url = new URL(route.request().url()), slug = decodeURIComponent(url.pathname).replace(/^\/+|\/+$/g, "");
+      const url = new URL(route.request().url());
+      const routeSlug = decodeURIComponent(url.pathname).replace(/^\/+|\/+$/g, "");
+      const slug = routeSlug === "demo" ? "demo/index" : routeSlug;
       loads.push(slug);
       const note = notes.get(slug.replace(/^demo\//, ""));
       // Publication intentionally stays stale. The live reader must render the
@@ -321,17 +325,19 @@ test('reload releases the old view and a missed renewal keeps the current reader
 
 test('the trash icon confirms deletion and still receives its reply after an in-place reader refresh', { timeout: 30_000 }, async () => {
   await fixture(async ({ page, frame, notes, errors }) => {
+    page.setDefaultTimeout(6000);
     await page.evaluate(origin => document.querySelector('iframe').contentWindow.postMessage({
       type: 'second-brain:canonical-document', slug: 'demo/folder/first', requestId: 'refresh-before-delete',
       html: '<p>Refreshed first body</p>', title: 'First note', toc: [],
     }, origin), quartzOrigin);
     await frame.locator('article').getByText('Refreshed first body', { exact: true }).waitFor();
-    const trash = frame.getByRole('button', { name: 'Delete page', exact: true });
-    page.once('dialog', dialog => dialog.dismiss());
+    const trash = frame.locator('.markdown-delete-button');
+    const dialog = frame.getByRole('alertdialog');
     await trash.click();
+    await dialog.getByRole('button', { name: 'Cancel' }).click();
     assert.equal(notes.has('folder/first'), true, 'cancelling keeps the note');
-    page.once('dialog', dialog => dialog.accept());
     await trash.click();
+    await dialog.getByRole('button', { name: 'Delete page', exact: true }).click();
     await frame.getByRole('heading', { name: 'Garden', exact: true }).waitFor();
     assert.equal(notes.has('folder/first'), false);
     assert.equal(notes.has('folder/Second,-note'), true);

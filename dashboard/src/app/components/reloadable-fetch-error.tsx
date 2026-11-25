@@ -1,6 +1,7 @@
 "use client";
 
 import { RefreshCw } from "lucide-react";
+import { loadingIconMotion } from "./loading-icon-motion";
 
 interface ReloadableFetchErrorProps {
   message: string;
@@ -36,7 +37,7 @@ export default function ReloadableFetchError({
         title={label}
         className="neu-button-icon inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-current/25 text-current transition hover:bg-[var(--paper-strong)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--botanical)] disabled:cursor-wait disabled:opacity-50"
       >
-        <RefreshCw aria-hidden className={`h-3.5 w-3.5 ${disabled ? "animate-spin motion-reduce:animate-none" : ""}`} />
+        <RefreshCw {...(disabled ? loadingIconMotion : {})} aria-hidden className={`h-3.5 w-3.5 ${disabled ? "animate-spin motion-reduce:animate-none" : ""}`} />
       </button>
     </div>
   );

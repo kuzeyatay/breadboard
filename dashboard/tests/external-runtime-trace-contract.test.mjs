@@ -116,7 +116,7 @@ const opaqueDataFilesystemModules = [
   "src/lib/watermarks/agent-query.ts",
   "src/app/actions/clusters.ts",
   "src/app/api/chat-attachments/audio/[blobId]/route.ts",
-  "src/app/api/chat-attachments/documents/[blobId]/route.ts",
+  "src/lib/file-content-response.ts",
   "src/app/api/chat-attachments/documents/route.ts",
   "src/app/api/chat-attachments/videos/[blobId]/route.ts",
   "src/app/api/deer-flow/runs/[runId]/artifacts/[artifactId]/route.ts",
@@ -128,7 +128,6 @@ const opaqueDataFilesystemModules = [
   "src/app/api/gardens/[gardenId]/visualizations/[visualId]/regenerate/route.ts",
   "src/app/api/gardens/[gardenId]/visualizations/[visualId]/rollback/route.ts",
   "src/app/api/generate-notes/route.ts",
-  "src/app/api/hermes/artifacts/[artifactId]/download/route.ts",
   "src/app/api/hermes/artifacts/[artifactId]/genoffice/route.ts",
   "src/app/api/hermes/artifacts/[artifactId]/preview/route.ts",
   "src/app/api/hermes/artifacts/images/route.ts",
@@ -445,7 +444,9 @@ test("the PDF.js route has one closed static deployment closure", () => {
   assert.match(config, /['"]\/api\/pdfjs\/\\\\\[\\\\\.\\\\\.\\\\\.path\\\\\]['"]:\s*\[/u);
   for (const required of [
     "node_modules/pdfjs-dist/legacy/build/pdf.mjs",
+    "node_modules/pdfjs-dist/legacy/build/pdf.min.mjs",
     "node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs",
+    "node_modules/pdfjs-dist/legacy/build/pdf.worker.min.mjs",
     "node_modules/pdfjs-dist/legacy/web/pdf_viewer.mjs",
     "node_modules/pdfjs-dist/legacy/web/images/**/*",
   ]) {

@@ -1,4 +1,4 @@
-import { Readable } from "node:stream";
+import { nodeStreamToWeb } from "@/lib/node-stream-to-web";
 import { NextResponse } from "next/server";
 import { externalRuntimeFilesystem as fs } from "@/lib/external-runtime-filesystem";
 import { requireUserId, RouteError } from "@/lib/server-auth";
@@ -25,7 +25,7 @@ export async function GET(
       return NextResponse.json({ ok: false, error: "path_required" }, { status: 400 });
     }
     const deliverable = await readRunDeliverable(userId, runId, requested);
-    const body = Readable.toWeb(
+    const body = nodeStreamToWeb(
       fs.createReadStream(deliverable.absolutePath, { highWaterMark: 1024 * 1024 }),
     ) as ReadableStream<Uint8Array>;
     return new Response(body, {

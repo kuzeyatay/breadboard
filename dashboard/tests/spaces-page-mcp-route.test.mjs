@@ -34,6 +34,7 @@ test("mcp_call on spaces-page runs in the open page and answers Bread", async t 
     "@/lib/agent-runtime/mcp-proxy.ts": unexpected(["addProxyMcpConnection", "callProxyMcpTool", "proxyMcpTools"]) + "export class LocalMcpBrokerError extends Error {}",
     "@/lib/hermes/mcp-connections.ts": unexpected(["getMcpConnection", "listMcpConnections", "runtimeMcpConfig"]),
     "@/lib/conversations/store.ts": unexpected(["getConversationById"]),
+    "@/lib/hermes/workspace-tools.ts": unexpected(["callWorkspaceTool"]),
   };
   const bundle = await build({
     entryPoints: [path.join(root, "src/app/api/hermes/tools/mcp/route.ts")], absWorkingDir: root,

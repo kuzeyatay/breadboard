@@ -99,6 +99,10 @@ images, stitched with ffmpeg. The same rules apply, plus these:
   line. Never use an OS voice (Windows SAPI or System.Speech, macOS `say`,
   espeak, pyttsx3); they sound robotic and read as generated. If
   `speech_synthesize` says speech is off, tell the user instead of falling back.
+  With the ChatGPT voice selected, Breadboard's voice window records each line
+  in about real time, so send all lines in one call and expect it to take a
+  few minutes. If its result says the local Voicebox voice stood in, say so
+  once; do not re-voice the clips yourself.
 - No progress chrome. No slide or step counter ("01 / 13", "Demo 1 of 2"), no
   breadcrumb or eyebrow line above the title, no course code or file name
   stamped in a corner, no footer bar on every frame. The viewer can see where

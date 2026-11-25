@@ -25,6 +25,7 @@ import { usePersonalize } from "./use-personalize";
 import PromptSuggestionOverlay from "./prompt-suggestion-overlay";
 import type { PromptSuggestionSelection } from "@/lib/chat-prompt-suggestion";
 import ActivityPanel from "./hermes/activity-panel";
+import type { ClarificationPrompt, PermissionPrompt } from "./hermes/use-agent-session";
 import { IntermediateTurn } from "./hermes/inline-progress-notes";
 import MetalSendButton from "./effects/metal-send-button";
 import InlineQuestionAttachments from "./inline-question-attachments";
@@ -680,6 +681,10 @@ export function InlineSelectionAnswerPopover({
   note,
   branch,
   newQuestionRequest,
+  pendingPermission = null,
+  onPermissionDecision,
+  pendingClarification = null,
+  onClarificationAnswer,
 }: {
   anchor: FloatingAnchorRect;
   /** Resolve the painted excerpt again after scrolling or transcript reflow. */
@@ -735,6 +740,12 @@ export function InlineSelectionAnswerPopover({
   branch?: AssistantResponseBranch;
   /** Bumped by the host to open an empty question (another reply on the same answer). */
   newQuestionRequest?: number;
+  /** An approval card or question the running answer is waiting on. The host
+   * chat hides its own while an Ask here run is active, so it must show here. */
+  pendingPermission?: PermissionPrompt | null;
+  onPermissionDecision?: (decision: "once" | "always" | "reject") => void;
+  pendingClarification?: ClarificationPrompt | null;
+  onClarificationAnswer?: (answer: string) => void;
 }) {
   const popoverRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -1339,15 +1350,17 @@ export function InlineSelectionAnswerPopover({
             live={Boolean(pending)}
             notes={progressNotes}
             answer={answer ?? ""}
-            renderPanel={(hideNotes) => (
+            renderPanel={(hideNotes, notesOnly) => (
           <ActivityPanel
             activities={[]}
-            reasoning={reasoning}
+            reasoning={notesOnly ? undefined : reasoning}
             progressNotes={hideNotes ? [] : progressNotes}
             answerContent={answer}
             connection={pending ? "streaming" : "idle"}
-            pendingPermission={null}
-            onPermissionDecision={() => {}}
+            pendingPermission={pending ? pendingPermission : null}
+            onPermissionDecision={onPermissionDecision ?? (() => {})}
+            pendingClarification={pending ? pendingClarification : null}
+            onClarificationAnswer={onClarificationAnswer}
             usage={usage}
             responseDurationMs={responseDurationMs}
             responseStartedAt={startedAt}

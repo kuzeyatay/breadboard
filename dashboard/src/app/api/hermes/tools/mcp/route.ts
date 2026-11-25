@@ -52,6 +52,8 @@ import { isCodeIndexConnectionSlug } from "@/lib/code-index/repository-digest.ts
 import { getConversationById } from "@/lib/conversations/store.ts";
 import { missingRunArtifact } from "@/lib/hermes/artifact-completion.ts";
 import { callMcpInstaller, MCP_INSTALLER_CONNECTION } from "@/lib/hermes/mcp-installer.ts";
+import { usesAuthoredMcpHost } from "@/lib/hermes/authored-mcp.ts";
+import { WORKSPACE_CONNECTION } from "@/lib/hermes/workspace-context.ts";
 import { mcpFailureGuidance, retryTransient, type ConnectionCandidate } from "@/lib/hermes/connection-routing.ts";
 import { DOORY_CONNECTION } from "@/lib/doory/context.ts";
 import { VIDEO_STUDIO_CONNECTION } from "@/lib/timeline-studio/context.ts";
@@ -181,6 +183,9 @@ export async function POST(request: Request) {
       if (!new Set(["get_goal", "create_goal", "update_goal"]).has(tool)) {
         throw new ApiError(403, "goal_tool_denied", "That Goal tool is not available.");
       }
+      if (goalMode.readOnly && tool !== "get_goal") {
+        throw new ApiError(409, "goal_inactive", "This turn started while the goal was stopped.");
+      }
       const conversation = getConversationById(session.conversation_id);
       if (!conversation) {
         throw new ApiError(403, "goal_conversation_missing", "Goal Mode conversation scope is invalid.");
@@ -200,6 +205,7 @@ export async function POST(request: Request) {
           text: `Completion is not verified: the required ${missing.kind} artifact (${missing.rendererId}) is not ready. Continue the task, publish and verify the requested deliverable before marking the goal complete.`,
         } : callGoalModeTool({
           conversationPublicId: conversation.public_id,
+          expectedGoalId: goalMode.goalId,
           tool,
           args,
         });
@@ -232,7 +238,9 @@ export async function POST(request: Request) {
       throw new ApiError(
         403,
         "mcp_connection_denied",
-        "That connection was not selected for this turn.",
+        decision.selectedConnections.includes(MCP_INSTALLER_CONNECTION)
+          ? 'That connection name is unavailable. Look up its exact slug with mcp-installer / list_installed.'
+          : "That connection was not selected for this turn.",
       );
     }
 
@@ -240,7 +248,7 @@ export async function POST(request: Request) {
       // YOLO (teamApproval, resolved server-side for this run) is the user's
       // standing approval: installs then run without a prompt.
       const result = await callMcpInstaller({
-        userId: session.user_id, tool, args, signal: request.signal,
+        userId: session.user_id, selectedConnections: decision.selectedConnections, tool, args, signal: request.signal,
         permissionGranted: permissionGranted || parseRuntimeRunDispatch(run).teamApproval === true,
       });
       if (result.installedSlug) {
@@ -257,6 +265,16 @@ export async function POST(request: Request) {
         });
       }
       return NextResponse.json({ ok: true, data: result.data });
+    }
+
+    if (slug === WORKSPACE_CONNECTION) {
+      const { callWorkspaceTool } = await import("@/lib/hermes/workspace-tools.ts");
+      const data = callWorkspaceTool(ownerId, session.conversation_id, tool, args);
+      recordAuditEvent({
+        eventType: "mcp.tool_completed", runtimeSessionId: session.id, userId: ownerId,
+        gardenId: session.garden_id, payload: { runId: run.id, provider: slug, tool, success: true },
+      });
+      return NextResponse.json({ ok: true, data });
     }
 
     if (slug === DOORY_CONNECTION) {
@@ -524,13 +542,14 @@ export async function POST(request: Request) {
         "That connection is not connected.",
       ), slug);
     }
+    const privateStateHost = usesAuthoredMcpHost(connection);
     if (tool === "__breadboard_list_tools") {
       // Read-only discovery on the selected, same-user connection. Return
       // schemas only for actions the current capability mode can call; the
       // ordinary execution path below rechecks policy and declarations.
       const available = proxyMcpTools(session.user_id, slug).filter(candidate =>
         decision.mode === "scoped_implementation" ||
-        (connectionToolAllowed(candidate.name) && candidate.annotations?.destructiveHint !== true),
+        (connectionToolAllowed(candidate.name) && (privateStateHost || candidate.annotations?.destructiveHint !== true)),
       );
       return NextResponse.json({ ok: true, data: { tools: available } });
     }
@@ -554,8 +573,14 @@ export async function POST(request: Request) {
         "This MCP operation requires scoped implementation mode.",
       );
     }
+    if (privateStateHost && declared.annotations?.readOnlyHint !== true &&
+        !permissionGranted && parseRuntimeRunDispatch(run).teamApproval !== true) {
+      throw new ApiError(428, "connected_app_permission_required",
+        `Allow ${tool} to change the private data saved by ${connection.displayName}?`);
+    }
     if (
       declared.annotations?.destructiveHint === true &&
+      !privateStateHost &&
       decision.mode !== "scoped_implementation"
     ) {
       throw new ApiError(
@@ -595,6 +620,7 @@ export async function POST(request: Request) {
           error instanceof LocalMcpBrokerError && (error.code === "runtime_unavailable" || error.code === "unavailable"),
         signal: request.signal,
       });
+      const toolFailed = data !== null && typeof data === "object" && (data as { isError?: unknown }).isError === true;
       recordAuditEvent({
         eventType: "mcp.tool_completed",
         runtimeSessionId: session.id,
@@ -606,12 +632,12 @@ export async function POST(request: Request) {
           provider: "mcp",
           slug,
           tool,
-          success: true,
+          success: !toolFailed,
         },
       });
       // A tool that answered with an error reached its server and failed there:
       // the result still goes back, carrying the same next move a thrown failure gets.
-      if (data && typeof data === "object" && (data as { isError?: unknown }).isError === true) {
+      if (toolFailed) {
         const fallback = withFallback(new ApiError(502, "mcp_tool_error", ""), slug).message.trim();
         if (fallback) return NextResponse.json({ ok: true, data: { ...(data as object), breadboardFallback: fallback } });
       }

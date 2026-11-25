@@ -115,7 +115,7 @@ export async function POST(request: Request) {
               });
               // Claude Code only ends a /goal run once its own check says the goal is met.
               if (result.outcome === "completed") {
-                callGoalModeTool({ conversationPublicId: conversation.public_id, tool: "update_goal", args: { status: "complete" } });
+                callGoalModeTool({ conversationPublicId: conversation.public_id, expectedGoalId: goal.goal_id, tool: "update_goal", args: { status: "complete" } });
               }
             } catch { /* the goal card keeps its last state */ }
           }

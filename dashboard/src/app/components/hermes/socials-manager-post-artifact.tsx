@@ -13,6 +13,7 @@
 // as what it said, where it was going and when, just with nothing left to save.
 
 import { useCallback, useEffect, useState } from "react";
+import ArtifactPreviewLoading from "./artifact-preview-loading";
 import SocialsManagerPostStudio, {
   formatPostSlot,
   type SocialsManagerStudioPatch,
@@ -123,7 +124,7 @@ export default function SocialsManagerPostArtifact({ stored, artifact }: Props) 
   }
 
   if (live.status === "loading") {
-    return <p className="text-sm text-[var(--ink-muted)]">Opening the post…</p>;
+    return <ArtifactPreviewLoading label="Opening the post…" />;
   }
 
   if (live.status === "error") {

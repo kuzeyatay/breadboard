@@ -5,6 +5,8 @@ import type { CapabilityDecision } from "./capability-policy.ts";
 import { loopStateSection } from "../loopx/governance.ts";
 import { goalModeSection, type GoalModeState } from "../goal-mode.ts";
 import { capsEmphasisSection } from "./caps-emphasis.ts";
+import { isMcpAuthoringRequest, MCP_AUTHORING_TURN, MCP_INSTALLER_CONNECTION } from "./mcp-installer-context.ts";
+import { BOT_CREATION_TURN, isWorkspaceBotRequest } from "./workspace-context.ts";
 import { boundPromptContext, COMPOSED_SYSTEM_PROMPT_LIMIT, HERMES_SYSTEM_PROMPT_LIMIT, TURN_CONTEXT_MARKER } from "./prompt-budget.ts";
 
 export function chatCorePrompt(userId?: number | null): string {
@@ -28,7 +30,7 @@ export function composeHermesSystemPrompt(input: {
    */
   stableAdditional?: string;
   persona?: string;
-  /** The user's message; only read for all-caps emphasis. */
+  /** The user's message for request-specific tool guidance and emphasis. */
   userText?: string;
   /**
    * The conversation whose LoopX goal governs this turn. Passed by the surfaces
@@ -65,6 +67,12 @@ export function composeHermesSystemPrompt(input: {
   // Policies that vary each turn follow everything that does not. All policies
   // still accompany every applicable submission.
   const appendTurnPolicy = (policy: string) => turnPolicies.push(policy);
+  if (decision.selectedConnections?.includes(MCP_INSTALLER_CONNECTION) && isMcpAuthoringRequest(input.userText ?? "")) {
+    appendTurnPolicy(MCP_AUTHORING_TURN);
+  }
+  if (decision.allowedTools.includes("bot_manage") && isWorkspaceBotRequest(input.userText ?? "")) {
+    appendTurnPolicy(BOT_CREATION_TURN);
+  }
   if (input.adhdMode) sections.push(readSystemPrompt("concise-mode"));
   const voiceSection = input.voice ? readSystemPrompt("voice-conversation") : '';
   sections.push(readSystemPrompt(input.surface === "quartz_ai" ? "quartz-surface" : "chat-surface"));

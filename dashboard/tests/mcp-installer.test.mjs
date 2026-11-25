@@ -13,14 +13,16 @@ globalThis.__mcpInstallerTest = state;
 const stubs = {
   "../external-runtime-filesystem.ts": `export { default as externalRuntimeFilesystem } from 'node:fs';`,
   "../external-runtime-path.ts": `export { default as externalRuntimePath } from 'node:path';`,
-  "../runtime-paths.ts": `export const dashboardDataDir = () => globalThis.__mcpInstallerTest.root;`,
+  "../runtime-paths.ts": `export const dashboardDataDir = () => globalThis.__mcpInstallerTest.root; export const repositoryRoot = dashboardDataDir;`,
   "./route-core.ts": `export class ApiError extends Error { constructor(status, code, message) { super(message); this.status = status; this.code = code; } }`,
   "./mcp-connections.ts": `
     const state = () => globalThis.__mcpInstallerTest;
+    export const listMcpConnections = () => state().saved;
     export const mcpSlug = value => value.toLowerCase().replace(/[^a-z0-9_-]+/g, '-');
     export const parseMcpConfig = value => value;
     export const runtimeMcpConfig = value => value;
     export function saveMcpConnection(user, config) { state().saved.push(config); return { ...config, id: 7 }; }
+    export function createVerifiedMcpConnection() { throw new Error("Use the authored server integration test."); }
     export function setMcpConnectionEnabled(user, id, enabled) { state().disabled.push({ id, enabled }); }
   `,
   "../agent-runtime/mcp-proxy.ts": `

@@ -1,0 +1,910 @@
+diff --git a/dashboard/src/app/api/chat-attachments/files/[blobId]/view/route.ts b/dashboard/src/app/api/chat-attachments/files/[blobId]/view/route.ts
+index 70eaba29b3e98006f41a06babbb40b5d1bd87c3d..9b17113a377c268825c1db92ef5a0afb13f7fa11 100644
+--- a/dashboard/src/app/api/chat-attachments/files/[blobId]/view/route.ts
++++ b/dashboard/src/app/api/chat-attachments/files/[blobId]/view/route.ts
+@@ -1,16 +1,12 @@
+ import { NextResponse } from "next/server";
+-import { externalRuntimeFilesystem as fs } from "@/lib/external-runtime-filesystem";
+ import { requireUserId } from "@/lib/server-auth";
+ import { apiErrorResponse } from "@/lib/hermes/route-helpers.ts";
+-import { findStoredFileBlob } from "@/lib/conversations/stored-file-blob-store.ts";
++import { findStoredFileBlob, storedFileResponse, storedFileTextPreview } from "@/lib/conversations/stored-file-blob-store.ts";
+ import { storedFileIsText } from "@/lib/stored-file-attachments.ts";
+ 
+ export const dynamic = "force-dynamic";
+ export const runtime = "nodejs";
+ 
+-/** Enough for any file a person reads in a popup; the rest is a download. */
+-const MAX_VIEW_BYTES = 2 * 1024 * 1024;
+-
+ /**
+  * GET: a stored chat file's text, for the in-chat preview popup.
+  *
+@@ -30,24 +26,18 @@ export async function GET(
+     if (!blob) return NextResponse.json({ error: "file_not_found" }, { status: 404 });
+ 
+     if (new URL(request.url).searchParams.get("download") === "1") {
+-      return new Response(new Uint8Array(fs.readFileSync(blob.path)), {
+-        headers: {
+-          "content-type": "application/octet-stream",
+-          "content-disposition": `attachment; filename="${blob.blobId}.${blob.format}"`,
+-          "cache-control": "private, max-age=3600",
+-          "x-content-type-options": "nosniff",
+-        },
++      return await storedFileResponse(blob, request, {
++        "content-type": "application/octet-stream",
++        "content-disposition": `attachment; filename="${blob.blobId}.${blob.format}"`,
++        "cache-control": "private, max-age=3600",
++        "x-content-type-options": "nosniff",
+       });
+     }
+ 
+     if (!storedFileIsText(blob.format)) {
+       return NextResponse.json({ format: blob.format, textual: false, sizeBytes: blob.byteSize });
+     }
+-    const buffer = fs.readFileSync(blob.path) as Buffer;
+-    const truncated = buffer.byteLength > MAX_VIEW_BYTES;
+-    const text = new TextDecoder("utf-8", { fatal: false }).decode(
+-      truncated ? buffer.subarray(0, MAX_VIEW_BYTES) : buffer,
+-    );
++    const { text, truncated } = await storedFileTextPreview(blob);
+     return NextResponse.json(
+       { format: blob.format, textual: true, text, truncated, sizeBytes: blob.byteSize },
+       { headers: { "cache-control": "private, max-age=300", "x-content-type-options": "nosniff" } },
+diff --git a/dashboard/src/app/api/chat-attachments/files/route.ts b/dashboard/src/app/api/chat-attachments/files/route.ts
+index b8700984e58e5523c81082bbef90d897e0a2b1b2..c067a3b3e66b198ef23c337caae0728ca54f8e32 100644
+--- a/dashboard/src/app/api/chat-attachments/files/route.ts
++++ b/dashboard/src/app/api/chat-attachments/files/route.ts
+@@ -10,13 +10,13 @@ import {
+   StoredFileBlobError,
+   findStoredFileBlob,
+   removeStoredFileBlob,
++  storedFileResponse,
+   writeStoredFileBlob,
+ } from "@/lib/conversations/stored-file-blob-store.ts";
+ import { sweepUnreferencedStoredFileBlobs } from "@/lib/conversations/stored-file-uploads.ts";
+ import { isMarkedWebBlob, markWebPdfBlob, touchWebPdfBlob } from "@/lib/conversations/document-blob-store.ts";
+ import { STORE_ONLY_HEADER, sweepOpenedFiles } from "@/lib/conversations/opened-files.ts";
+ import { openedImageMimeType } from "@/lib/local-document.ts";
+-import { externalRuntimeFilesystem as fs } from "@/lib/external-runtime-filesystem";
+ 
+ export const dynamic = "force-dynamic";
+ export const runtime = "nodejs";
+@@ -78,8 +78,8 @@ export async function GET(request: Request) {
+       return NextResponse.json({ error: "file_not_found" }, { status: 404 });
+     }
+     touchWebPdfBlob(blob);
+-    return new Response(new Uint8Array(fs.readFileSync(blob.path)), {
+-      headers: { "content-type": mimeType, "cache-control": "private, max-age=3600", "x-content-type-options": "nosniff" },
++    return await storedFileResponse(blob, request, {
++      "content-type": mimeType, "cache-control": "private, max-age=3600", "x-content-type-options": "nosniff",
+     });
+   } catch (error) {
+     return apiErrorResponse(error);
+diff --git a/dashboard/src/lib/conversations/stored-file-blob-store.ts b/dashboard/src/lib/conversations/stored-file-blob-store.ts
+index a68ecc6d304c1e186e65f53f7e19e0b7ce16492f..56a573a77eb43463ef355cf7168695c60be6aaed 100644
+--- a/dashboard/src/lib/conversations/stored-file-blob-store.ts
++++ b/dashboard/src/lib/conversations/stored-file-blob-store.ts
+@@ -37,6 +37,47 @@ export interface StoredFileBlob {
+   path: string;
+ }
+ 
++/** Open before sending headers so a file removed during lookup still uses the route's error response. */
++export async function storedFileResponse(blob: StoredFileBlob, request: Request, headers: HeadersInit) {
++  request.signal.throwIfAborted();
++  const file = await fs.promises.open(blob.path, "r");
++  try {
++    if (request.method === "HEAD") {
++      await file.close();
++      return new Response(null, { headers });
++    }
++    // The client can disconnect during open. Attaching an already-aborted signal
++    // would destroy the Node stream before the Web adapter owns its error event.
++    request.signal.throwIfAborted();
++    const chunkBytes = Math.max(1, Math.min(blob.byteSize, 512 * 1024));
++    const body = Readable.toWeb(file.createReadStream({ signal: request.signal, highWaterMark: chunkBytes }), {
++      strategy: { highWaterMark: chunkBytes, size: chunk => chunk.byteLength },
++    }) as ReadableStream<Uint8Array>;
++    return new Response(body, { headers });
++  } catch (error) {
++    await file.close();
++    throw error;
++  }
++}
++
++/** The preview decodes exactly the first 2 MiB, even when the last character is split. */
++export async function storedFileTextPreview(blob: StoredFileBlob) {
++  const limit = 2 * 1024 * 1024;
++  const file = await fs.promises.open(blob.path, "r");
++  try {
++    const buffer = Buffer.allocUnsafe(Math.min(blob.byteSize, limit));
++    let end = 0;
++    while (end < buffer.length) {
++      const { bytesRead } = await file.read(buffer, end, buffer.length - end, end);
++      if (!bytesRead) break;
++      end += bytesRead;
++    }
++    return { text: new TextDecoder().decode(buffer.subarray(0, end)), truncated: blob.byteSize > limit };
++  } finally {
++    await file.close();
++  }
++}
++
+ export function storedFileBlobRoot(configured?: string): string {
+   const root = path.resolve(configured ?? path.join(dashboardDataDir(), "chat-files"));
+   fs.mkdirSync(root, { recursive: true });
+@@ -75,34 +116,6 @@ export function storedFileBlobPath(input: {
+   return path.join(userDirectory(input.userId, input.root), blobFileName(input.blobId, input.format));
+ }
+ 
+-function validateStoredFile(filePath: string, format: StoredFileAttachmentFormat): void {
+-  if (format === "bin") return;
+-  const bytes = fs.readFileSync(filePath);
+-  if (storedFileIsText(format)) {
+-    if (bytes.byteLength > MAX_STORED_TEXT_FILE_BYTES) {
+-      throw new StoredFileBlobError(413, "text_file_too_large", "Text files must be 16 MiB or smaller.");
+-    }
+-    if (bytes.includes(0)) {
+-      throw new StoredFileBlobError(415, "file_not_text", "That file contains binary data.");
+-    }
+-    try {
+-      new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+-    } catch {
+-      throw new StoredFileBlobError(415, "file_not_utf8", "Text attachments must use UTF-8.");
+-    }
+-    return;
+-  }
+-  if ((format === "zip" || format === "mlx") && !(bytes[0] === 0x50 && bytes[1] === 0x4b)) {
+-    throw new StoredFileBlobError(
+-      415,
+-      "file_signature_invalid",
+-      format === "mlx"
+-        ? "That file is not a MATLAB Live Script."
+-        : "That file is not a ZIP archive.",
+-    );
+-  }
+-}
+-
+ export async function writeStoredFileBlob(input: {
+   userId: number;
+   format: StoredFileAttachmentFormat;
+@@ -117,9 +130,14 @@ export async function writeStoredFileBlob(input: {
+     root: input.root,
+   });
+   const temporaryPath = `${finalPath}.part`;
++  const decoder = storedFileIsText(input.format) ? new TextDecoder("utf-8", { fatal: true }) : null;
++  const signature = input.format === "zip" || input.format === "mlx" ? new Uint8Array(2) : null;
++  let containsNul = false;
++  let invalidUtf8 = false;
+   let written = 0;
+   const cap = new TransformStream<Uint8Array, Uint8Array>({
+     transform(chunk, controller) {
++      const offset = written;
+       written += chunk.byteLength;
+       if (written > MAX_STORED_FILE_ATTACHMENT_BYTES) {
+         controller.error(
+@@ -127,6 +145,19 @@ export async function writeStoredFileBlob(input: {
+         );
+         return;
+       }
++      if (signature && offset < signature.length) {
++        signature.set(chunk.subarray(0, signature.length - offset), offset);
++      }
++      if (decoder && !containsNul && written <= MAX_STORED_TEXT_FILE_BYTES) {
++        containsNul = chunk.includes(0);
++        if (!containsNul && !invalidUtf8) {
++          try {
++            for (let start = 0; start < chunk.length; start += 64 * 1024) {
++              decoder.decode(chunk.subarray(start, start + 64 * 1024), { stream: true });
++            }
++          } catch { invalidUtf8 = true; }
++        }
++      }
+       controller.enqueue(chunk);
+     },
+   });
+@@ -139,7 +170,19 @@ export async function writeStoredFileBlob(input: {
+     if (written === 0) {
+       throw new StoredFileBlobError(400, "file_empty", "That file is empty.");
+     }
+-    validateStoredFile(temporaryPath, input.format);
++    // Decide after the write so interruption, size, NUL and encoding errors keep their precedence.
++    if (decoder) {
++      if (written > MAX_STORED_TEXT_FILE_BYTES) {
++        throw new StoredFileBlobError(413, "text_file_too_large", "Text files must be 16 MiB or smaller.");
++      }
++      if (containsNul) throw new StoredFileBlobError(415, "file_not_text", "That file contains binary data.");
++      try { decoder.decode(); } catch { invalidUtf8 = true; }
++      if (invalidUtf8) throw new StoredFileBlobError(415, "file_not_utf8", "Text attachments must use UTF-8.");
++    }
++    if (signature && (signature[0] !== 0x50 || signature[1] !== 0x4b)) {
++      throw new StoredFileBlobError(415, "file_signature_invalid", input.format === "mlx"
++        ? "That file is not a MATLAB Live Script." : "That file is not a ZIP archive.");
++    }
+     await fs.promises.rename(temporaryPath, finalPath);
+   } catch (error) {
+     await fs.promises.rm(temporaryPath, { force: true }).catch(() => undefined);
+diff --git a/dashboard/tests/cad-aircursor-context.test.mjs b/dashboard/tests/cad-aircursor-context.test.mjs
+index fac6257a895fcccf9948864767676f56ce2b3830..4ede18e4986792ca76487f922383408ef8b04691 100644
+--- a/dashboard/tests/cad-aircursor-context.test.mjs
++++ b/dashboard/tests/cad-aircursor-context.test.mjs
+@@ -29,11 +29,24 @@ test(`${implementation}: CAD navigation follows the canvas and releases on edits
+       <section aria-label="CAD viewer"><canvas style="position:absolute;left:100px;top:100px;width:400px;height:300px"></canvas></section>
+       <input aria-label="Parameter" style="position:absolute;left:550px;top:100px" />
+       <button style="position:absolute;left:550px;top:200px">Toolbar</button>`);
++    if (implementation === "desktop") await page.evaluate(() => {
++      const active = new Set();
++      const start = window.setInterval.bind(window), stop = window.clearInterval.bind(window);
++      window.setInterval = (fn, delay, ...args) => {
++        const id = start(fn, delay, ...args);
++        if (delay === 100) active.add(id);
++        return id;
++      };
++      window.clearInterval = id => { active.delete(id); stop(id); };
++      window.cadTimerCount = () => active.size;
++    });
+     await page.addScriptTag({ content: bundle.outputFiles[0].text });
++    if (implementation === "desktop") assert.equal(await page.evaluate(() => window.cadTimerCount()), 0);
+     const hinted = async () => page.waitForFunction(() => document.title === "Breadboard CAD | My design");
+     const plain = async (title = "My design") => page.waitForFunction(value => document.title === value, title);
+     await page.locator("canvas").hover();
+     await hinted();
++    if (implementation === "desktop") assert.equal(await page.evaluate(() => window.cadTimerCount()), 1);
+     await page.getByRole("button").hover();
+     await plain();
+ 
+@@ -68,6 +81,7 @@ test(`${implementation}: CAD navigation follows the canvas and releases on edits
+ 
+     await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+     await plain();
++    if (implementation === "desktop") assert.equal(await page.evaluate(() => window.cadTimerCount()), 0);
+     await page.locator("canvas").hover();
+     await hinted();
+     await page.evaluate(() => {
+@@ -75,6 +89,7 @@ test(`${implementation}: CAD navigation follows the canvas and releases on edits
+       window.disposeCad();
+     });
+     await plain("Another chat");
++    if (implementation === "desktop") assert.equal(await page.evaluate(() => window.cadTimerCount()), 0);
+     await page.locator("canvas").hover();
+     await page.waitForTimeout(150);
+     assert.equal(await page.title(), "Another chat", "cleanup must remove listeners and preserve a newer title");
+diff --git a/dashboard/tests/stored-file-retry.test.mjs b/dashboard/tests/stored-file-retry.test.mjs
+index 7dc6bffeda1557fd44772375c14b50887a44a782..ff7735996ae2f67dd006f2463e3959a5f3e8fe71 100644
+--- a/dashboard/tests/stored-file-retry.test.mjs
++++ b/dashboard/tests/stored-file-retry.test.mjs
+@@ -12,7 +12,9 @@ test('a retried turn reads stored files of every format back from their bytes',
+   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stored-file-retry-'));
+   const previous = process.env.BREADBOARD_DATA_DIR;
+   process.env.BREADBOARD_DATA_DIR = dataDir;
++  let db;
+   try {
++    ({ default: db } = await import('../src/lib/db.ts'));
+     const store = await import('../src/lib/conversations/stored-file-blob-store.ts');
+     const { resolveDocumentAttachments } = await import('../src/lib/document-attachments-server.ts');
+ 
+@@ -48,6 +50,7 @@ test('a retried turn reads stored files of every format back from their bytes',
+     const [foreign] = resolveDocumentAttachments(8, [pointer('erlangc-2.m', script)]);
+     assert.equal(foreign.text, '');
+   } finally {
++    db?.close();
+     if (previous === undefined) delete process.env.BREADBOARD_DATA_DIR;
+     else process.env.BREADBOARD_DATA_DIR = previous;
+     fs.rmSync(dataDir, { recursive: true, force: true });
+diff --git a/desktop/src/main/chat-notification-delivery.ts b/desktop/src/main/chat-notification-delivery.ts
+index 86950460992ff7a50d5930dff27bf97f46eec325..686e5511b6716e5f0b20b67f15918d2301523c22 100644
+--- a/desktop/src/main/chat-notification-delivery.ts
++++ b/desktop/src/main/chat-notification-delivery.ts
+@@ -57,6 +57,12 @@ export class ChatNotificationDelivery {
+     if (!this.sources.size) this.failed.clear();
+   }
+ 
++  /** A retired overlay can never report another card under this identity. */
++  forget(id: number): void {
++    this.reported.delete(id);
++    if (this.sources.has(id)) this.remove(id);
++  }
++
+   refresh(): void {
+     const current = this.current();
+     for (const id of new Set([...this.pending.keys(), ...this.alerts.keys()])) {
+diff --git a/desktop/src/main/notification-visible-region.ts b/desktop/src/main/notification-visible-region.ts
+index 644cb7d2128f67daea862c011da19da0e8de2ff9..db1b71a1884b4b49c119f1931f101e349f639ae0 100644
+--- a/desktop/src/main/notification-visible-region.ts
++++ b/desktop/src/main/notification-visible-region.ts
+@@ -198,7 +198,7 @@ function subtractRect(area: Rectangle, cover: Rectangle): Rectangle[] {
+   ].filter(rect => rect.width > 0 && rect.height > 0);
+ }
+ 
+-function contentsBox(window: BrowserWindow, contents: WebContents): { bounds: Rectangle; clips: Rectangle[] } | undefined {
++function windowLayers(window: BrowserWindow) {
+   const [width = 0, height = 0] = window.getContentSize();
+   const viewport = { x: 0, y: 0, width, height };
+   const layers: Array<{ contents: WebContents; bounds: Rectangle; clip: Rectangle; covers: Rectangle[] }> = [
+@@ -218,13 +218,18 @@ function contentsBox(window: BrowserWindow, contents: WebContents): { bounds: Re
+     }
+   }
+   collect(window.contentView, viewport, viewport);
++  return layers;
++}
++
++function contentsBox(layers: ReturnType<typeof windowLayers>, contents: WebContents): { bounds: Rectangle; clips: Rectangle[] } | undefined {
+   const index = layers.findIndex(layer => layer.contents === contents);
+   if (index < 0) return;
+   const own = layers[index]!;
+   let clips = [own.clip];
+   // Later children paint above earlier ones, including children of a later
+   // parent View. DOM hit-testing cannot see these separate native renderers.
+-  for (const above of layers.slice(index + 1)) {
++  for (let i = index + 1; i < layers.length; i++) {
++    const above = layers[i]!;
+     for (const cover of above.covers) {
+       clips = clips.flatMap(rect => subtractRect(rect, cover));
+       if (clips.length > 4096) return { bounds: own.bounds, clips: [] };
+@@ -235,25 +240,34 @@ function contentsBox(window: BrowserWindow, contents: WebContents): { bounds: Re
+ }
+ 
+ /** Uncovered regions in this renderer's CSS viewport (including nested native views and zoom). */
+-export function notificationVisibleRects(window: BrowserWindow, contents: WebContents): Rectangle[] | undefined {
+-  if (process.platform !== 'win32') return undefined;
+-  if (window.isDestroyed() || contents.isDestroyed() || !window.isVisible() || window.isMinimized() ||
+-      !receivedAt || Date.now() - receivedAt > 1_000) return [];
++export function notificationVisibilityPass(window: BrowserWindow): (contents: WebContents) => Rectangle[] | undefined {
++  if (process.platform !== 'win32') return () => undefined;
++  const sampledAt = receivedAt;
++  if (window.isDestroyed() || !window.isVisible() || window.isMinimized() ||
++      !sampledAt || Date.now() - sampledAt > 1_000) return () => [];
+   const watch = [...watches].find(w => w.window === window);
+   const regions = watch && snapshot[watch.handle];
+-  if (!regions?.length) return [];
+-  const box = contentsBox(window, contents);
+-  if (!box) return [];
++  if (!regions?.length) return () => [];
++  const layers = windowLayers(window);
+   const origin = window.getContentBounds();
+-  const zoom = contents.getZoomFactor();
+-  return box.clips.flatMap(area => {
+-    const clip = screen.dipToScreenRect(window, { ...area, x: origin.x + area.x, y: origin.y + area.y });
+-    return regions.flatMap(region => {
+-      const visible = intersectNotificationRects(region, clip);
+-      if (!visible) return [];
+-      const dip = screen.screenToDipRect(window, visible);
+-      return [{ x: (dip.x - origin.x - box.bounds.x) / zoom, y: (dip.y - origin.y - box.bounds.y) / zoom,
+-        width: dip.width / zoom, height: dip.height / zoom }];
++  return contents => {
++    if (contents.isDestroyed() || Date.now() - sampledAt > 1_000) return [];
++    const box = contentsBox(layers, contents);
++    if (!box) return [];
++    const zoom = contents.getZoomFactor();
++    return box.clips.flatMap(area => {
++      const clip = screen.dipToScreenRect(window, { ...area, x: origin.x + area.x, y: origin.y + area.y });
++      return regions.flatMap(region => {
++        const visible = intersectNotificationRects(region, clip);
++        if (!visible) return [];
++        const dip = screen.screenToDipRect(window, visible);
++        return [{ x: (dip.x - origin.x - box.bounds.x) / zoom, y: (dip.y - origin.y - box.bounds.y) / zoom,
++          width: dip.width / zoom, height: dip.height / zoom }];
++      });
+     });
+-  });
++  };
++}
++
++export function notificationVisibleRects(window: BrowserWindow, contents: WebContents): Rectangle[] | undefined {
++  return notificationVisibilityPass(window)(contents);
+ }
+diff --git a/desktop/src/main/tab-manager.ts b/desktop/src/main/tab-manager.ts
+index 694d1c12dcbb6c67107659330d479bda19eb0d36..3d46d568653838f49c25cd07aa939241f270bb33 100644
+--- a/desktop/src/main/tab-manager.ts
++++ b/desktop/src/main/tab-manager.ts
+@@ -29,7 +29,7 @@ import { randomUUID } from "node:crypto";
+ import { ANCHORED_TAB_NAVIGATION_MESSAGE, isSameTabScreen } from "./tab-navigation-policy";
+ import { pathToFileURL } from "node:url";
+ import { installWindowSurfaceRecovery } from "./window-surface-recovery";
+-import { notificationVisibleRects, watchNotificationVisibility, setNotificationViewVisible, trackTransparentNotificationView } from "./notification-visible-region";
++import { notificationVisibilityPass, notificationVisibleRects, watchNotificationVisibility, setNotificationViewVisible, trackTransparentNotificationView } from "./notification-visible-region";
+ import { ChatNotificationDelivery, isChatNotificationCardVisible } from "./chat-notification-delivery";
+ import { annotationPageUrl, browserOrganizationWidth, normalizeAnnotationTarget, type BrowserAnnotationTarget } from "../shared/browser-annotations";
+ import { browserAnnotationCaptureScript, browserAnnotationPaintScript } from "./browser-annotations-dom";
+@@ -1908,18 +1908,27 @@ export class TabManager {
+       // Native window covers and native view bounds can change without a DOM
+       // event. Send only changed regions; do not persist/rebuild the tab session
+       // on the monitor's heartbeat.
+-      const contents = new Set([
++      const contents = new Map<number, WebContents>();
++      for (const item of [
+         ...host.tabs.map(tab => tab.contents), ...[...host.retainedTabControls].map(tab => tab.contents),
+         host.preparedNewTab?.contents, host.browserChrome?.contents, host.inlineAnswer?.contents, host.notificationOverlay?.contents,
+-      ].filter((item): item is WebContents => !!item && !item.isDestroyed()));
+-      for (const item of contents) {
+-        const signature = JSON.stringify(notificationVisibleRects(window, item));
++      ]) {
++        if (item && !item.isDestroyed()) contents.set(item.id, item);
++      }
++      let readRegions = notificationVisibilityPass(window);
++      for (const item of contents.values()) {
++        let regions = readRegions(item);
++        const signature = JSON.stringify(regions);
+         if (notificationRegions.get(item.id) === signature) continue;
+         notificationRegions.set(item.id, signature);
+-        if (item === host.notificationOverlay?.contents) this.layoutNotificationOverlay(host);
+-        this.send(item, this.stateFor(item));
++        if (item === host.notificationOverlay?.contents) {
++          this.layoutNotificationOverlay(host);
++          readRegions = notificationVisibilityPass(window);
++          regions = readRegions(item);
++        }
++        this.send(item, this.stateWithoutNotificationVisibility(item), regions);
+       }
+-      for (const id of notificationRegions.keys()) if (id !== host.notificationOverlay?.contents.id && ![...contents].some(item => item.id === id)) notificationRegions.delete(id);
++      for (const id of notificationRegions.keys()) if (!contents.has(id)) notificationRegions.delete(id);
+       this.chatNotificationDelivery.refresh();
+     });
+     window.once("closed", stopNotificationVisibility);
+@@ -3224,10 +3233,10 @@ export class TabManager {
+     return this.notificationState(sender, this.stateWithoutNotificationVisibility(sender));
+   }
+ 
+-  private notificationState(sender: WebContents, state: TabsState): TabsState {
++  private notificationState(sender: WebContents, state: TabsState, regions?: Rectangle[]): TabsState {
+     const host = this.hostByContents.get(sender.id);
+     if (!host || host.window.isDestroyed()) return state;
+-    const notificationVisibleRectsForPage = notificationVisibleRects(host.window, sender);
++    const notificationVisibleRectsForPage = regions ?? notificationVisibleRects(host.window, sender);
+     return notificationVisibleRectsForPage === undefined ? state : { ...state, notificationVisibleRects: notificationVisibleRectsForPage };
+   }
+ 
+@@ -4333,7 +4342,7 @@ export class TabManager {
+     };
+   }
+ 
+-  private send(contents: WebContents, state: TabsState): void {
++  private send(contents: WebContents, state: TabsState, regions?: Rectangle[]): void {
+     if (contents.isDestroyed()) return;
+     try {
+       // WebContents survives a renderer crash. During recovery, loading events
+@@ -4343,7 +4352,7 @@ export class TabManager {
+       if (contents.isCrashed()) return;
+       const frame = contents.mainFrame;
+       if (!frame || frame.isDestroyed()) return;
+-      frame.send(IPC_CHANNELS.tabsState, this.notificationState(contents, state));
++      frame.send(IPC_CHANNELS.tabsState, this.notificationState(contents, state, regions));
+     } catch (error) {
+       // Reading mainFrame can also fail during teardown. DOM readiness and
+       // subsequent state changes broadcast the latest state to the new page.
+@@ -7526,7 +7535,11 @@ export class TabManager {
+     // Stop sending into a dead frame and queue cards until its new size handshake.
+     overlay.contents.on("render-process-gone", reset);
+     installRendererRecovery(overlay.contents, scheduleRetry);
+-    overlay.contents.once("destroyed", cancelRetry);
++    const overlayId = overlay.contents.id;
++    overlay.contents.once("destroyed", () => {
++      cancelRetry();
++      this.chatNotificationDelivery.forget(overlayId);
++    });
+     this.layoutNotificationOverlay(host);
+     host.window.contentView.addChildView(view);
+     load();
+@@ -7535,7 +7548,7 @@ export class TabManager {
+   private destroyNotificationOverlay(host: Host): void {
+     const overlay = host.notificationOverlay;
+     if (!overlay) return;
+-    this.chatNotificationDelivery.remove(overlay.contents.id);
++    this.chatNotificationDelivery.forget(overlay.contents.id);
+     host.notificationOverlay = null;
+     this.hostByContents.delete(overlay.contents.id);
+     if (!host.window.isDestroyed()) {
+diff --git a/desktop/src/preload/preload.ts b/desktop/src/preload/preload.ts
+index 8ba0e1f9be9daa3d471663549ef858d011a19723..6f38d0c4c20d39d7c2e4c8a6b1af8b2a43e6451f 100644
+--- a/desktop/src/preload/preload.ts
++++ b/desktop/src/preload/preload.ts
+@@ -442,6 +442,7 @@ export function installBackgroundReadPriority(): void {
+ export function installCadNavigationHint(): () => void {
+   const prefix = "Breadboard CAD | ";
+   let point: { x: number; y: number } | null = null;
++  let timer: number | undefined;
+   let original = "";
+   let published: string | null = null;
+   const release = () => {
+@@ -468,25 +469,29 @@ export function installCadNavigationHint(): () => void {
+   const move = (event: PointerEvent) => {
+     if (event.pointerType !== "mouse" && event.pointerType !== "pen") return;
+     point = { x: event.clientX, y: event.clientY };
++    timer ??= window.setInterval(update, 100);
+     update();
+   };
+-  const leave = () => { point = null; release(); };
++  const leave = () => {
++    point = null;
++    window.clearInterval(timer);
++    timer = undefined;
++    release();
++  };
+   document.addEventListener("pointermove", move, true);
+   document.addEventListener("pointerdown", move, true);
+   document.addEventListener("focusin", update);
+   document.addEventListener("visibilitychange", leave);
+   document.documentElement.addEventListener("pointerleave", leave);
+   window.addEventListener("blur", leave);
+-  const timer = window.setInterval(update, 100);
+   return () => {
+-    window.clearInterval(timer);
+     document.removeEventListener("pointermove", move, true);
+     document.removeEventListener("pointerdown", move, true);
+     document.removeEventListener("focusin", update);
+     document.removeEventListener("visibilitychange", leave);
+     document.documentElement.removeEventListener("pointerleave", leave);
+     window.removeEventListener("blur", leave);
+-    release();
++    leave();
+   };
+ }
+ 
+diff --git a/desktop/tests/chat-notification-delivery.test.ts b/desktop/tests/chat-notification-delivery.test.ts
+index 3fea6839c1d6c4e2bfa391891d6ac3f97c3636bb..8405c4878ba594e5c88cc56c0a19f17c361cdea8 100644
+--- a/desktop/tests/chat-notification-delivery.test.ts
++++ b/desktop/tests/chat-notification-delivery.test.ts
+@@ -101,6 +101,19 @@ test('an overlay that reloads does not re-alert or re-chime notices it already d
+   assert.equal(f.alerts.length,1); assert.deepEqual(overlay.received,['kept']);
+ });
+ 
++test('retiring 100 overlays releases their delivery records and preserves shared receipts', () => {
++  const f = fixture();
++  for (let id = 1; id <= 100; id++) {
++    f.source(id, [card('shared')]);
++    f.flush();
++    f.delivery.remove(id); // reload before the native view closes
++    f.delivery.forget(id);
++  }
++  assert.equal(f.alerts.length, 1);
++  assert.equal(f.delivery['reported'].size, 0);
++  assert.equal(f.pending(), 0);
++});
++
+ test('failed or unsupported OS delivery does not loop, and a late show after removal is closed', () => {
+   const f = fixture(); f.settings({fail:true}); f.source(1,[card('failed')]); f.flush();
+   f.delivery.refresh(); f.flush(); assert.equal(f.alerts.length,1); assert.equal(f.sources.get(1)!.received.length,0);
+diff --git a/desktop/tests/fixtures/notification-recovery.cjs b/desktop/tests/fixtures/notification-recovery.cjs
+index a1a090654bd46840dee41232db489fb5cdd48ed0..db6b727ee23a3469526e4f2003d886e9933bacb7 100644
+--- a/desktop/tests/fixtures/notification-recovery.cjs
++++ b/desktop/tests/fixtures/notification-recovery.cjs
+@@ -80,8 +80,10 @@ app.whenReady().then(async () => {
+ 
+   // A replaced/closed overlay must not keep retrying or resurrect itself.
+   unavailable=true;
+-  void overlay.contents.loadURL(origin+'/notification-overlay').catch(()=>{});
+-  await until(()=>!overlay.ready,'manual navigation clears readiness');
++  // Chromium may still be sending the manual request after navigation clears readiness.
++  // Count only retries issued after teardown, once that request has actually failed.
++  await assert.rejects(overlay.contents.loadURL(origin+'/notification-overlay'));
++  assert.equal(overlay.ready,false,'manual navigation clears readiness');
+   manager.setNotificationOverlayUrl(null);
+   const finalRequests=requests;
+   await new Promise(resolve=>setTimeout(resolve,1200));
+diff --git a/desktop/tests/notification-view-regions.test.ts b/desktop/tests/notification-view-regions.test.ts
+index e84ed81e86d3218033c805a07ff8eb26e886c0bd..d566da1bfb4e4fe0aa5374029a40041f12b72263 100644
+--- a/desktop/tests/notification-view-regions.test.ts
++++ b/desktop/tests/notification-view-regions.test.ts
+@@ -16,7 +16,8 @@ class TestView {
+   children: TestView[] = [];
+   shown = true;
+   constructor(public bounds: Rectangle) {}
+-  getBounds() { return this.bounds; }
++  boundsReads = 0;
++  getBounds() { this.boundsReads++; return this.bounds; }
+   setVisible(value: boolean) { this.shown = value; }
+ }
+ class TestContentsView extends TestView {
+@@ -43,11 +44,27 @@ function fixture() {
+   const api=module.exports;
+   const stop=api.watchNotificationVisibility(window as never,()=>{});
+   const sample=()=>child.stdout.write(JSON.stringify({'1':[{x:200,y:400,width:1200,height:800}]})+'\n');sample();
+-  return {root,page,stop,rects:(target:Contents=page)=>JSON.parse(JSON.stringify(api.notificationVisibleRects(window as never,target as WebContents))),
+-    advance:(ms:number)=>{now+=ms;sample();},track:(view:TestContentsView)=>api.trackTransparentNotificationView(view as never,'.painted'),
++  return {root,page,stop,pass:()=>api.notificationVisibilityPass(window as never),rects:(target:Contents=page)=>JSON.parse(JSON.stringify(api.notificationVisibleRects(window as never,target as WebContents))),
++    elapse:(ms:number)=>{now+=ms;},advance:(ms:number)=>{now+=ms;sample();},track:(view:TestContentsView)=>api.trackTransparentNotificationView(view as never,'.painted'),
+     show:(view:TestView,value:boolean)=>api.setNotificationViewVisible(view as unknown as View,value)};
+ }
+ 
++test('a visibility pass reads each view once for 30 tabs and the next pass sees a changed layout', () => {
++  const f = fixture();
++  const tabs = Array.from({ length: 30 }, () => contents());
++  const views = tabs.slice(0, 3).map((tab, i) => new TestContentsView({ x: i * 100, y: 0, width: 100, height: 80 }, tab));
++  f.root.children = views;
++  const read = f.pass();
++  for (const [i, tab] of tabs.entries()) assert.equal(read(tab as WebContents)?.length, i < 3 ? 1 : 0);
++  assert.deepEqual(views.map(view => view.boundsReads), [1, 1, 1]);
++  f.elapse(1001);
++  assert.equal(read(tabs[0] as WebContents)?.length, 0, 'a delayed pass cannot acknowledge a card from an expired native sample');
++  f.advance(0);
++  views[1]!.bounds = views[0]!.bounds;
++  assert.equal(f.pass()(tabs[0] as WebContents)?.length, 0);
++  f.stop();
++});
++
+ test('only higher native siblings cover an answer, including later parent containers',()=>{
+   const f=fixture(),answer=contents(),parent=new TestView({x:100,y:50,width:300,height:200});
+   const view=new TestContentsView({x:0,y:0,width:300,height:200},answer);parent.children=[view];f.root.children=[parent];
+diff --git a/qa/electron/launch-breadboard.ts b/qa/electron/launch-breadboard.ts
+index a550ec3a03588ccf5776bc1fc47835da8365a1c2..e53819728ccde6f466117ae48a5c49fd2289ad24 100644
+--- a/qa/electron/launch-breadboard.ts
++++ b/qa/electron/launch-breadboard.ts
+@@ -4,6 +4,7 @@ import { _electron as electron } from "playwright";
+ import type { ElectronApplication, Page } from "playwright";
+ import type { QaRunEnvironment } from "./environment";
+ import type { DiagnosticsCollector } from "./diagnostics";
++import { locate, SELECTORS } from "./selectors";
+ 
+ const ELECTRON_CLOSE_TIMEOUT_MS = 90_000;
+ 
+@@ -102,7 +103,8 @@ export async function launchBreadboard(
+       await installNativeDialogPlan(application, options.dialogPlan ?? {});
+     }
+     await installExternalOpenInterceptor(application);
+-    startupPage = await application.firstWindow({ timeout: 60_000 });
++    // The persistent window shell and a blank backing view can both precede the welcome page.
++    startupPage = await waitForAppPage(application, /^file:.*\/startup\/index\.html(?:[?#]|$)/, 60_000);
+     attach(startupPage);
+   } catch (error) {
+     options.diagnostics?.markExpectedShutdown();
+@@ -122,12 +124,8 @@ export async function launchBreadboard(
+     run,
+     startupPage,
+     dismissWelcome: async () => {
+-      const welcome = application
+-        .windows()
+-        .find((page) => !page.isClosed() && page.url().startsWith("file:")) ?? startupPage;
+-      const button = welcome.getByRole("button", {
+-        name: "Welcome to Breadboard. Click to continue.",
+-      });
++      const welcome = startupPage;
++      const button = locate(welcome, SELECTORS.startup.continue);
+       const failure = welcome.locator("#failure:not([hidden])");
+       await Promise.race([
+         button.waitFor({ state: "visible", timeout: 6 * 60_000 }),
+@@ -205,13 +203,17 @@ export async function waitForDashboardWindow(
+   application: ElectronApplication,
+   timeoutMs = 90_000,
+ ): Promise<Page> {
++  return waitForAppPage(application, /^http:\/\/127\.0\.0\.1:\d+\/(?!dictation(?:[/?#]|$)|voice(?:[/?#]|$))/, timeoutMs);
++}
++
++async function waitForAppPage(application: ElectronApplication, url: RegExp, timeoutMs: number): Promise<Page> {
+   const deadline = Date.now() + timeoutMs;
+   while (Date.now() < deadline) {
+     const candidate = application
+       .windows()
+       .find(
+         (page) =>
+-          !page.isClosed() && /^http:\/\/127\.0\.0\.1:\d+\//.test(page.url()),
++          !page.isClosed() && url.test(page.url()),
+       );
+     if (candidate) {
+       await candidate.waitForLoadState("domcontentloaded", { timeout: 30_000 }).catch(() => {});
+@@ -220,7 +222,7 @@ export async function waitForDashboardWindow(
+     await new Promise((resolve) => setTimeout(resolve, 100));
+   }
+   throw new Error(
+-    `Timed out waiting for the dashboard window; open URLs: ${application
++    `Timed out waiting for the page matching ${url}; open URLs: ${application
+       .windows()
+       .map((page) => page.url())
+       .join(", ")}`,
+diff --git a/qa/electron/selectors.ts b/qa/electron/selectors.ts
+index 020ef01b9893af74816e8dbf8e6de32f204e2c4d..b1dde8f25b1b89ed42289c1b4654b4190c09caff 100644
+--- a/qa/electron/selectors.ts
++++ b/qa/electron/selectors.ts
+@@ -107,7 +107,7 @@ export function locate(root: SelectorRoot, selector: SemanticSelector): Locator
+ export const SELECTORS = {
+   startup: {
+     loading: role("region", "Loading Breadboard", true),
+-    continue: role("button", "Welcome to Breadboard. Press space to continue.", true),
++    continue: role("button", "Continue to Breadboard", true),
+     retry: role("button", "Retry", true),
+     openLogs: role("button", "Open logs", true),
+     copyDiagnostics: role("button", "Copy diagnostics", true),
+diff --git a/qa/electron/specs/critical/bootstrap.spec.ts b/qa/electron/specs/critical/bootstrap.spec.ts
+index d66d011655bfd26bfbc13472701070bc4fda6df5..3f721ce6dc48ba981a0ec6e314ba5b385217154e 100644
+--- a/qa/electron/specs/critical/bootstrap.spec.ts
++++ b/qa/electron/specs/critical/bootstrap.spec.ts
+@@ -5,7 +5,10 @@ import { createQaEnvironment } from "../../environment";
+ import { launchBreadboard } from "../../launch-breadboard";
+ 
+ test("actual Electron starts in isolated QA mode and reaches local auth", async () => {
+-  const run = createQaEnvironment({ preserve: "on-failure" });
++  const run = createQaEnvironment({
++    preserve: "on-failure",
++    env: { BREADBOARD_DESKTOP_DASHBOARD_MODE: process.env.BREADBOARD_QA_DASHBOARD_MODE === "hot" ? "hot" : "standalone" },
++  });
+   let failed = true;
+   const diagnostics = new DiagnosticsCollector({
+     outputDir: path.join(run.paths.repoRoot, ".qa-results", "runs", run.runId, "diagnostics"),
+@@ -30,7 +33,7 @@ test("actual Electron starts in isolated QA mode and reaches local auth", async
+     }
+ 
+     const page = await app.dismissWelcome();
+-    await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible({
++    await expect(page.getByRole("heading", { name: "Welcome to Breadboard", exact: true })).toBeVisible({
+       timeout: 60_000,
+     });
+     expect(page.url()).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/auth\/login/);
+diff --git a/qa/electron/specs/critical/journeys.spec.ts b/qa/electron/specs/critical/journeys.spec.ts
+index 131ae8843009ee59e1d751571423a61a334574f9..4147af637e04fbb770c571d6100cb5235f3d61f8 100644
+--- a/qa/electron/specs/critical/journeys.spec.ts
++++ b/qa/electron/specs/critical/journeys.spec.ts
+@@ -2,6 +2,7 @@ import * as fs from "node:fs";
+ import * as path from "node:path";
+ import { test, expect } from "../../fixtures";
+ import { isPathInside } from "../../environment";
++import { locate, SELECTORS } from "../../selectors";
+ import {
+   assertAuthenticatedDashboard,
+   assertGardenWorkspace,
+@@ -96,10 +97,7 @@ test.describe.serial("critical actual-Electron user journeys", () => {
+         // Hot development starts with an empty compiler cache. Wait for the
+         // real startup gate before reading Runtime V2's endpoint publication;
+         // the standalone path used to win this race by accident.
+-        await startupPage
+-          .getByRole("button", {
+-            name: "Welcome to Breadboard. Press space to continue.",
+-          })
++        await locate(startupPage, SELECTORS.startup.continue)
+           .waitFor({ state: "visible", timeout: 6 * 60_000 });
+         const startupState = await startupPage.evaluate(async () => {
+           const desktop = (
+@@ -132,7 +130,7 @@ test.describe.serial("critical actual-Electron user journeys", () => {
+         }
+ 
+         await expect(
+-          page.getByRole("heading", { name: "Sign in", exact: true }),
++          page.getByRole("heading", { name: "Welcome to Breadboard", exact: true }),
+         ).toBeVisible({ timeout: 60_000 });
+         expect(new URL(page.url()).pathname).toBe("/auth/login");
+         qa.diagnostics.assertNoFatal("cold startup");
+diff --git a/dashboard/tests/stored-file-streams.test.mjs b/dashboard/tests/stored-file-streams.test.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..bdbb5e7c5f5dfb19a1d79c6becd8a2ed75d6847b
+--- /dev/null
++++ b/dashboard/tests/stored-file-streams.test.mjs
+@@ -0,0 +1,141 @@
++import assert from "node:assert/strict";
++import fs from "node:fs";
++import os from "node:os";
++import path from "node:path";
++import test from "node:test";
++import ts from "typescript";
++import { findStoredFileBlob, storedFileResponse, storedFileTextPreview, writeStoredFileBlob } from "../src/lib/conversations/stored-file-blob-store.ts";
++import { isMarkedWebBlob, markWebPdfBlob, touchWebPdfBlob } from "../src/lib/conversations/document-blob-store.ts";
++import { openedImageMimeType } from "../src/lib/local-document.ts";
++import { storedFileIsText } from "../src/lib/stored-file-attachments.ts";
++
++function fixture(t) {
++  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-stored-stream-"));
++  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
++  function write(format, ...chunks) {
++    return writeStoredFileBlob({ root, userId: 1, format, body: new ReadableStream({
++      start(controller) {
++        for (const chunk of chunks) controller.enqueue(chunk);
++        controller.close();
++      },
++    }) });
++  }
++  return { root, write };
++}
++
++test("upload validation preserves split signatures, UTF-8 boundaries and error precedence", async t => {
++  const { root, write } = fixture(t);
++  for (const format of ["zip", "mlx"]) {
++    const blob = await write(format, Buffer.from("P"), Buffer.from("Kbytes"));
++    assert.equal(fs.readFileSync(blob.path, "utf8"), "PKbytes");
++    assert.equal(findStoredFileBlob({ root, userId: 2, blobId: blob.blobId }), null);
++    await assert.rejects(write(format, Buffer.from("P")), { status: 415, code: "file_signature_invalid" });
++  }
++  const prefix = Buffer.alloc(64 * 1024 - 1, 97);
++  const euro = Buffer.from("€");
++  const text = await write("txt", Buffer.concat([prefix, euro.subarray(0, 2)]), euro.subarray(2));
++  assert.deepEqual(fs.readFileSync(text.path), Buffer.concat([prefix, euro]));
++  await assert.rejects(write("txt", euro.subarray(0, 2)), { code: "file_not_utf8" });
++  await assert.rejects(write("txt", Buffer.from([255]), Buffer.from([0])), { code: "file_not_text" });
++  await assert.rejects(write("txt", Buffer.from([0]), Buffer.alloc(16 * 1024 * 1024)), { code: "text_file_too_large" });
++  await assert.rejects(write("zip"), { code: "file_empty" });
++  let reads = 0;
++  const interrupted = new ReadableStream({ pull(controller) {
++    if (reads++ === 0) controller.enqueue(Buffer.from([255]));
++    else controller.error(new Error("disconnected"));
++  } });
++  await assert.rejects(writeStoredFileBlob({ root, userId: 1, format: "txt", body: interrupted }), { code: "file_upload_interrupted" });
++  assert.ok(fs.readdirSync(path.join(root, "u1")).every(name => !name.endsWith(".part")));
++});
++
++test("previews preserve truncation, original downloads and cancellation", async t => {
++  const { write } = fixture(t);
++  const limit = 2 * 1024 * 1024;
++  const bytes = Buffer.concat([Buffer.alloc(limit - 1, 65), Buffer.from("€tail")]);
++  const blob = await write("txt", bytes);
++  const open = fs.promises.open.bind(fs.promises);
++  const reads = [];
++  const closed = [];
++  let abortOnOpen;
++  t.mock.method(fs.promises, "open", async (...args) => {
++    const file = await open(...args);
++    closed.push(new Promise(resolve => file.once("close", resolve)));
++    abortOnOpen?.abort();
++    const read = file.read.bind(file);
++    file.read = async (...args) => {
++      const result = await read(...args);
++      reads.push(result.bytesRead);
++      return result;
++    };
++    return file;
++  });
++  const headers = { "content-type": "application/octet-stream", "x-content-type-options": "nosniff" };
++  const request = new Request("http://localhost/file", { headers: { Range: "bytes=1-9" } });
++  assert.deepEqual(await storedFileTextPreview(blob), { text: new TextDecoder().decode(bytes.subarray(0, limit)), truncated: true });
++  assert.equal(reads.reduce((sum, length) => sum + length, 0), limit);
++  const full = await storedFileResponse(blob, request, headers);
++  assert.equal(full.status, 200);
++  assert.equal(full.headers.get("x-content-type-options"), "nosniff");
++  assert.deepEqual(Buffer.from(await full.arrayBuffer()), bytes);
++  assert.equal((await storedFileResponse(blob, new Request(request, { method: "HEAD" }), headers)).body, null);
++  const partial = await storedFileResponse(blob, request, headers);
++  const reader = partial.body.getReader();
++  assert.ok((await reader.read()).value.byteLength <= 512 * 1024);
++  await reader.cancel();
++  const abort = new AbortController();
++  const interrupted = await storedFileResponse(blob, new Request(request, { signal: abort.signal }), headers);
++  abort.abort();
++  await assert.rejects(interrupted.arrayBuffer(), { name: "AbortError" });
++  await assert.rejects(storedFileResponse(blob, new Request(request, { signal: abort.signal }), headers), { name: "AbortError" });
++  abortOnOpen = new AbortController();
++  await assert.rejects(storedFileResponse(blob, new Request(request, { signal: abortOnOpen.signal }), headers), { name: "AbortError" });
++  abortOnOpen = undefined;
++  for (let i = 0; i < 100; i++) {
++    const opened = await storedFileResponse(blob, request, headers);
++    await opened.body.cancel();
++  }
++  await Promise.all(closed);
++});
++
++test("the image and download routes serve only the owner's original with their existing headers", async t => {
++  const { root, write } = fixture(t);
++  let userId = 1;
++  const modules = {
++    "next/server": { NextResponse: Response },
++    "@/lib/server-auth": { requireUserId: async () => userId },
++    "@/lib/hermes/route-helpers.ts": { apiErrorResponse: error => { throw error; } },
++    "@/lib/stored-file-attachments.ts": { storedFileIsText },
++    "@/lib/conversations/stored-file-blob-store.ts": {
++      findStoredFileBlob: input => findStoredFileBlob({ ...input, root }), storedFileResponse, storedFileTextPreview,
++    },
++    "@/lib/conversations/document-blob-store.ts": { isMarkedWebBlob, touchWebPdfBlob },
++    "@/lib/local-document.ts": { openedImageMimeType },
++    "@/lib/conversations/stored-file-uploads.ts": {}, "@/lib/conversations/opened-files.ts": {},
++  };
++  function get(route) {
++    const source = fs.readFileSync(new URL(`../src/app/api/chat-attachments/files/${route}`, import.meta.url), "utf8");
++    const { outputText } = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } });
++    const exports = {};
++    new Function("require", "exports", outputText)(id => { assert.ok(id in modules, id); return modules[id]; }, exports);
++    return exports.GET;
++  }
++  const image = get("route.ts"), view = get("[blobId]/view/route.ts");
++  const bytes = Buffer.from([0, 1, 2, 255]);
++  const blob = await write("bin", bytes);
++  const openImage = name => image(new Request(`http://localhost/files?blobId=${blob.blobId}&name=${name}`));
++  const download = () => view(new Request("http://localhost/view?download=1"), { params: Promise.resolve(blob) });
++  assert.equal((await openImage("test.png")).status, 404);
++  markWebPdfBlob(blob);
++  assert.equal((await openImage("test.html")).status, 404);
++  const opened = await openImage("test.png");
++  assert.equal(opened.headers.get("content-type"), "image/png");
++  assert.equal(opened.headers.get("cache-control"), "private, max-age=3600");
++  assert.equal(opened.headers.get("x-content-type-options"), "nosniff");
++  assert.deepEqual(Buffer.from(await opened.arrayBuffer()), bytes);
++  const original = await download();
++  assert.equal(original.headers.get("content-disposition"), `attachment; filename="${blob.blobId}.bin"`);
++  assert.deepEqual(Buffer.from(await original.arrayBuffer()), bytes);
++  userId = 2;
++  assert.equal((await openImage("test.png")).status, 404);
++  assert.equal((await download()).status, 404);
++});

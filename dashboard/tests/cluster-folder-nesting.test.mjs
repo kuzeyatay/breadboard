@@ -598,12 +598,11 @@ describe("creating a garden inside a cluster", () => {
     new URL("../src/app/actions/clusters.ts", import.meta.url),
     "utf8",
   );
-  const createCluster = actions.slice(
-    actions.indexOf("export async function createCluster("),
-    actions.indexOf("export async function updateClusterDetails("),
-  );
+  const createCluster = fs.readFileSync(new URL("../src/lib/garden-creation.ts", import.meta.url), "utf8")
+    .split("export function createOwnedGarden")[1];
 
   test("the action files the new garden and registers missing ancestors", () => {
+    assert.match(actions, /createOwnedGarden\(userId, name, description, folder\)/);
     assert.match(createCluster, /folder\?: string \| null/);
     assert.match(createCluster, /normalizeFolderPath\(folder\)/);
     assert.match(createCluster, /ensureFolderPath\(db, userId, cleanFolder\)/);

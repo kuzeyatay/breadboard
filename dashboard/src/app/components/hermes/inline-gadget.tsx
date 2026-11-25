@@ -1,5 +1,7 @@
 "use client";
 
+import { loadingIconMotion } from "../loading-icon-motion";
+
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useYoloMode } from "@/app/components/use-yolo-mode";
 import type { PresentedArtifact } from "@/lib/hermes/artifact-types";
@@ -170,7 +172,9 @@ export default function InlineGadget({ artifact }: Props) {
   if (artifact.status !== "ready") {
     return (
       <div className="mt-3 flex items-center gap-2 py-2 text-xs text-[var(--ink-muted)]" role="status">
-        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--botanical)]" />
+        <span {...loadingIconMotion} aria-hidden="true" className="inline-flex">
+          <span className="h-1.5 w-1.5 motion-safe:animate-pulse rounded-full bg-[var(--botanical)]" />
+        </span>
         {artifact.status === "failed"
           ? `${artifact.title} could not be built.`
           : `Building ${artifact.title}…`}

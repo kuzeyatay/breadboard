@@ -21,6 +21,7 @@ import {
   recordSkillDecision,
 } from "@/lib/hermes/runtime-store.ts";
 import { authorizeRuntimeReference } from "@/lib/hermes/session-service.ts";
+import { requireAuthoredSkillOwner } from "@/lib/hermes/stage-authored-skill.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -37,8 +38,12 @@ export async function POST(request: Request) {
     const decision = body.decision === "promote" ? "promote" : body.decision === "reject" ? "reject" : null;
     if (!decision) throw new ApiError(400, "invalid_decision", "decision must be promote or reject.");
 
+    const report = inspectQuarantine(name);
+    if (report.repository === "local/authored") requireAuthoredSkillOwner(userId, name);
+    if (body.expectedHash !== undefined && body.expectedHash !== report.localHash) {
+      throw new ApiError(409, "skill_draft_changed", "This draft has changed. Reopen it to review its current files.");
+    }
     if (decision === "reject") {
-      const report = inspectQuarantine(name);
       rejectQuarantine(name);
       if (report.upstreamId) {
         const store = getSkillsCatalogStore();
@@ -51,7 +56,6 @@ export async function POST(request: Request) {
     }
 
     // Re-inspect before promoting so the decision reflects the current state.
-    const report = inspectQuarantine(name);
     if (!report.hasSkillMd) {
       throw new ApiError(422, "invalid_skill", "Refusing to promote a skill without a valid SKILL.md.");
     }

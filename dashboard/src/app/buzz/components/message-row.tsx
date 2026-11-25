@@ -13,6 +13,7 @@ import { memo, useState } from "react";
 import { MessageSquareText, Pencil, RotateCcw, SmilePlus, Trash2 } from "lucide-react";
 import { modelVerification } from "@/lib/hermes/evidence";
 import AssistantMessageActions from "@/app/components/assistant-message-actions";
+import { useLoadingTextReveal } from "@/app/components/loading-text-reveal";
 
 import { cn } from "@/app/buzz/lib/cn";
 import BreadboardLoader from "@/app/components/breadboard-loader";
@@ -77,6 +78,7 @@ function MessageRowImpl({
   const [saving, setSaving] = useState(false);
 
   const live = message.status === "pending" || message.status === "streaming";
+  const replyReveal = useLoadingTextReveal(live && !message.body);
   const failed = message.status === "failed" || message.status === "aborted";
 
   if (message.deletedAt) {
@@ -177,13 +179,13 @@ function MessageRowImpl({
           ) : (
             <div className={cn("text-message", failed && "text-destructive")}>
               {message.body ? (
-                <MessageMarkdown body={message.body} members={roomMembers} />
+                <div ref={replyReveal}><MessageMarkdown body={message.body} members={roomMembers} /></div>
               ) : live ? (
                 <span className="inline-flex items-center gap-1.5 py-0.5 text-muted-foreground">
                   <BreadboardLoader className="size-3" />
                   <span className="text-2xs">{message.authorName} is thinking…</span>
                 </span>
-              ) : failed ? <p>{message.status === "aborted" ? "This response was stopped." : "This response could not be completed."}</p> : null}
+              ) : failed ? <p ref={replyReveal}>{message.status === "aborted" ? "This response was stopped." : "This response could not be completed."}</p> : null}
             </div>
           )}
         </div>

@@ -33,6 +33,11 @@ export function ensureGardenFileSchema(database: Database.Database): void {
     );
     CREATE UNIQUE INDEX IF NOT EXISTS garden_files_live_path ON garden_files(cluster_id,path_key) WHERE deleted_at IS NULL;
     CREATE INDEX IF NOT EXISTS garden_files_listing ON garden_files(cluster_id,deleted_at,visibility);
+    CREATE TABLE IF NOT EXISTS spaces_templates (
+      id TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      name TEXT NOT NULL COLLATE NOCASE, file_id TEXT NOT NULL REFERENCES garden_files(id) ON DELETE CASCADE,
+      version INTEGER NOT NULL, extension TEXT NOT NULL, kind TEXT NOT NULL, UNIQUE(user_id, name)
+    );
     CREATE TABLE IF NOT EXISTS garden_file_versions (
       file_id TEXT NOT NULL REFERENCES garden_files(id) ON DELETE CASCADE, version INTEGER NOT NULL,
       blob TEXT NOT NULL, size INTEGER NOT NULL, sha256 TEXT NOT NULL, created_at TEXT NOT NULL,

@@ -14,6 +14,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useAssistantIntelligence } from "@/app/components/use-assistant-intelligence";
 import BreadboardLoader from "@/app/components/breadboard-loader";
+import { useLoadingTextReveal } from "@/app/components/loading-text-reveal";
 import { hubActivityFrom } from "@/lib/worldmonitor/hub-activity.ts";
 import type {
   ClimateSnapshot,
@@ -233,6 +234,7 @@ export default function WorldMonitorClient({ panels }: Props) {
 
   const [brief, setBrief] = useState<{ text: string; model: string; at: string } | null>(null);
   const [briefLoading, setBriefLoading] = useState(false);
+  const briefReveal = useLoadingTextReveal(briefLoading && !brief);
   const [briefError, setBriefError] = useState<string | null>(null);
   const briefRequested = useRef(false);
 
@@ -242,6 +244,8 @@ export default function WorldMonitorClient({ panels }: Props) {
   const [turns, setTurns] = useState<AnalystTurn[]>([]);
   const [question, setQuestion] = useState("");
   const [asking, setAsking] = useState(false);
+  const waitingForAnswer = asking && turns.at(-1)?.content === "";
+  const answerReveal = useLoadingTextReveal(waitingForAnswer);
   const answerRef = useRef<HTMLDivElement | null>(null);
   const situationRef = useRef<HTMLElement | null>(null);
 
@@ -1031,10 +1035,10 @@ export default function WorldMonitorClient({ panels }: Props) {
                   Reading {snapshot?.items.length ?? 0} stories…
                 </p>
               )}
-              {briefError && <p className="bb-wm-alert text-[0.7rem]">{briefError}</p>}
+              {briefError && <p ref={briefReveal} className="bb-wm-alert text-[0.7rem]">{briefError}</p>}
               {brief && (
                 <>
-                  <div className="bb-wm-prose text-[0.76rem] bb-wm-ink">
+                  <div ref={briefReveal} className="bb-wm-prose text-[0.76rem] bb-wm-ink">
                     {brief.text.split(/\n{2,}/).map((paragraph, index) => (
                       <p key={index}>{renderBold(paragraph)}</p>
                     ))}
@@ -1066,6 +1070,7 @@ export default function WorldMonitorClient({ panels }: Props) {
               {turns.map((turn, index) => (
                 <div key={index} className={turn.role === "user" ? "text-right" : ""}>
                   <div
+                    ref={turn.role === "assistant" && index === turns.length - 1 ? answerReveal : undefined}
                     className={
                       turn.role === "user"
                         ? "neu-chat-message-user bb-wm-ink inline-block rounded-lg px-2 py-1 text-[0.72rem]"
@@ -1080,7 +1085,7 @@ export default function WorldMonitorClient({ panels }: Props) {
                   </div>
                 </div>
               ))}
-              {asking && turns[turns.length - 1]?.content === "" && (
+              {waitingForAnswer && (
                 <Spinner className="h-3.5 w-3.5 bb-wm-ink-muted" />
               )}
             </div>

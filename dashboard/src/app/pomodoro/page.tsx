@@ -6,8 +6,8 @@ import PaintPomodoro from "@/app/components/paint-pomodoro";
 // loaded app-wide for the sans face.
 const newsreader = localFont({
   src: [
-    { path: "../fonts/newsreader/Newsreader[opsz,wght].ttf", weight: "200 800", style: "normal" },
-    { path: "../fonts/newsreader/Newsreader-Italic[opsz,wght].ttf", weight: "200 800", style: "italic" },
+    { path: "../fonts/newsreader/Newsreader[opsz,wght].woff2", weight: "200 800", style: "normal" },
+    { path: "../fonts/newsreader/Newsreader-Italic[opsz,wght].woff2", weight: "200 800", style: "italic" },
   ],
   variable: "--font-newsreader",
   display: "swap",

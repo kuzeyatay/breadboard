@@ -1,5 +1,5 @@
 import { externalRuntimePath as path } from "@/lib/external-runtime-path";
-import { Readable } from "node:stream";
+import { nodeStreamToWeb } from "@/lib/node-stream-to-web";
 import { NextResponse } from "next/server";
 import {
   externalRuntimeFilesystem as fs,
@@ -64,7 +64,7 @@ export async function GET(
       );
     }
 
-    const stream = Readable.toWeb(
+    const stream = nodeStreamToWeb(
       fs.createReadStream(report.filePath),
     ) as ReadableStream<Uint8Array>;
     return new NextResponse(stream, {

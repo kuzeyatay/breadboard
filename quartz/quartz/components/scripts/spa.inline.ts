@@ -100,11 +100,12 @@ async function _navigate(url: URL, isBack: boolean = false) {
   startLoading()
   p = p || new DOMParser()
   const contents = await fetchCanonical(url)
-    .then((res) => {
-      const contentType = res.headers.get("content-type")
+    .then(({ response, html }) => {
+      const contentType = response.headers.get("content-type")
       if (contentType?.startsWith("text/html")) {
-        return res.text()
+        return html ?? response.text()
       } else {
+        void response.body?.cancel().catch(() => {})
         hardNavigate(url)
       }
     })

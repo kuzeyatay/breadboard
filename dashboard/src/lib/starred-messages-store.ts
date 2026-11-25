@@ -54,20 +54,25 @@ export function setMessageStar(db: Database.Database, userId: number, input: {
   /** Resolve PDF ownership only after authorizing the conversation and reply. */
   pdfGardenId?: () => number | null;
 }) {
-  const message = db.prepare(`SELECT m.id, c.origin_label FROM conversation_messages m
+  const message = db.prepare(`SELECT m.id, m.conversation_id, substr(m.content, 1, 8000) AS answer, c.origin_label FROM conversation_messages m
     JOIN conversations c ON c.id = m.conversation_id
     WHERE c.user_id = ? AND (c.temporary = 0 OR c.origin_label = 'Side chat')
       AND (c.public_id = ? OR (c.surface = 'garden_chat' AND CAST(c.legacy_chat_session_id AS TEXT) = ?))
       AND (('msg_' || m.id) = ? OR m.client_message_id = ?) AND m.role = 'assistant'
-  `).get(userId, input.conversationId, input.conversationId, input.messageId, input.messageId) as { id: number; origin_label: string | null } | undefined;
+  `).get(userId, input.conversationId, input.conversationId, input.messageId, input.messageId) as { id: number; conversation_id: number; answer: string; origin_label: string | null } | undefined;
   if (!message) throw new ApiError(404, "message_not_found", "This message is no longer available.");
   if (input.starred) {
     const gardenId = ["PDF", "PDF Assistant"].includes(message.origin_label ?? "") ? input.pdfGardenId?.() ?? null : null;
-    db.prepare(`INSERT INTO starred_messages(user_id, message_id, garden_id) VALUES (?, ?, ?)
-      ON CONFLICT(user_id, message_id) DO UPDATE SET garden_id = COALESCE(excluded.garden_id, starred_messages.garden_id)`)
-      .run(userId, message.id, gardenId);
+    return db.transaction(() => {
+      const inserted = db.prepare(`INSERT INTO starred_messages(user_id, message_id, garden_id) VALUES (?, ?, ?)
+        ON CONFLICT(user_id, message_id) DO NOTHING`).run(userId, message.id, gardenId);
+      if (inserted.changes) return { conversationId: message.conversation_id, messageId: "msg_" + message.id, answer: message.answer };
+      if (gardenId !== null) db.prepare("UPDATE starred_messages SET garden_id = ? WHERE user_id = ? AND message_id = ?").run(gardenId, userId, message.id);
+      return null;
+    }).immediate();
   } else {
     db.prepare("DELETE FROM starred_messages WHERE user_id = ? AND message_id = ?").run(userId, message.id);
+    return null;
   }
 }
 

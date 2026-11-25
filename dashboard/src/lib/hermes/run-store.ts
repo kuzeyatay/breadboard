@@ -64,6 +64,8 @@ export interface RuntimeRunDispatch {
   goalMode?: {
     goalId: string | null;
     enabled: true;
+    /** The goal was stopped when this chat turn began. It can be inspected without charging the turn. */
+    readOnly?: boolean;
     automatic?: boolean;
     previousRunIds?: string[];
     context?: { activeGardenSlug?: string; activePageSlug?: string; selectedDocumentIds?: string[] };

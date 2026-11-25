@@ -106,6 +106,8 @@
       position: absolute;
       inset: 0;
       display: none;
+      opacity: 0;
+      transition: opacity 150ms ease-out, display 150ms allow-discrete;
       pointer-events: none;
 
       & > span {
@@ -171,6 +173,8 @@
     > .graph-container:empty
     + .thought-topology-loading-dots {
     display: block;
+    opacity: 1;
+    @starting-style { opacity: 0; }
   }
 
   & > .global-graph-outer {
@@ -1214,6 +1218,10 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .graph.home-knowledge-graph > .graph-outer > .thought-topology-loading-dots {
+    transition-duration: 90ms;
+  }
+
   .graph .thought-inspector {
     transition-duration: 1ms;
   }

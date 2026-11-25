@@ -1721,6 +1721,7 @@ export default function AssistantComposer({
         />
         {capabilitySessionId && capabilitySurface !== 'quartz_ai' ? (
           <GoalCard
+            key={capabilitySessionId}
             sessionId={capabilitySessionId}
             refreshKey={runState}
             running={runInFlight}

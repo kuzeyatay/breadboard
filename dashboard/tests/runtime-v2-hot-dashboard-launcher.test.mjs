@@ -39,6 +39,9 @@ test("Hot Runtime pins a dedicated development output instead of restoring an ol
   pinHotDashboardOutput(environment);
   assert.equal(HOT_DASHBOARD_DIST_DIR, ".next-dev");
   assert.deepEqual(environment, { BREADBOARD_NEXT_DIST_DIR: ".next-dev" });
+  const qa = { BREADBOARD_DATA_DIR: path.join(os.tmpdir(), "breadboard-qa-runtime", "isolated-run", "user-data", "Data") };
+  pinHotDashboardOutput(qa);
+  assert.equal(qa.BREADBOARD_NEXT_DIST_DIR, ".next-qa-hot");
 });
 
 test("isolated hot launch shadows checkout dotenv keys without copying their values", (t) => {

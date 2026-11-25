@@ -42,7 +42,7 @@ test("every shared chat registry includes website APIs even when other connector
   };
   for (const deferMcpConnections of [false, true]) {
     const registry = await connectedAppRegistryForTurn({ runtime, userId: 7, directory: root, mode: "research", deferMcpConnections });
-    assert.deepEqual(registry.connectionNames, ["api-anything", "mcp-installer", "doory", "video-studio", "spaces-page"]);
+    assert.deepEqual(registry.connectionNames, ["api-anything", "mcp-installer", "breadboard-workspace", "doory", "video-studio", "spaces-page"]);
     assert.match(registry.systemContext, /Spaces page/);
     assert.match(registry.systemContext, /mcp_call connection="doory"/);
     assert.match(registry.systemContext, /mcp_call connection="video-studio"/);
@@ -72,7 +72,7 @@ test("chat API tools enforce capability, account, active run, connection and nat
   });
   const unexpected = names => names.map(name => `export const ${name} = () => { throw new Error("Unexpected connector: ${name}"); };`).join("\n");
   const stubs = {
-    "next/server": "export const NextResponse = Response;",
+    "next/server": "export const NextResponse = Response; export const after = task => { void (typeof task === \"function\" ? task() : task); };",
     "@/lib/hermes/tool-service-auth.ts": "export const capabilityForInternalToolRequest = () => globalThis.__apiAnythingRoute.token;",
     "@/lib/hermes/runtime-store.ts": `export const getRuntimeSessionById = () => globalThis.__apiAnythingRoute.session;
       export const runtimeExternalSessionId = () => "runtime";
@@ -96,7 +96,10 @@ test("chat API tools enforce capability, account, active run, connection and nat
     "@/lib/hermes/capability-policy.ts": unexpected(["connectionToolAllowed"]),
     "@/lib/code-index/chat-turn.ts": unexpected(["codeIndexConnectionForSession"]),
     "@/lib/code-index/repository-digest.ts": unexpected(["isCodeIndexConnectionSlug"]),
-    "@/lib/conversations/store.ts": unexpected(["getConversationById"]),
+    // The route's closure now reaches the CAD and Codex run routes too.
+    "@/lib/conversations/store.ts": unexpected(["getConversationById", "createConversation",
+      "ensureConversationForLegacyChatSession", "getConversationForUser"]) +
+      "\nexport class ConversationStoreError extends Error {}",
     "@/lib/hermes/artifact-completion.ts": unexpected(["missingRunArtifact"]),
     "@/lib/hermes/mcp-installer.ts": `export const MCP_INSTALLER_CONNECTION = "mcp-installer";
       export const callMcpInstaller = async input => { globalThis.__apiAnythingRoute.installs.push(input); return { data: { ok: true } }; };`,

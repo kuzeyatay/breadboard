@@ -4,6 +4,8 @@ import { requireSameOrigin } from "@/lib/request-origin";
 import { ApiError, apiErrorResponse, readJsonBody } from "@/lib/hermes/route-helpers.ts";
 import { getStarredMessageContent, listStarredMessages, setMessageStar } from "@/lib/starred-messages-store.ts";
 import { starredPdfGardenId } from "@/lib/starred-pdf-garden.ts";
+import { fireLifecycleHooks } from "@/lib/hooks/lifecycle.ts";
+import { randomUUID } from "node:crypto";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -34,10 +36,14 @@ export async function PUT(request: Request) {
       throw new ApiError(400, "invalid_message", "A chat, message and star state are required.");
     }
     const sourceUrl = typeof body.sourceUrl === "string" ? body.sourceUrl : undefined;
-    setMessageStar(db, userId, {
+    const transition = setMessageStar(db, userId, {
       conversationId: body.conversationId, messageId: body.messageId, starred: body.starred,
       pdfGardenId: sourceUrl ? () => starredPdfGardenId(db, userId, request, sourceUrl,
         slug => requireReadableCluster(userId, slug).id) : undefined,
+    });
+    if (transition) fireLifecycleHooks({
+      event: "message_starred", conversationId: transition.conversationId, occurrenceId: randomUUID(),
+      matchText: transition.answer, detail: { messageId: transition.messageId, answer: transition.answer },
     });
     return Response.json({ messages: listStarredMessages(db, userId) }, { headers });
   } catch (error) { return apiErrorResponse(error); }

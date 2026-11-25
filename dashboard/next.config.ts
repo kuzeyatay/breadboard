@@ -132,6 +132,7 @@ const dataTraceExcludes = [
   // desktop distDir (.next-desktop) must remain traceable for server chunks.
   ".next/**",
   ".next-dev/**",
+  ".next-qa-hot/**",
   ".next-memory-*/**",
   ".next-production*/**",
   ".next-stale-*/**",
@@ -227,10 +228,12 @@ const nextConfig: NextConfig = {
     ],
     '/api/pdfjs/\\[\\.\\.\\.path\\]': [
       'node_modules/pdfjs-dist/legacy/build/pdf.mjs',
+      'node_modules/pdfjs-dist/legacy/build/pdf.min.mjs',
       'node_modules/pdfjs-dist/legacy/build/pdf.mjs.map',
       'node_modules/pdfjs-dist/legacy/build/pdf.sandbox.mjs',
       'node_modules/pdfjs-dist/legacy/build/pdf.sandbox.mjs.map',
       'node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs',
+      'node_modules/pdfjs-dist/legacy/build/pdf.worker.min.mjs',
       'node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs.map',
       'node_modules/pdfjs-dist/legacy/web/pdf_viewer.css',
       'node_modules/pdfjs-dist/legacy/web/pdf_viewer.mjs',

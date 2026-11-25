@@ -816,7 +816,8 @@ export default function PdfViewerClient({
     let workerBlobUrl: string | null = null;
     let pdfDocument: PDFDocumentProxy | null = null;
     let initialPage: number | null = null;
-    const savedPage = readSavedPage();
+    citationPageRef.current = pdfCitationPage(window.location.hash);
+    const savedPage = citationPageRef.current === null ? readSavedPage() : null;
 
     setDocumentReady(false);
     setOpenFailed(false);
@@ -837,7 +838,6 @@ export default function PdfViewerClient({
     setLastSavedAt("");
     restoredPageRef.current = false;
     restorePageRef.current = null;
-    citationPageRef.current = pdfCitationPage(window.location.hash);
     clearScheduledSave();
 
     async function loadPdf() {

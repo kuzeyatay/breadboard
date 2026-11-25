@@ -11,6 +11,7 @@
 
 import { memo, useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { ActiveChatIcon, ChatHistoryLoading, UnreadChatDot } from "./history-client";
+import { useLoadingTextReveal } from "../loading-text-reveal";
 import { ArtifactArchiveIcon } from "./artifact-panel";
 import RailDivider from "./rail-divider";
 import type { RailResize } from "./use-rail-resize";
@@ -1391,6 +1392,7 @@ export default function TerminalSidebar({
   // The rail only mounts once the dock is open, so reading the stored state
   // during the first render cannot desynchronize from server HTML.
   const [sections, setSections] = useState(readSectionState);
+  const recentsReveal = useLoadingTextReveal(loading && sections.recents);
   const [menuChatId, setMenuChatId] = useState<string | null>(null);
   const [recentsMenu, setRecentsMenu] = useState<MenuPosition | null>(null);
   // What the rail is doing to Recents. Only Recents is worked over: a pinned
@@ -1782,7 +1784,7 @@ export default function TerminalSidebar({
                 // is empty because the request failed says nothing of the kind,
                 // and the error above the section is already carrying that.
                 error ? null : (
-                  <p className="px-2 py-6 text-center text-xs text-[var(--ink-muted)]">
+                  <p ref={recentsReveal} className="px-2 py-6 text-center text-xs text-[var(--ink-muted)]">
                     {pinned.length > 0 ? "Everything is pinned" : "No chats yet"}
                   </p>
                 )
@@ -1803,7 +1805,7 @@ export default function TerminalSidebar({
                   {mode === "highlighting" ? (
                     <HighlightBar pen={pen} onPickPen={setPen} onDone={stopWorking} />
                   ) : null}
-                  <ul className="space-y-0.5">{recents.map((chat) => renderRow(chat, true))}</ul>
+                  <ul ref={recentsReveal} className="space-y-0.5">{recents.map((chat) => renderRow(chat, true))}</ul>
                 </>
               )
             ) : null}

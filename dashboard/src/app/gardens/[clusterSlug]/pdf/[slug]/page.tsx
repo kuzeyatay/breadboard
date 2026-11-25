@@ -1,8 +1,11 @@
 import { getServerSession } from "next-auth/next";
 import type { Metadata } from "next";
+import { cache } from "react";
 import { notFound, redirect } from "next/navigation";
 import { authOptions } from "@/lib/auth-options";
-import { scanClusterKnowledge } from "@/lib/knowledge";
+import { gardenDirectory } from "@/lib/garden-directory";
+import { normalizeDocumentSlug } from "@/lib/garden-document-path";
+import { readSourceFrontmatter, resolveSourcePdfMarkdownPath } from "@/lib/source-pdf-garden";
 import { isPptxSource } from "@/lib/garden-source-display";
 import {
   getNavbarFlowers,
@@ -23,7 +26,7 @@ function pdfFileNameFromSource(value: string | undefined): string {
   return clean.split("/").filter(Boolean).at(-1) || "";
 }
 
-async function getPdfPageData(clusterSlug: string, slug: string) {
+const getPdfPageData = cache(async (clusterSlug: string, slug: string) => {
   let normalizedClusterSlug = clusterSlug;
   try {
     const { cluster } = await requireReadableClusterFromSlug(clusterSlug);
@@ -33,20 +36,21 @@ async function getPdfPageData(clusterSlug: string, slug: string) {
   }
 
   const contentPath = process.env.QUARTZ_CONTENT_PATH;
-  const node = contentPath
-    ? scanClusterKnowledge(contentPath, normalizedClusterSlug).nodes.find(
-        (item) => item.slug === slug,
-      )
-    : undefined;
-  const title = (node && isPptxSource(node.sourceType, node.sourceFile) ? node.sourceFile : "") ||
-    node?.title || titleFromSlug(slug) || "PDF source";
+  const documentSlug = normalizeDocumentSlug(normalizedClusterSlug, slug);
+  const notePath = contentPath && documentSlug
+    ? resolveSourcePdfMarkdownPath(gardenDirectory(normalizedClusterSlug, contentPath), documentSlug)
+    : null;
+  const fields = notePath ? readSourceFrontmatter(notePath) : {};
+  const sourceFile = fields.source_file || "";
+  const title = (isPptxSource(fields.source_type || "", sourceFile) ? sourceFile : "") ||
+    fields.title || (notePath ? documentSlug : null) || titleFromSlug(slug) || "PDF source";
   const pdfFileName =
-    pdfFileNameFromSource(node?.sourceFile) ||
-    pdfFileNameFromSource(node?.sourcePdf) ||
+    pdfFileNameFromSource(sourceFile) ||
+    pdfFileNameFromSource(fields.source_pdf) ||
     `${title}.pdf`;
 
   return { normalizedClusterSlug, title, pdfFileName };
-}
+});
 
 export async function generateMetadata({
   params,

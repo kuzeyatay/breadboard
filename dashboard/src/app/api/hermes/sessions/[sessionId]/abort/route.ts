@@ -64,7 +64,7 @@ export async function POST(
     if (!inlineTurnId && conversationId !== null) {
       const publicId = conversation?.public_id ?? getConversationById(conversationId)?.public_id;
       const goal = publicId ? readGoalModeState(publicId) : null;
-      if (publicId && goal && goal.status !== "complete" && goal.status !== "paused") {
+      if (publicId && goal?.status === "active") {
         setGoalModeStatus({ conversationPublicId: publicId, status: "paused" });
       }
     }

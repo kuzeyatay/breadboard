@@ -36,5 +36,15 @@ test("a terminal chat moved to a garden becomes a workspace chat with its transc
     conversationOriginLabel({ surface: moved.surface, gardenName: "EC 2", historySurface: session.history_surface }),
     "EC 2: Workspace",
   );
-  assert.throws(() => store.moveConversationToGarden(moved, 10), /Only terminal chats/);
+  db.exec("INSERT INTO clusters(id, user_id, name, slug) VALUES (11, 1, 'Circuits', 'circuits')");
+  // Simulate a retry from the original Terminal snapshot. Both moves reuse
+  // the canonical conversation, its message ids, and the workspace mirror.
+  for (const snapshot of [chat, moved]) {
+    const next = store.moveConversationToGarden(snapshot, 11);
+    assert.equal(next.default_garden_id, 11);
+    assert.equal(next.legacy_chat_session_id, session.id);
+  }
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM chat_sessions WHERE conversation_id = ?").get(chat.id).n, 1);
+  assert.equal(db.prepare("SELECT cluster_id FROM chat_sessions WHERE id = ?").get(session.id).cluster_id, 11);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM chat_messages WHERE session_id = ?").get(session.id).n, 2);
 });

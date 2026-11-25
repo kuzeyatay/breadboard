@@ -4,7 +4,7 @@ import path from "node:path";
 import os from "node:os";
 import test from "node:test";
 
-import { resolveSourcePdfMarkdownPath } from "../src/lib/source-pdf-garden.ts";
+import { findGardenSourceNote, readSourceFrontmatter, resolveSourcePdfMarkdownPath } from "../src/lib/source-pdf-garden.ts";
 
 const dashboardRoot = path.resolve(import.meta.dirname, "..");
 
@@ -30,18 +30,10 @@ test("the source PDF route reads garden content only at runtime", () => {
     walker,
     /readdirSync\(\s*\/\* turbopackIgnore: true \*\/ directory/,
   );
-  assert.match(
-    source,
-    /readFileSync\(\/\* turbopackIgnore: true \*\/ markdownPath/,
-  );
-  assert.match(
-    source,
-    /readFileSync\(\/\* turbopackIgnore: true \*\/ context\.pdfPath/,
-  );
-  assert.match(
-    source,
-    /path\.resolve\(\s*\/\* turbopackIgnore: true \*\/ clusterDir,\s*["']assets["']/,
-  );
+  assert.match(walker, /openSync\(\/\* turbopackIgnore: true \*\/ markdownPath/);
+  assert.match(source, /readSourceFrontmatter\(markdownPath\)/);
+  assert.match(source, /fileContentResponse\(request, context\.pdfPath/);
+  assert.match(source, /from ["']@\/lib\/garden-source-pdf-path["']/);
   for (const writer of [source, history]) {
     assert.match(writer, /acquireGardenMutationLease/);
   }
@@ -65,4 +57,29 @@ test("the source PDF walker preserves missing-path and duplicate ordering behavi
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("a published source lookup reads one header, including long Unicode headers and legacy paths", t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-source-header-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const sources = path.join(root, "sources");
+  fs.mkdirSync(sources);
+  const file = path.join(sources, "Lecture 1.md");
+  const label = 'Universiteit – "Résumé"';
+  const header = `---\r\nknowledge_type: "source-document"\r\ntitle: ${JSON.stringify(label)}\r\nsource_pdf: "/garden/assets/source.pdf"\r\n`;
+  fs.writeFileSync(file, header + "---\r\n" + "body".repeat(50_000));
+  const wholeRead = t.mock.method(fs, "readFileSync");
+  const found = findGardenSourceNote(root, "sources/lecture-1");
+  assert.equal(found.title, label);
+  assert.equal(found.slug, "Lecture 1");
+  assert.equal(found.relPath, "sources/Lecture 1.md");
+  assert.equal(wholeRead.mock.callCount(), 0, "reading a short header must not read the full extracted PDF text");
+  assert.equal(findGardenSourceNote(root, "sources/../outside"), null);
+
+  fs.writeFileSync(file, header + "description: " + "é".repeat(8192) + '\r\nsource_file: "Lecture.pdf"\r\n---\r\nBody');
+  assert.equal(readSourceFrontmatter(file).source_file, "Lecture.pdf");
+  fs.writeFileSync(path.join(sources, "lecture-1.md"), header + "---\r\n");
+  assert.equal(findGardenSourceNote(root, "sources/lecture-1"), null, "an ambiguous published name uses the existing list ordering");
+  fs.writeFileSync(path.join(sources, "legacy.md"), '---\nsource: "upload"\n---\n');
+  assert.equal(findGardenSourceNote(root, "sources/legacy"), null, "the index still infers older source types");
 });

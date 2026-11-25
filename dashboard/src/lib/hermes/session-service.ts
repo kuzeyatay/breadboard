@@ -805,13 +805,20 @@ async function loadUnifiedToolRegistryForRuntime(
               : "unknown",
         },
       });
-    } catch {
+    } catch (error) {
+      // Keep the cause. A bare "failed to load" hid why Google Flow failed on
+      // every turn for weeks (2,300+ identical rows) with nothing in any log.
+      const detail = error instanceof Error ? error.message.slice(0, 300) : "";
       recordAuditEvent({
         eventType: "mcp.load_failed",
         runtimeSessionId: row.id,
         userId: row.user_id,
         gardenId: row.garden_id,
-        payload: { slug: connection.slug, reason: "MCP connection failed to load." },
+        payload: {
+          slug: connection.slug,
+          reason: "MCP connection failed to load.",
+          ...(detail ? { detail } : {}),
+        },
       });
     }
   }

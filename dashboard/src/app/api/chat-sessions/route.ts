@@ -32,8 +32,15 @@ import {
   ensureConversationForLegacyChatSession,
   failStaleGardenPreDispatchTurns,
   summarizeConversationMessages,
+  type ConversationRow,
 } from "@/lib/conversations/store";
 import { isChatHighlight } from "@/lib/conversations/highlights";
+import {
+  EXPLORE_ASSISTANT_ORIGIN_LABEL,
+  PDF_ASSISTANT_ORIGIN_LABEL,
+  gardenChatOriginLabel,
+} from "@/lib/conversations/origin-label";
+import { presentHermesSessionSummary } from "@/lib/hermes/session-presentation";
 import { reconcileMaxResearchConversation } from "@/lib/max-research/conversation-persistence.ts";
 import { reconcileVibeTradingConversation } from "@/lib/vibe-trading/conversation-persistence.ts";
 import { settleDelegatedWork } from "@/lib/conversations/settle-delegated-work.ts";
@@ -773,7 +780,8 @@ function readSessionSummaries(
               u.username AS owner_username,
               c.id AS conversation_row_id, c.public_id AS conversation_public_id,
               c.pinned_at AS pinned_at, c.highlight AS highlight,
-              c.temporary AS temporary, c.archived_at AS archived_at
+              c.temporary AS temporary, c.archived_at AS archived_at,
+              c.origin_label AS origin_label, c.surface AS conversation_surface
        FROM chat_sessions cs
        JOIN users u ON u.id = cs.user_id
        LEFT JOIN conversations c ON c.id = cs.conversation_id
@@ -793,6 +801,8 @@ function readSessionSummaries(
       highlight: string | null;
       temporary: number | null;
       page_key: string;
+      origin_label: string | null;
+      conversation_surface: ConversationRow["surface"] | null;
     }
   >;
 
@@ -847,12 +857,67 @@ function readSessionSummaries(
     latestAssistantVersion: latestAssistantVersions.get(row.id) ?? null,
     /** The reader page or file this Assistant chat belongs to ('' = garden home). */
     pageKey: row.page_key,
+    /** Where the chat came from, as the Terminal names it minus the garden ("Code", "Workspace"). */
+    originLabel: gardenChatOriginLabel({
+      originLabel: row.origin_label,
+      surface: row.conversation_surface ?? "garden_chat",
+      historySurface,
+    }),
     active:
       running.has(row.id) ||
       (row.conversation_row_id !== null &&
         externalActivity.get(row.conversation_row_id)?.externalAgentActive ===
           true),
   }));
+}
+
+/**
+ * The garden's chats that live outside its workspace: the Quartz reader's
+ * Explore Assistant and the PDF Assistant of this garden's PDFs. The Terminal
+ * already lists them as "<Garden>: Explore Assistant: ..." and "PDF Assistant:
+ * ..."; the garden rail shows the same chats with the same prefixes. They are
+ * canonical conversations addressed by their public id, so they open in the
+ * Terminal hub that can continue any surface's chat.
+ */
+function readLinkedGardenChats(clusterId: number, userId: number) {
+  const rows = db
+    .prepare(
+      `SELECT c.*,
+              EXISTS (SELECT 1 FROM chat_sessions cs
+                      WHERE cs.conversation_id = c.id AND cs.history_surface = 'assistant'
+                        AND cs.cluster_id = ?) AS explore_assistant
+       FROM conversations c
+       WHERE c.user_id = ? AND c.temporary = 0 AND c.archived_at IS NULL AND c.buzz_room_id IS NULL
+         AND (
+           EXISTS (SELECT 1 FROM chat_sessions cs
+                   WHERE cs.conversation_id = c.id AND cs.history_surface = 'assistant'
+                     AND cs.cluster_id = ?)
+           OR (c.default_garden_id = ? AND c.origin_label IN ('PDF', 'PDF Assistant'))
+         )
+       ORDER BY (c.pinned_at IS NOT NULL) DESC, c.updated_at DESC, c.id DESC`,
+    )
+    .all(clusterId, userId, clusterId, clusterId) as Array<
+    ConversationRow & { explore_assistant: number }
+  >;
+  if (rows.length === 0) return [];
+  const activity = summarizeConversationMessages(rows.map((row) => row.id));
+  return rows.map((row) => {
+    const summary = presentHermesSessionSummary(row, activity.get(row.id));
+    return {
+      id: row.public_id,
+      title: row.title,
+      updated_at: row.updated_at,
+      originLabel: row.explore_assistant
+        ? EXPLORE_ASSISTANT_ORIGIN_LABEL
+        : PDF_ASSISTANT_ORIGIN_LABEL,
+      pinned: row.pinned_at !== null,
+      highlight: isChatHighlight(row.highlight) ? row.highlight : null,
+      active:
+        Boolean(summary.activeRun) ||
+        summary.externalAgentActive ||
+        summary.pendingMessageCount > 0,
+    };
+  });
 }
 
 /** A Quartz page slug or `file:<id>`; anything else (or nothing) means no page filter. */
@@ -915,6 +980,11 @@ export async function GET(request: Request) {
         historySurface,
         pageKey,
       ),
+      // Only the workspace rail lists the garden's other assistants, and only
+      // the reader's own: they are private conversations, never public chats.
+      ...(historySurface === "garden_chat" && pageKey === null
+        ? { linkedChats: readLinkedGardenChats(access.id, userId) }
+        : {}),
     });
   }
 

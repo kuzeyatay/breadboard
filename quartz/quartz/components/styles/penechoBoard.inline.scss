@@ -102,6 +102,9 @@ pre:has(> code.penecho-board-block) {
     border-radius: 50%;
     corner-shape: round;
     animation: penecho-board-spin 750ms linear infinite;
+    transition: opacity 150ms ease-out, display 150ms allow-discrete;
+    &[hidden] { opacity: 0; }
+    @starting-style { opacity: 0; }
   }
 
   .penecho-board-placeholder-text {
@@ -144,6 +147,7 @@ pre:has(> code.penecho-board-block) {
 @media (prefers-reduced-motion: reduce) {
   .penecho-board .penecho-board-loading-indicator {
     animation: none;
+    transition-duration: 90ms;
   }
 }
 

@@ -1,5 +1,7 @@
 "use client";
 
+import { loadingIconMotion } from "@/app/components/loading-icon-motion";
+
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Download, X } from "lucide-react";
 import { sendDesktopTabsCommand } from "@/lib/desktop-browser-tabs";
@@ -37,7 +39,7 @@ export default function BrowserDownloadsButton({ active, open }: { active: boole
       aria-haspopup="dialog" aria-expanded={open} data-downloading={count > 0}
       onClick={() => { if (open) void sendDesktopTabsCommand({ type: "browser-downloads-close" }); else void show(); }}>
       <Download aria-hidden="true" />
-      {count > 0 ? <span className={styles.spinner} aria-hidden="true" /> : null}
+      {count > 0 ? <span {...loadingIconMotion} className={styles.spinner} aria-hidden="true" /> : null}
     </button>
     <span className="sr-only" role="status">{count ? `${count} ${count === 1 ? "download" : "downloads"} in progress` : ""}</span>
     {error ? <div ref={errorCard} className={styles.toolbarError} role="alert">

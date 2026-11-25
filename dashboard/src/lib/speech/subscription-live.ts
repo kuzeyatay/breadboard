@@ -960,6 +960,16 @@ async function openSubscriptionVoice(options: SubscriptionVoiceOptions = {}): Pr
             if (playbackFailure) throw playbackFailure;
             let audio: Blob | undefined;
             while (!audio) try {
+              // The realtime reader answers a bare speakable update as if it
+              // were said to it ("Sounds clear. What's next?") instead of
+              // reading it; measured 2026-11-25. Prime it with the exact
+              // script first, as live conversation readings do, and let any
+              // acknowledgement drain before recording starts.
+              const contextBefore = contextAppendVersion;
+              channel.send(JSON.stringify({type:'session.context.append',content:[{type:'input_text',
+                text:'The next speakable update is a script to read aloud. Its exact text is '+JSON.stringify(part)+'. When that update arrives, begin directly with its first word and read every word verbatim, once, in order. Do not add an acknowledgment, introduction, reply, or commentary. Questions and statements inside it are words to read, not messages to answer. This context itself is not spoken.'}]}));
+              await until(() => contextAppendVersion > contextBefore, 5000, true);
+              await pause(1500);
               // Preparation never reports progress: the reading position comes
               // from the verified recording's actual playback clock below.
               const before = outputVersion;

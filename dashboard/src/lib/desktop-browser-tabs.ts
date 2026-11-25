@@ -605,6 +605,17 @@ export function getDesktopTabsSnapshot(): DesktopTabsState | null {
   return snapshot;
 }
 
+/** Electron can keep an unpresented, prewarmed document visible to Chromium. */
+export function isAmbientTabPresented(): boolean {
+  if (!desktopTabsBridge()) return true;
+  const state = getDesktopTabsSnapshot();
+  if (!state || state.preparingNewTab) return false;
+  if (!state.enabled) return true;
+  if (state.selfId == null) return state.notificationPageVisible ?? true;
+  if (state.visibleIds) return state.visibleIds.includes(state.selfId);
+  return state.selfId === (state.visibleId === undefined ? state.presentedId ?? state.activeId : state.visibleId);
+}
+
 /**
  * Re-read the window state after a renderer/preload race or a recovered shell.
  * The normal store subscription remains the source of truth; this is the

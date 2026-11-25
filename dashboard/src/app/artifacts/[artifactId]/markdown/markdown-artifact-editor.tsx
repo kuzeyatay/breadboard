@@ -11,6 +11,8 @@ import { Pencil } from "lucide-react";
 import AssistantComposer from "@/app/components/assistant-composer";
 import { UserMessageText } from "@/app/components/hermes/command-text";
 import BreadboardLoader from "@/app/components/breadboard-loader";
+import { ArtifactLoadingMark } from "@/app/components/hermes/artifact-preview-loading";
+import { useLoadingTextReveal } from "@/app/components/loading-text-reveal";
 import ChatMarkdown from "@/app/components/chat-markdown";
 import { ConfirmDialog } from "@/app/components/confirm-dialog";
 import { useAssistantIntelligence } from "@/app/components/use-assistant-intelligence";
@@ -76,6 +78,7 @@ export default function MarkdownArtifactEditor({
   const [savedContent, setSavedContent] = useState("");
   const savedContentRef = useRef("");
   const [loading, setLoading] = useState(true);
+  const documentReveal = useLoadingTextReveal(loading);
   const [saving, setSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState("");
   const [error, setError] = useState("");
@@ -88,6 +91,7 @@ export default function MarkdownArtifactEditor({
   const [chatHydratedFor, setChatHydratedFor] = useState<string | null>(null);
   const chatHydrated = chatHydratedFor === initialArtifact.id;
   const [assistantBusy, setAssistantBusy] = useState(false);
+  const answerReveal = useLoadingTextReveal(assistantBusy);
   const savingRef = useRef(false);
   const assistantController = useRef<AbortController | null>(null);
   const sourceRef = useRef<HTMLTextAreaElement | null>(null);
@@ -455,8 +459,9 @@ export default function MarkdownArtifactEditor({
       <div className={styles.workspace}>
         <section className={styles.documentPane} aria-label="Markdown workspace" aria-busy={loading}>
           {loading ? (
-            <div className="grid min-h-0 flex-1 place-items-center">
-              <BreadboardLoader className="h-6 w-6" />
+            <div role="status" className="grid min-h-0 flex-1 place-items-center">
+              <ArtifactLoadingMark size={24} />
+              <span className="sr-only">Opening Markdown editor…</span>
             </div>
           ) : editing ? (
             <textarea
@@ -481,7 +486,7 @@ export default function MarkdownArtifactEditor({
                 onMouseUp={captureDocumentSelection}
                 onKeyUp={captureDocumentSelection}
               >
-                <ChatMarkdown content={content} />
+                <div ref={documentReveal}><ChatMarkdown content={content} /></div>
               </article>
             </div>
           )}
@@ -494,6 +499,7 @@ export default function MarkdownArtifactEditor({
             {chat.map((entry, index) => (
               <div
                 key={entry.id}
+                ref={entry.role === "assistant" && index === chat.length - 1 ? answerReveal : undefined}
                 data-notification-message={entry.role === "assistant" ? JSON.stringify(notificationMessageKeys({ id: entry.id, entryId: entry.id })) : undefined}
                 className={entry.role === "user"
                   ? "ml-7 rounded-2xl rounded-br-md border border-[var(--line)] bg-[var(--paper-strong)] px-3.5 py-3 text-sm"

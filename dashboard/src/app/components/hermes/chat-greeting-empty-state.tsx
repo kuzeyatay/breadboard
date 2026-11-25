@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { AnimatePresence } from "motion/react";
+import { SuggestionFade } from "./suggestion-presence";
 
 import type { ChatGreeting } from "@/lib/hermes/chat-greeting";
 import { SKETCH_MARGIN, sketchRectOutlines, type SketchBox } from "@/lib/hermes/sketch-outline";
@@ -82,7 +84,7 @@ export default function ChatGreetingEmptyState({
   );
 }
 
-type CardsProps = Pick<Props, 'suggestions' | 'suggestionScopeKey' | 'suggestionDetails' | 'disabled' | 'onSelectSuggestion'>;
+type CardsProps = Pick<Props, 'suggestions' | 'suggestionScopeKey' | 'suggestionDetails' | 'disabled' | 'onSelectSuggestion'> & { className?: string };
 export function ChatSuggestionCards(props: CardsProps) {
   const [personalize]=usePersonalize();
   const [privacyRevision,setPrivacyRevision]=useState(0);
@@ -95,21 +97,24 @@ export function ChatSuggestionCards(props: CardsProps) {
   return <SuggestionGrid key={JSON.stringify([props.suggestionScopeKey,personalize,privacyRevision])} {...props} suggestions={completeRecommendationPrompts(props.suggestions)}/>;
 }
 
-function SuggestionGrid({suggestions,suggestionDetails,disabled=false,onSelectSuggestion}:CardsProps) {
-  // Nothing grounded to offer means no cards, not filler.
-  if (!suggestions.length) return null;
-  return <div className="grid w-full max-w-xl gap-2 sm:grid-cols-2" aria-label="Suggested next steps">
+function SuggestionGrid({suggestions,suggestionDetails,disabled=false,onSelectSuggestion,className=""}:CardsProps) {
+  return (
+    <div className={`grid w-full max-w-xl gap-2 empty:hidden sm:grid-cols-2 ${className}`} aria-label={suggestions.length ? "Suggested next steps" : undefined}>
+      <AnimatePresence>
         {suggestions.map((prompt, index) => (
-          <SuggestionCard
-            key={index}
-            prompt={prompt}
-            detail={suggestionDetails?.[prompt]}
-            index={index}
-            disabled={disabled}
-            onSelect={onSelectSuggestion}
-          />
+          <SuggestionFade key={index} className="grid">
+            <SuggestionCard
+              prompt={prompt}
+              detail={suggestionDetails?.[prompt]}
+              index={index}
+              disabled={disabled}
+              onSelect={onSelectSuggestion}
+            />
+          </SuggestionFade>
         ))}
-      </div>;
+      </AnimatePresence>
+    </div>
+  );
 }
 
 /**
@@ -182,7 +187,10 @@ function SuggestionCard({
     : null;
 
   return (
-    <div className="relative grid"><button
+    <div
+      className="bb-suggestion-card-entry relative grid"
+      style={{ "--bb-suggestion-delay": `${index * 30}ms` } as CSSProperties}
+    ><button
       ref={buttonRef}
       type="button"
       onPointerEnter={event=>{if(event.pointerType==='mouse'){pointer.current=true;setHeld(shown);}}}

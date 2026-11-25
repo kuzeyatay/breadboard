@@ -1,4 +1,4 @@
-import { Readable } from "node:stream";
+import { nodeStreamToWeb } from "../node-stream-to-web.ts";
 import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
 import type { GardenFileStore, GardenFileScope } from "./store.ts";
 
@@ -28,6 +28,6 @@ export function gardenFileContentResponse(request: Request, store: GardenFileSto
     status = 206; headers["Content-Range"] = `bytes ${start}-${end}/${size}`;
   }
   headers["Content-Length"] = String(Math.max(0, end - start + 1));
-  const body = request.method === "HEAD" || size === 0 ? null : Readable.toWeb(fs.createReadStream(file.path, { start, end, signal: request.signal })) as ReadableStream<Uint8Array>;
+  const body = request.method === "HEAD" || size === 0 ? null : nodeStreamToWeb(fs.createReadStream(file.path, { start, end, signal: request.signal })) as ReadableStream<Uint8Array>;
   return new Response(body, { status, headers });
 }

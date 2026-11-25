@@ -75,6 +75,7 @@ test("PDF navigation restores its page across browser/server restarts and change
     { from: path.join(root, "tests/pdf-navigation-fixture.css") },
   )).css;
   let releaseWebPdf;
+  let positionReads = 0;
   const server = createServer(async (request, response) => {
     const url = new URL(request.url, "http://localhost");
     if (url.pathname === "/api/pdf-reading-position") {
@@ -86,6 +87,7 @@ test("PDF navigation restores its page across browser/server restarts and change
         writePdfReadingPosition(db, 1, value.source, value.page, value.observedAt);
         response.end('{"ok":true}');
       } else {
+        positionReads++;
         // A slow read must finish before startup events are allowed to save page 1.
         await new Promise(resolve => setTimeout(resolve, 150));
         response.end(JSON.stringify({ page: readPdfReadingPosition(db, 1, url.searchParams.get("source")) }));
@@ -101,7 +103,8 @@ test("PDF navigation restores its page across browser/server restarts and change
     }
     if (url.pathname.startsWith("/api/pdfjs/")) {
       const name = path.basename(url.pathname);
-      const asset = path.join(root, "node_modules/pdfjs-dist", name === "pdf.mjs" || name === "pdf.worker.mjs" ? "build" : "web", name);
+      const runtime = name === "pdf.mjs" || name === "pdf.worker.mjs";
+      const asset = path.join(root, "node_modules/pdfjs-dist/legacy", runtime ? "build" : "web", runtime ? name.replace(".mjs", ".min.mjs") : name);
       if (existsSync(asset)) {
         response.setHeader("content-type", name.endsWith(".css") ? "text/css" : "text/javascript"); response.end(readFileSync(asset)); return;
       }
@@ -133,7 +136,9 @@ test("PDF navigation restores its page across browser/server restarts and change
   });
   await page.goto(`http://127.0.0.1:${server.address().port}`);
   const field = page.getByRole("textbox", { name: "Page number", exact: true });
-  await expect(field).toBeEnabled();
+  await expect(field).toBeEnabled().catch(async error => {
+    throw new Error(`${error.message}\n${await page.locator("body").innerText()}\n${errors.join("\n")}`);
+  });
   await expect(page.locator('.page[data-page-number="1"] canvas')).toBeVisible();
   await expect(field).toHaveValue("1");
   const scrollToPage = async number => {
@@ -232,10 +237,12 @@ test("PDF navigation restores its page across browser/server restarts and change
   await expect(reopenedField).toHaveValue("1");
   await expect(reopenedField).toBeEnabled();
   assert.equal(readPdfReadingPosition(db, 1, "/fixture.pdf"), 37, "same title does not alias a different PDF");
+  const readsBeforeCitation = positionReads;
   await reopened.goto(`${origin}#page=8`);
   await expect(reopenedField).toHaveValue("8");
   await expect(reopened.locator('.page[data-page-number="8"] canvas')).toBeVisible();
   await expect.poll(() => readPdfReadingPosition(db, 1, "/fixture.pdf")).toBe(8);
+  assert.equal(positionReads, readsBeforeCitation, "a citation opens directly without fetching a saved page");
 
   await reopened.evaluate(() => localStorage.setItem("sb:pdf-last-page:artifact:Navigation test", "6"));
   await reopened.goto(`${origin}?source=/other.pdf`);

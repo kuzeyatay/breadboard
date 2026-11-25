@@ -413,9 +413,9 @@ test("activity and actions render with assistant messages, not above composers",
   assert.doesNotMatch(composer, /LiveTokenUsageStatus/);
   assert.doesNotMatch(composer, /tokenUsagePending/);
   assert.match(workspace, /usage=\{msg\.usage\}/);
-  assert.match(workspace, /reasoning=\{msg\.thinking\}/);
+  assert.match(workspace, /reasoning=\{notesOnly \? undefined : msg\.thinking\}/);
   assert.match(gardenAssistant, /usage=\{message\.usage\}/);
-  assert.match(gardenAssistant, /reasoning=\{message\.thinking\}/);
+  assert.match(gardenAssistant, /reasoning=\{notesOnly \? undefined : message\.thinking\}/);
   assert.match(runtime, /usage=\{message\.usage\}/);
   assert.match(runtime, /reasoning=\{message\.reasoning\}/);
   assert.match(knowledgeTerminal, /usage=\{message\.usage\}/);

@@ -2,6 +2,7 @@ import { externalRuntimePath as path } from "@/lib/external-runtime-path";
 import { NextResponse } from "next/server";
 
 import { externalRuntimeFilesystem as fs } from "@/lib/external-runtime-filesystem";
+import { fileContentResponse } from "@/lib/file-content-response";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -61,7 +62,9 @@ function resolvePdfJsFile(segments: string[]): string | null {
   const packageRoot = path.join(process.cwd(), "node_modules", "pdfjs-dist");
 
   if (BUILD_FILES.has(first) && rest.length === 0) {
-    return safeJoin(path.join(packageRoot, "legacy", "build"), [first]);
+    const file = first === "pdf.mjs" || first === "pdf.worker.mjs"
+      ? first.replace(".mjs", ".min.mjs") : first;
+    return safeJoin(path.join(packageRoot, "legacy", "build"), [file]);
   }
 
   if (WEB_FILES.has(first) && rest.length === 0) {
@@ -76,20 +79,19 @@ function resolvePdfJsFile(segments: string[]): string | null {
 }
 
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ path: string[] }> },
 ) {
   const { path: pathSegments } = await params;
   const filePath = resolvePdfJsFile(pathSegments);
 
-  if (!filePath || !fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+  const stat = filePath ? fs.statSync(filePath, { throwIfNoEntry: false }) : null;
+  if (!filePath || !stat?.isFile()) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
-  return new Response(fs.readFileSync(filePath), {
-    headers: {
-      "Content-Type": contentTypeFor(filePath),
-      "Cache-Control": "public, max-age=31536000, immutable",
-    },
+  return fileContentResponse(request, filePath, stat.size, {
+    "Content-Type": contentTypeFor(filePath),
+    "Cache-Control": "public, max-age=31536000, immutable",
   });
 }

@@ -57,11 +57,9 @@ export const GADGET_BINDING_KINDS = [
   "messaging",
   /** Read and write the user's durable agent memory. */
   "memory",
+  /** Read notes in the owned Garden where the gadget was created. */
+  "garden",
 ] as const;
-// Garden is deliberately absent. Every Garden read in Breadboard goes through
-// `executeGardenTool`, which authorizes against a per-turn capability token; a
-// gadget outlives the turn that made it and holds no such token. Adding it means
-// minting a gadget-scoped token first, which is its own decision.
 export type GadgetBindingKind = (typeof GADGET_BINDING_KINDS)[number];
 
 /**

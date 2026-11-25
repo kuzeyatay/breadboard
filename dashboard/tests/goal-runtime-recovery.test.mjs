@@ -51,6 +51,34 @@ test("the token budget takes priority over transport recovery", t => {
   assert.equal(goalCanContinue(state), false);
 });
 
+test("late status updates respect a pause, a finished goal, and an exhausted budget", t => {
+  const input = fixture(t, { tokenBudget: 100 });
+  const report = status => callGoalModeTool({ ...input, tool: "update_goal", args: { status } });
+  setGoalModeStatus({ ...input, status: "paused" });
+  assert.equal(report("blocked").isError, true);
+  assert.equal(report("complete").isError, true);
+  setGoalModeStatus({ ...input, status: "active" });
+  accountGoalModeTurn({ ...input, runId: "limited", tokensUsed: 100 });
+  assert.equal(setGoalModeStatus({ ...input, status: "paused" }).status, "budget_limited");
+  assert.equal(report("blocked").isError, true);
+  assert.equal(report("complete").isError, undefined);
+  assert.equal(report("blocked").isError, true);
+});
+
+test("a quota diagnostic and a reported blocker keep their reason until resume", t => {
+  const input = fixture(t);
+  const state = accountGoalModeTurn({ ...input, runId: "quota", outcome: "error",
+    failureCode: "hermes_turn_failed", failureMessage: "HTTP 429: provider usage limit reached" });
+  assert.equal(state.status, "usage_limited");
+  assert.equal(setGoalModeStatus({ ...input, status: "paused" }).status_reason, state.status_reason);
+  assert.equal(setGoalModeStatus({ ...input, status: "active" }).status_reason, undefined);
+  const reason = "The signed copy of the report is missing.";
+  const result = callGoalModeTool({ ...input, tool: "update_goal", args: { status: "blocked", reason } });
+  assert.equal(JSON.parse(result.text).goal.statusReason, reason);
+  assert.equal(setGoalModeStatus({ ...input, status: "active" }).status_reason, undefined);
+  assert.equal(callGoalModeTool({ ...input, expectedGoalId: "previous-goal", tool: "update_goal", args: { status: "complete" } }).isError, true);
+});
+
 test("missing artifacts and runtime failures continue; a different cause starts a fresh blocker audit", t => {
   const input=fixture(t);
   for(const [runId,failureCode,failureMessage] of [

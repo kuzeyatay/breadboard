@@ -22,6 +22,7 @@ import {
   type RefObject,
 } from "react";
 import { createPortal } from "react-dom";
+import { Maximize2 } from "lucide-react";
 import type { ChatAttachment } from "@/lib/chat-attachments.ts";
 import type { ChatTextSelectionReference } from "@/lib/chat-text-selection.ts";
 import { QuotedChatSelection } from "../chat-text-selection-ui";
@@ -546,8 +547,9 @@ export function useQueuedFollowUps({
                 aria-label={`Reorder queued message ${index + 1} of ${visibleQueued.length}: ${itemDescription}. Drag, or use the Up and Down arrow keys.`}
                 title="Drag to change steering order"
               >
-                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7} aria-hidden>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 7.5h8.5a2 2 0 0 1 2 2v.75m0 0-2.25-2.25m2.25 2.25L15 12.5" />
+                <svg className="h-4 w-4" fill="none" viewBox="0 0 16 16" stroke="currentColor" strokeWidth={1.25} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                  <path d="M2 2v7.5A2.5 2.5 0 0 0 4.5 12H13m-2-2 2 2-2 2" />
+                  <path d="M5.5 3h6M5.5 7h4" />
                 </svg>
               </button>
               <>
@@ -602,15 +604,15 @@ export function useQueuedFollowUps({
                     <svg
                       className="h-4 w-4"
                       fill="none"
-                      viewBox="0 0 24 24"
+                      viewBox="0 0 16 16"
                       stroke="currentColor"
-                      strokeWidth={1.7}
+                      strokeWidth={1.25}
                       aria-hidden
                     >
                       <path
                         strokeLinecap="round"
                         strokeLinejoin="round"
-                        d="M19.5 8.25H9.75a4.5 4.5 0 0 0-4.5 4.5v.75m0 0 3-3m-3 3 3 3"
+                        d="M2 4v1.5A3.5 3.5 0 0 0 5.5 9H14m-3.5-3.5L14 9l-3.5 3.5"
                       />
                     </svg>
                     <span>
@@ -627,8 +629,8 @@ export function useQueuedFollowUps({
                     aria-label={`Delete queued message: ${itemDescription}`}
                     title="Delete queued message (Ctrl+Z to undo)"
                   >
-                    <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7} aria-hidden>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 7.5h15m-9-3h3m-7.5 3 .75 12h10.5l.75-12M9.75 10.5v6m4.5-6v6" />
+                    <svg className="h-4 w-4" fill="none" viewBox="0 0 16 16" stroke="currentColor" strokeWidth={1.25} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                      <path d="M1.75 4.25h12.5M5.5 4.25v-.5a2 2 0 0 1 2-2h1a2 2 0 0 1 2 2v.5M3 4.25l.7 8.25a2 2 0 0 0 2 1.75h4.6a2 2 0 0 0 2-1.75l.7-8.25M6.5 7.5V11m3-3.5V11" />
                     </svg>
                   </button>
                   <button
@@ -639,11 +641,7 @@ export function useQueuedFollowUps({
                     aria-label={`Edit queued message: ${itemDescription}`}
                     title="Edit queued message"
                   >
-                    <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 24 24" aria-hidden>
-                      <circle cx="5" cy="12" r="1.5" />
-                      <circle cx="12" cy="12" r="1.5" />
-                      <circle cx="19" cy="12" r="1.5" />
-                    </svg>
+                    <Maximize2 className="h-4 w-4" strokeWidth={1.7} aria-hidden />
                   </button>
               </>
             </div>

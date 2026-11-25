@@ -22,6 +22,7 @@ export interface SkillDraft {
   description: string;
   instructions: string;
   references?: SkillReferenceDraft[];
+  scripts?: SkillReferenceDraft[];
 }
 
 export interface SkillDraftValidation {
@@ -119,6 +120,17 @@ export function validateSkillDraft(draft: SkillDraft): SkillDraftValidation {
     }
   }
 
+  const scripts = draft.scripts ?? [];
+  if (scripts.length > MAX_REFERENCES) issues.push(`At most ${MAX_REFERENCES} Python scripts are supported.`);
+  const scriptNames = new Set<string>();
+  for (const { filename, contents } of scripts) {
+    const key = filename.trim().toLowerCase();
+    if (!/^[a-z][a-z0-9_-]{0,75}\.py$/.test(key) || scriptNames.has(key)) {
+      issues.push("Each script needs a unique plain Python filename such as tally.py.");
+    }
+    scriptNames.add(key);
+    if (!contents.trim() || contents.length > MAX_REFERENCE_CHARS) issues.push(`Provide 1–${MAX_REFERENCE_CHARS} characters of Python for ${filename}.`);
+  }
   return { issues, warnings };
 }
 
@@ -144,6 +156,9 @@ export function buildSkillFiles(draft: SkillDraft): Record<string, string> {
   const files: Record<string, string> = { "SKILL.md": composeSkillMarkdown(draft) };
   for (const reference of draft.references ?? []) {
     files[`references/${reference.filename.trim()}`] = reference.contents;
+  }
+  for (const script of draft.scripts ?? []) {
+    files[`scripts/${script.filename.trim()}`] = script.contents;
   }
   return files;
 }

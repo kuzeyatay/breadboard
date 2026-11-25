@@ -1,9 +1,10 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { usePathname } from 'next/navigation';
+import dynamic from 'next/dynamic';
 import { desktopTabsBridge } from '@/lib/desktop-browser-tabs';
 import { voiceCompanionBridge } from '@/lib/speech/voice-window';
-import VoiceAssistantRuntime from './voice-assistant-runtime';
+const VoiceAssistantRuntime = dynamic(() => import('./voice-assistant-runtime'), { ssr: false });
 
 /** Browser fallback elects one page; Electron has its own persistent voice window. */
 export default function VoiceAssistantBrowserHost() {

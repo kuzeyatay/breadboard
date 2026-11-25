@@ -91,6 +91,46 @@
   display: block;
 }
 
+:root {
+  --bb-loading-fade: 150ms;
+  --bb-loading-ease: cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+[data-loading-icon] {
+  transition: opacity var(--bb-loading-fade) var(--bb-loading-ease);
+}
+
+/* The first interval lets the outgoing glyph finish. Backwards fill holds
+   just the incoming text at zero during that interval. */
+[data-loading-text-reveal] {
+  animation: bb-loading-text-in var(--bb-loading-fade) var(--bb-loading-ease) var(--bb-loading-fade) backwards;
+}
+
+/* Document frames mount before their load event and keep their browsing context. */
+.bb-artifact-preview-surface[aria-busy="true"] > iframe {
+  opacity: 0;
+}
+
+.bb-artifact-preview-surface[aria-busy="false"] > iframe {
+  transition: opacity var(--bb-loading-fade) var(--bb-loading-ease) var(--bb-loading-fade);
+}
+
+@keyframes bb-loading-text-in {
+  from { opacity: 0; }
+}
+
+@starting-style {
+  [data-loading-icon] {
+    opacity: 0 !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --bb-loading-fade: 90ms;
+  }
+}
+
 .bb-loader-settled {
   opacity: 0.2;
 }
@@ -4326,6 +4366,12 @@ html[data-theme="dark"] .browser-home-calendar {
   pointer-events: none;
 }
 
+[data-combined-home] .browser-sketch-outline,
+.bb-terminal-dock-outline,
+.bb-terminal-suggestion-beam {
+  --bb-ambient-fps: 30;
+}
+
 .browser-sketch-outline path,
 .browser-rail-sketch path {
   fill: none;
@@ -6258,6 +6304,10 @@ html[data-theme="dark"] .browser-spotify-cover {
 }
 
 .browser-spotify-loading > span {
+  display: inline-flex;
+}
+
+.browser-spotify-loading > span > span {
   width: 7px;
   height: 7px;
   border-radius: 50%;
@@ -7145,7 +7195,7 @@ html[data-theme="dark"] .browser-spotify-cover {
     transition-delay: 0s;
   }
 
-  .browser-spotify-loading > span {
+  .browser-spotify-loading > span > span {
     animation: none;
   }
 
@@ -7539,6 +7589,24 @@ html[data-breadboard-desktop="true"] body > .bb-calendar-shell {
   border-radius: var(--bb-suggestion-radius);
 }
 
+.bb-suggestion-card-entry {
+  transition-property: opacity, transform;
+  transition-duration: 200ms;
+  transition-timing-function: cubic-bezier(0.23, 1, 0.32, 1);
+  transition-delay: var(--bb-suggestion-delay, 0ms);
+}
+
+@starting-style {
+  .bb-suggestion-card-entry {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+.bb-suggestion-card-entry:focus-within {
+  transition: none;
+}
+
 /* Sized in pixels by the component from the card's measured box — an SVG is a
    replaced element, so `inset` alone would not size it, and percentages are
    what let the old layer sit at the card's content height while a grid row
@@ -7610,6 +7678,10 @@ html[data-breadboard-desktop="true"] body > .bb-calendar-shell {
    take the whole layer away rather than slow it down — the card keeps its own
    border and loses nothing it needs. */
 @media (prefers-reduced-motion: reduce) {
+  .bb-suggestion-card-entry {
+    transition: opacity 125ms ease-out;
+  }
+
   .bb-terminal-suggestion-beam {
     display: none;
   }

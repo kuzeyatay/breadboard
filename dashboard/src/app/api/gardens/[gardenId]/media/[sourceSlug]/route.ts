@@ -1,5 +1,5 @@
 import path from "node:path";
-import { Readable } from "node:stream";
+import { nodeStreamToWeb } from "@/lib/node-stream-to-web";
 import { externalRuntimeFilesystem as fs } from "@/lib/external-runtime-filesystem";
 import { contentDisposition } from "@/lib/content-disposition";
 import {
@@ -130,7 +130,7 @@ export async function GET(
     };
     const range = requestedRange(request.headers.get("range"), metadata.size);
     const stream = fs.createReadStream(mediaPath, range ?? undefined);
-    const body = Readable.toWeb(stream) as ReadableStream<Uint8Array>;
+    const body = nodeStreamToWeb(stream) as ReadableStream<Uint8Array>;
 
     return range
       ? new Response(body, {

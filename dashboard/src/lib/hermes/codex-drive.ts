@@ -6,6 +6,9 @@
 // cheap pure function over the request text: an action verb aimed at a code
 // object. Questions about code ("what does this function do") stay Bread's.
 
+import { isMcpAuthoringRequest } from "./mcp-installer-context.ts";
+import { isWorkspaceBotRequest } from "./workspace-context.ts";
+
 // ponytail: lexical heuristic, swap for a classifier call if it misroutes.
 const ACTION = /\b(write|writ(?:ing)|code|implement|build|create|make|add|fix|debug|refactor|rewrite|port|scaffold|set up|develop|program|patch|update|change|modify|optimi[sz]e|migrate)\b/i;
 const CODE_OBJECT = /\b(code|function|method|class|script|program|app|application|website|web ?app|component|endpoint|api|cli|library|module|package|bug|test(?:s| suite)?|unit tests?|feature|repo(?:sitory)?|codebase|pull request|pr|regex|query|sql|algorithm|backend|frontend|server|bot|plugin|extension|hook|compile error|stack trace|typescript|javascript|python|rust|golang|java|c\+\+|c#|react|next\.?js|node(?:\.js)?|html|css)\b|\.(?:ts|tsx|js|jsx|py|rs|go|java|cs|cpp|c|rb|php|swift|kt|sh|ps1|sql)\b/i;
@@ -14,7 +17,7 @@ const QUESTION = /^\s*(what|why|how does|how do|explain|tell me about|is there|w
 export function isCodeWritingRequest(text: string): boolean {
   const request = text.trim();
   // An explicit command already chose its capability.
-  if (!request || request.startsWith("/")) return false;
+  if (!request || request.startsWith("/") || isMcpAuthoringRequest(request) || isWorkspaceBotRequest(request)) return false;
   if (QUESTION.test(request) && !/\b(write|implement|fix|build|code)\b/i.test(request)) return false;
   return ACTION.test(request) && CODE_OBJECT.test(request);
 }

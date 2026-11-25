@@ -4,6 +4,7 @@ import { chatQuestionSelections } from "@/lib/chat-text-selection";
 import { notificationMessageKeys } from "@/lib/chat-notification-visibility";
 import { sendDesktopTabsCommand } from "@/lib/desktop-browser-tabs";
 import { useBrowserInlineAnswer } from "./use-browser-inline-answer";
+import { SuggestionEmptyStatePresence } from "./suggestion-presence";
 import { BROWSER_REVEAL_TERMINAL_EVENT, type BrowserInlineNestedThread } from "@/lib/browser-inline-answer";
 
 // Shared conversation UI for Hermes-backed surfaces. Renders streaming
@@ -62,6 +63,7 @@ import BreadboardLoader from "@/app/components/breadboard-loader";
 import ChatJumpToBottom from "@/app/components/chat-jump-to-bottom";
 import { useComposerInset } from "@/app/components/chat/use-composer-inset";
 import { useSmoothStreamText } from "@/app/components/chat/use-smooth-stream-text";
+import { ReplyText, useLoadingTextReveal } from "@/app/components/loading-text-reveal";
 import ChatDisclaimer from "@/app/components/chat/chat-disclaimer";
 import SideChatSurface from "@/app/components/side-chat-surface";
 import { useConfirmDialog } from "@/app/components/confirm-dialog";
@@ -171,7 +173,7 @@ import {
   partitionCourseCorrections,
   type CourseCorrectionBoundary,
 } from "@/lib/steered-response";
-import InlineProgressNotes, { ThinkingRow } from "./inline-progress-notes";
+import InlineProgressNotes, { holdAnswer, ThinkingRow, TypeInAnswer } from "./inline-progress-notes";
 import { useIntermediateResponses } from "./use-intermediate-responses";
 import {
   applyBranchVariant,
@@ -1002,6 +1004,7 @@ export default function AgentRuntimePanel({
   const openingStarredMessage = starredMessageTarget?.chatId === sessionId;
   const conversationLoading =
     loadingTranscript || (!visibleConversationJustCreated && !openingStarredMessage && !artifactsReady);
+  const transcriptReveal = useLoadingTextReveal(conversationLoading);
   const queueHeld = conversationLoading || runInFlight;
   // Messages typed while the conversation is working queue here; each can be
   // applied to the active chat turn as a course correction, and whatever is
@@ -2465,7 +2468,7 @@ export default function AgentRuntimePanel({
         ref={transcriptScrollRef}
         className="bb-chat-scroller min-h-0 flex-1 overflow-y-auto"
       >
-        <div className={`bb-chat-scroll-tail mx-auto flex min-h-full w-full ${transcriptColumnWidthClass} flex-col px-4 py-5`}>
+        <div className={`bb-chat-scroll-tail relative mx-auto flex min-h-full w-full ${transcriptColumnWidthClass} flex-col px-4 py-5`}>
           {conversationLoading ? (
             <div className="flex items-center justify-center py-12">
               <BreadboardLoader
@@ -2473,24 +2476,15 @@ export default function AgentRuntimePanel({
                 className="h-5 w-5 text-gray-400"
               />
             </div>
-          ) : messages.length === 0 ? (
-            // The suggestion cards invite a new chat, so showing them over a
-            // transcript that is still arriving reads as "this chat is empty".
-            failureText ? (
-              // A turn that died before it wrote anything — a preflight that
-              // could not be granted, say — leaves an empty transcript with a
-              // reason attached. Greeting someone under the reason their last
-              // attempt failed reads as two screens stacked by accident, so the
-              // failure notice below stands on its own.
-              null
-            ) : (
-              emptyState ?? (
-                <p className="py-8 text-center text-sm text-gray-500">
-                  Ask the agent anything. It can use tools, and will ask before doing anything sensitive.
-                </p>
-              )
-            )
-          ) : (
+          ) : null}
+          <SuggestionEmptyStatePresence visible={!conversationLoading && messages.length === 0 && !failureText} className="flex flex-1 flex-col">
+            {emptyState ?? (
+              <p className="py-8 text-center text-sm text-gray-500">
+                Ask the agent anything. It can use tools, and will ask before doing anything sensitive.
+              </p>
+            )}
+          </SuggestionEmptyStatePresence>
+          {!conversationLoading && messages.length > 0 && (
             <InlineArtifactCardsProvider
               conversationId={surface !== "quartz_ai" ? sessionId : null}
             >
@@ -2501,7 +2495,7 @@ export default function AgentRuntimePanel({
               refreshKey={activeRun}
               onRequestRevision={conversationLocked ? undefined : prompt => queueFollowUp(prompt, [])}
             >
-            <div className="space-y-5">
+            <div ref={transcriptReveal} className="space-y-5">
               <VirtualizedMessageList
                 surface={surface === "quartz_ai" ? "quartz-ai" : "hermes-chat"}
                 className="w-full"
@@ -2687,8 +2681,32 @@ export default function AgentRuntimePanel({
                         visibleAssistantContent,
                       )
                     : null;
-                const { leading: leadingCorrections, inline: inlineCorrections } =
-                  progressLayout ?? partitionCourseCorrections(rowCorrections);
+                // While the turn runs, the text being streamed is not known to
+                // be the answer: a tool call may still seal it into a note. Hold
+                // it back until that is decided. Sealed, it types in as the next
+                // dot; if the turn ends instead, it types in as the answer.
+                const liveDraft =
+                  liveIntermediateTurn && !responseFailure ? visibleAssistantContent : "";
+                // Keyed on the client id: the server id arrives with the finished answer.
+                const heldAnswerKey = message.clientMessageId ?? `row-${index}`;
+                if (liveDraft.trim()) holdAnswer(heldAnswerKey);
+                const liveTimeline = progressLayout
+                  ? [
+                      ...progressLayout.timeline,
+                      // Steers sent while the held draft streamed follow the notes.
+                      ...progressLayout.inline.map((correction) => ({ kind: "correction" as const, correction })),
+                    ]
+                  : [];
+                // A steer Bread has not answered yet gets a pulsing dot at once.
+                const awaitingSteerReply = Boolean(
+                  progressLayout &&
+                    (liveTimeline.at(-1)?.kind === "correction" ||
+                      (!liveTimeline.length && progressLayout.leading.length > 0)),
+                );
+                const { leading: leadingCorrections, inline: inlineCorrections } = progressLayout
+                  ? { leading: progressLayout.leading, inline: [] }
+                  : partitionCourseCorrections(rowCorrections);
+                const answerBody = liveDraft ? "" : responseContent;
                 const retryResponse = !activeRun && !conversationLocked && !disabled
                   ? onRetryMessage && (message.interrupted || message.failed || index === lastAssistantIndex)
                     ? () => retryAssistantAsBranch(index)
@@ -3970,7 +3988,9 @@ export default function AgentRuntimePanel({
                               : []
                           }
                           progressNotes={liveIntermediateTurn ? [] : thinkingUpdates}
-                          reasoning={message.reasoning}
+                          // With intermediate responses on, the disclosure lists
+                          // the notes the user watched, not reasoning summaries.
+                          reasoning={intermediateResponses && thinkingUpdates.length ? undefined : message.reasoning}
                           answerContent={storedAssistantContent}
                           connection={
                             // A worker running behind this row keeps it alive
@@ -4060,8 +4080,8 @@ export default function AgentRuntimePanel({
                             activeProductComparison={activeProductComparison}
                           />
                         ) : null}
-                        {progressLayout?.timeline.length ? (
-                          <InlineProgressNotes timeline={progressLayout.timeline} />
+                        {liveTimeline.length || awaitingSteerReply ? (
+                          <InlineProgressNotes timeline={liveTimeline} live waiting={awaitingSteerReply} />
                         ) : null}
                         {editingAssistantMessageId === assistantMessageEditId ? (
                           <form
@@ -4122,35 +4142,32 @@ export default function AgentRuntimePanel({
                               </button>
                             </div>
                           </form>
-                        ) : responseContent || inlineCorrections.length > 0 ? (
-                          inlineCorrections.length > 0 ? (
-                            <SteeredAssistantResponse
-                              content={responseContent}
-                              corrections={inlineCorrections}
-                              sourceMessageId={messageSelectionSourceId(message, index)}
-                              annotations={
-                                annotationsByMessage.get(messageSelectionSourceId(message, index)) ?? []
-                              }
-                              onSelection={receiveTextSelection}
-                              onOpenAnnotation={openAnnotation}
-                            />
-                          ) : (
-                            <SelectableAssistantMarkdown
-                              content={responseContent}
-                              sourceMessageId={messageSelectionSourceId(
-                                message,
-                                index,
-                              )}
-                              annotations={
-                                annotationsByMessage.get(
-                                  messageSelectionSourceId(message, index),
-                                ) ?? []
-                              }
-                              onSelection={receiveTextSelection}
-                              onOpenAnnotation={openAnnotation}
-                            />
-                          )
-                        ) : null}
+                        ) : (
+                          <ReplyText>
+                            {answerBody || inlineCorrections.length > 0 ? (
+                              <TypeInAnswer id={heldAnswerKey} content={answerBody}>{(typedAnswer) =>
+                                inlineCorrections.length > 0 ? (
+                                  <SteeredAssistantResponse
+                                    content={typedAnswer}
+                                    corrections={inlineCorrections}
+                                    sourceMessageId={messageSelectionSourceId(message, index)}
+                                    annotations={annotationsByMessage.get(messageSelectionSourceId(message, index)) ?? []}
+                                    onSelection={receiveTextSelection}
+                                    onOpenAnnotation={openAnnotation}
+                                  />
+                                ) : (
+                                  <SelectableAssistantMarkdown
+                                    content={typedAnswer}
+                                    sourceMessageId={messageSelectionSourceId(message, index)}
+                                    annotations={annotationsByMessage.get(messageSelectionSourceId(message, index)) ?? []}
+                                    onSelection={receiveTextSelection}
+                                    onOpenAnnotation={openAnnotation}
+                                  />
+                                )}
+                              </TypeInAnswer>
+                            ) : null}
+                          </ReplyText>
+                        )}
                       </div>
                     )}
                     {message.role === "assistant" &&
@@ -4308,6 +4325,12 @@ export default function AgentRuntimePanel({
               onNext: () => showAttempt(Math.min(attempts.length - 1, attemptIndex + 1)),
             } : undefined}
             newQuestionRequest={openAnswer.newQuestion}
+            // The transcript hides cards while an Ask here run is active; the
+            // run's own box is where its approval or question must appear.
+            pendingPermission={thread.pending && inlineRunActive ? pendingPermission : null}
+            onPermissionDecision={onPermissionDecision}
+            pendingClarification={thread.pending && inlineRunActive ? pendingClarification : null}
+            onClarificationAnswer={onClarificationAnswer}
             selection={thread.selection}
             suggestionSelection={thread.selection}
             suggestionModel={model}

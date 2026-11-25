@@ -21,6 +21,7 @@ import type { ConnectionCandidate } from "./connection-routing.ts";
 import { DOORY_CONNECTION, dooryContext } from "../doory/context.ts";
 import { VIDEO_STUDIO_CONNECTION, videoStudioContext } from "../timeline-studio/context.ts";
 import { SPACES_PAGE_CONNECTION, spacesPageContext } from "../spaces/page-context.ts";
+import { WORKSPACE_CONNECTION, WORKSPACE_CONTEXT, WORKSPACE_SKILLS_CONTEXT, SPACE_TEMPLATE_CONTEXT } from "./workspace-context.ts";
 
 export interface ConnectedAppTurnRegistry {
   connectionNames: string[];
@@ -87,8 +88,8 @@ export async function connectedAppRegistryForTurn(input: {
   // The MCP installer is always on the table: "add an MCP for X" can come up in any chat.
   tools.mcp_call = true;
   // So is the Design editor: Bread drives it whenever an image or design is being made or changed.
-  const connectionNames: string[] = [...websiteApis.connectionNames, MCP_INSTALLER_CONNECTION, DOORY_CONNECTION, VIDEO_STUDIO_CONNECTION, SPACES_PAGE_CONNECTION];
-  const contextLines: string[] = [websiteApis.systemContext, MCP_INSTALLER_CONTEXT, dooryContext(input.userId), videoStudioContext(input.userId), spacesPageContext(input.userId)];
+  const connectionNames: string[] = [...websiteApis.connectionNames, MCP_INSTALLER_CONNECTION, WORKSPACE_CONNECTION, DOORY_CONNECTION, VIDEO_STUDIO_CONNECTION, SPACES_PAGE_CONNECTION];
+  const contextLines: string[] = [websiteApis.systemContext, MCP_INSTALLER_CONTEXT, WORKSPACE_CONTEXT, WORKSPACE_SKILLS_CONTEXT, SPACE_TEMPLATE_CONTEXT, dooryContext(input.userId), videoStudioContext(input.userId), spacesPageContext(input.userId)];
   let toolCount = websiteApis.toolCount;
   const catalog: ConnectionCandidate[] = [];
   const displayName = (slug: string) => installedConnections.find((connection) => connection.slug === slug)?.displayName || slug;
@@ -103,18 +104,6 @@ export async function connectedAppRegistryForTurn(input: {
       .filter((slug) => discovery.mcp[slug]?.status === "connected")
       .sort((left, right) => right.length - left.length);
     connectionNames.push(...connectedMcp);
-    if (input.deferMcpConnections) {
-      // Discovery itself is local for Hermes. Cold/offline servers remain
-      // discoverable by the model, but only a request for that server waits
-      // for its connection. The call route still enforces user/run scope.
-      const deferred = installedConnections.filter(connection => !connectedMcp.includes(connection.slug));
-      catalog.push(...deferred.map((connection) => ({ slug: connection.slug, name: connection.displayName || connection.slug, tools: [] })));
-      connectionNames.push(...deferred.map(connection => connection.slug));
-      for (const connection of deferred) {
-        contextLines.push(`Optional MCP connection ${JSON.stringify(connection.slug)} is available on demand. If it is relevant to the user's request, call mcp_call with connection=${JSON.stringify(connection.slug)}, tool="__breadboard_list_tools", args={} to discover its exact tools and argument schemas. Do not connect merely to answer conversation. A connection failure does not prevent using other Breadboard tools.`);
-      }
-      if (installedConnections.length) tools.mcp_call = true;
-    }
 
     const toolsByConnection = new Map<string, string[]>(
       connectedMcp.map((slug) => [slug, []]),
@@ -153,6 +142,15 @@ export async function connectedAppRegistryForTurn(input: {
     }
   } catch {
     // MCP discovery is independent from connected-app discovery below.
+  }
+  // A new chat can discover a saved server before its process starts.
+  for (const connection of installedConnections) {
+    if (connectionNames.includes(connection.slug)) continue;
+    if (!input.deferMcpConnections && !connection.slug.startsWith("custom-")) continue;
+    const name = connection.displayName || connection.slug;
+    catalog.push({ slug: connection.slug, name, tools: [] });
+    connectionNames.push(connection.slug);
+    contextLines.push(`Saved MCP ${JSON.stringify(name)} is available on demand as connection=${JSON.stringify(connection.slug)}. Call mcp_call with this exact connection and tool="__breadboard_list_tools", args={} to discover its tools when needed.`);
   }
 
   if (input.deferMcpConnections) {

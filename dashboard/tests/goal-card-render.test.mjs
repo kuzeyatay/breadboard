@@ -95,11 +95,10 @@ test("an idle goal remains visibly pursued and offers to keep going", () => {
   assert.match(html, /Pursuing goal/);
   assert.match(html, /Get every dashboard test passing/);
   assert.match(html, /aria-label="Keep working on this goal"/);
+  assert.match(html, /aria-label="Pause this goal"/);
   assert.match(html, /aria-label="Abandon this goal"/);
   assert.match(html, /aria-label="Show goal detail"/);
-  // The clock is wall time since the objective was set, in the compact form
-  // the composer has room for.
-  assert.match(html, /\d+d \d+h \d+m \d+s/);
+  assert.match(html, />1m 31s</);
 });
 
 test("a goal with a turn in flight stays pursued and offers to hold it", () => {
@@ -113,6 +112,20 @@ test("a paused goal offers to resume, and never claims to be running", () => {
   const html = render({ ...GOAL, status: "paused" }, { running: true });
   assert.match(html, /Goal paused/);
   assert.match(html, /aria-label="Resume this goal"/);
+});
+
+test("stopped goals show a visible Resume action and omit the running clock", () => {
+  for (const [status, label] of [["paused", "Goal paused"], ["blocked", "Goal blocked"], ["usage_limited", "Goal usage limit reached"]]) {
+    const html = render({ ...GOAL, status }, { running: true });
+    assert.ok(html.includes(label));
+    assert.match(html, />Resume<\/button>/);
+    assert.doesNotMatch(html, />1m 31s</);
+  }
+});
+
+test("a budgeted goal shows token usage in its collapsed row", () => {
+  const html = render({ ...GOAL, tokenBudget: 20_000, tokensUsed: 1500 });
+  assert.match(html, />1.5K \/ 20K tokens</);
 });
 
 test("a goal out of turns asks for more rather than pretending to continue", () => {

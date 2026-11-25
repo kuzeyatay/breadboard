@@ -134,11 +134,20 @@ test('real artifact pane opens legacy SPICE downloads, traces pins, navigates mo
     const loading=page.getByRole('status').filter({hasText:'Loading preview'});
     sourceGate=new Promise(resolve=>{releaseSource=resolve;});body='fresh text';contentType='text/plain';
     await page.evaluate(()=>window.showArtifact({kind:'text',renderer:'text-file',filename:'notes.txt',previewAvailable:true,version:3}));
-    await loading.waitFor();assert.equal(await loading.locator('svg').count(),1);
+    await loading.waitFor();
+    const mark = loading.locator('svg');
+    await page.emulateMedia({ reducedMotion: 'no-preference' });
+    assert.ok(await mark.evaluate(svg => svg.getAnimations().some(animation => animation.animationName === 'spin')));
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    assert.ok(await mark.evaluate(svg => svg.getAnimations().every(animation => animation.animationName !== 'spin')));
+    assert.equal(await mark.isVisible(), true);
+    await page.emulateMedia({ reducedMotion: 'no-preference' });
     releaseSource();await page.getByText('fresh text',{exact:true}).waitFor();await loading.waitFor({state:'hidden'});
+    assert.equal(await page.getByText('fresh text',{exact:true}).getAttribute('data-loading-text-reveal'),'');
     failed=true;
     await page.evaluate(()=>window.showArtifact({kind:'text',renderer:'text-file',filename:'other.txt',previewAvailable:true,version:4}));
     await page.getByRole('alert').filter({hasText:'Preview could not be loaded'}).waitFor();
+    assert.equal(await page.getByRole('alert').filter({hasText:'Preview could not be loaded'}).getAttribute('data-loading-text-reveal'),'');
     assert.equal(await page.getByText('fresh text',{exact:true}).count(),0);
     failed=false;await page.getByRole('button',{name:'Retry',exact:true}).click();
     await page.getByText('fresh text',{exact:true}).waitFor();
@@ -147,10 +156,14 @@ test('real artifact pane opens legacy SPICE downloads, traces pins, navigates mo
     await page.evaluate(()=>window.showArtifact({kind:'image',renderer:'image-file',filename:'plot.svg',previewAvailable:true,version:5}));
     await loading.waitFor();releaseSource();await loading.waitFor({state:'hidden'});
     assert.ok(await page.getByRole('img').evaluate(image=>image.naturalWidth>0));
+    await page.addStyleTag({content:fs.readFileSync(path.join(root,'src/app/globals.css'),'utf8').replace(/^@import .*;$/gm,'')});
     sourceGate=new Promise(resolve=>{releaseSource=resolve;});body='<p>Folder report</p>';contentType='text/html';
     await page.evaluate(()=>window.showArtifact({kind:'html',renderer:'html-file',filename:'report.html',previewAvailable:true,version:6}));
-    await loading.waitFor();releaseSource();await loading.waitFor({state:'hidden'});
+    await loading.waitFor();
+    assert.equal(await page.locator('iframe').evaluate(frame=>getComputedStyle(frame).opacity),'0');
+    releaseSource();await loading.waitFor({state:'hidden'});
     await page.frameLocator('iframe').getByText('Folder report').waitFor();
+    await page.waitForFunction(()=>getComputedStyle(document.querySelector('iframe')).opacity==='1');
 
     // A stalled circuit fetch becomes a retryable error rather than a blank pane.
     sourceGate=new Promise(resolve=>{releaseSource=resolve;});body=oscillator;contentType='text/plain';

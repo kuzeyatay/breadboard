@@ -9,7 +9,7 @@ import { getRuntimeSessionById, recordAuditEvent, runtimeExternalSessionId } fro
 import { getConversationById } from "@/lib/conversations/store.ts";
 import { readHermesConfig } from "@/lib/hermes/config.ts";
 import { directoryForWorkspaceKey } from "@/lib/hermes/workspace.ts";
-import { synthesizeSpeech } from "@/lib/speech/synthesis";
+import { synthesizeNarrationLines } from "@/lib/speech/synthesis";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -65,20 +65,17 @@ export async function POST(request: Request) {
     fs.mkdirSync(folder, { recursive: true });
 
     const files: { index: number; path: string; bytes: number; contentType: string }[] = [];
-    for (const [index, line] of lines.entries()) {
-      const speech = await synthesizeSpeech({ userId: session.user_id, text: line, signal: request.signal })
-        .catch((error: unknown) => {
-          throw new ApiError(409, "speech_unavailable",
-            `The read-aloud voice is unavailable: ${error instanceof Error ? error.message : "speech failed"}. ` +
-            "Tell the user to set it up in Settings → Speech. Do not fall back to an OS voice (SAPI, say, espeak).");
-        });
-      const contentType = speech.headers.get("content-type") ?? "";
-      const audio = new Uint8Array(await speech.arrayBuffer());
-      if (!audio.byteLength) throw new ApiError(502, "speech_empty", `The voice returned no audio for line ${index + 1}.`);
-      const hash = createHash("sha256").update(line).digest("hex").slice(0, 8);
-      const target = path.join(folder, `${String(index + 1).padStart(2, "0")}-${hash}.${extensionFor(contentType)}`);
-      fs.writeFileSync(target, audio);
-      files.push({ index: index + 1, path: target, bytes: audio.byteLength, contentType });
+    const { clips, fallback } = await synthesizeNarrationLines({ userId: session.user_id, lines, signal: request.signal })
+      .catch((error: unknown) => {
+        throw new ApiError(409, "speech_unavailable",
+          `The read-aloud voice is unavailable: ${error instanceof Error ? error.message : "speech failed"}. ` +
+          "Tell the user to set it up in Settings → Speech. Do not fall back to an OS voice (SAPI, say, espeak).");
+      });
+    for (const [index, clip] of clips.entries()) {
+      const hash = createHash("sha256").update(clip.text).digest("hex").slice(0, 8);
+      const target = path.join(folder, `${String(index + 1).padStart(2, "0")}-${hash}.${extensionFor(clip.contentType)}`);
+      fs.writeFileSync(target, clip.audio);
+      files.push({ index: index + 1, path: target, bytes: clip.audio.byteLength, contentType: clip.contentType });
     }
     recordAuditEvent({
       eventType: "speech.synthesized",
@@ -92,7 +89,10 @@ export async function POST(request: Request) {
       data: {
         folder,
         files,
-        note: "Measure each clip with ffprobe and time the picture to it. Mix with ffmpeg; do not re-voice with another engine.",
+        note: "Measure each clip with ffprobe and time the picture to it. Mix with ffmpeg; do not re-voice with another engine." +
+          (fallback
+            ? ` The user's ChatGPT voice was unavailable (${fallback.reason}), so every clip was read by their local Voicebox voice, ${fallback.voice}. Mention this once in your reply.`
+            : ""),
       },
     });
   } catch (error) { return apiErrorResponse(error); }

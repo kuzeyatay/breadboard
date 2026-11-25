@@ -7,15 +7,17 @@
 // server-side from that session, so a browser can never name a goal belonging
 // to a conversation it does not own.
 //
-// Pause, resume, extend and abandon live here and nowhere else. They are the
-// person's half of the contract: the model may only ever mark a goal complete,
-// and only through the audited MCP bridge.
+// Pause, resume, edit, extend and abandon live here and nowhere else. They are the
+// person's controls. The model can report completion or a blocker through the
+// audited MCP bridge.
 
 import { NextResponse } from "next/server";
 import { requireUserId } from "@/lib/server-auth";
 import {
   clearGoalModeState,
+  editGoalModeObjective,
   extendGoalModeBudget,
+  goalObjectiveUpdatedPrompt,
   presentGoalModeState,
   readGoalModeState,
   setGoalModeStatus,
@@ -29,6 +31,9 @@ import {
 import { authorizeRuntimeReference } from "@/lib/hermes/session-service.ts";
 import { ApiError } from "@/lib/hermes/route-core.ts";
 import { latestGoalTurn, scheduleGoalContinuation } from "@/lib/goal-continuation.ts";
+import { getActiveRuntimeRun, parseRuntimeRunDispatch } from "@/lib/hermes/run-store.ts";
+import { getAgentRuntimeByKind } from "@/lib/agent-runtime/runtime.ts";
+import { hermesMessageId } from "@/lib/hermes/message-id.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -47,6 +52,41 @@ function authorizedSession(userId: number, reference: string) {
     throw new ApiError(404, "conversation_not_found", "Conversation not found.");
   }
   return { session, conversation };
+}
+
+async function steerObjectiveUpdate(
+  session: ReturnType<typeof authorizeRuntimeReference>,
+  state: NonNullable<ReturnType<typeof readGoalModeState>>,
+): Promise<void> {
+  const run = getActiveRuntimeRun(session.row.id);
+  if (!run) return;
+  const dispatch = parseRuntimeRunDispatch(run);
+  if (!dispatch.goalMode?.enabled || dispatch.goalMode.readOnly ||
+      (dispatch.goalMode.goalId && dispatch.goalMode.goalId !== state.goal_id)) return;
+  try {
+    await getAgentRuntimeByKind(session.runtimeKind).steerRun({
+      externalSessionId: session.externalSessionId,
+      liveSessionId: session.liveSessionId,
+      workspaceKey: session.workspaceKey,
+      directory: session.activeDirectory,
+      agentName: session.agentName,
+      text: goalObjectiveUpdatedPrompt(state),
+      model: dispatch.model,
+      variant: dispatch.variant,
+      tools: dispatch.tools,
+      system: dispatch.system,
+      clientRequestId: `goal-objective:${state.goal_id}:${state.updated_at}`,
+      messageId: dispatch.clientMessageId ? hermesMessageId(dispatch.clientMessageId) : undefined,
+    });
+  } catch {
+    // The turn may have finished while the edit travelled. The stored
+    // objective is already the new one, so the next turn picks it up.
+    recordAuditEvent({
+      eventType: "goal_mode.objective_steer_failed",
+      runtimeSessionId: session.row.id,
+      payload: { runId: run.id },
+    });
+  }
 }
 
 function goalPayload(conversationPublicId: string) {
@@ -78,6 +118,7 @@ export async function PATCH(request: Request, context: RouteContext) {
     const { session, conversation } = authorizedSession(userId, sessionId);
     const body = (await request.json().catch(() => ({}))) as {
       status?: unknown;
+      objective?: unknown;
       turnBudget?: unknown;
       tokenBudget?: unknown;
     };
@@ -89,33 +130,35 @@ export async function PATCH(request: Request, context: RouteContext) {
         "A goal can only be paused or resumed from here.",
       );
     }
-    // Budget and status arrive together when someone lifts a budget-limited
-    // goal back into motion, and the budget is applied first so the resume
-    // decides against the ceiling that is about to apply rather than the old
-    // one.
-    if (body.turnBudget !== undefined) {
-      const turnBudget = body.turnBudget;
-      if (
-        turnBudget !== null &&
-        (typeof turnBudget !== "number" || !Number.isInteger(turnBudget) || turnBudget <= 0)
-      ) {
-        throw new ApiError(
-          400,
-          "goal_budget_invalid",
-          "A goal turn budget must be a positive whole number, or unlimited.",
-        );
+    const { turnBudget, tokenBudget } = body;
+    for (const [name, budget] of [["turn", turnBudget], ["token", tokenBudget]] as const) {
+      if (budget != null && (typeof budget !== "number" || !Number.isSafeInteger(budget) || budget <= 0)) {
+        throw new ApiError(400, "goal_budget_invalid", `A ${name} budget must be a positive whole number, or unlimited.`);
       }
+    }
+    // Validate the whole change before writing the objective, limits or status.
+    let objectiveEdit: ReturnType<typeof editGoalModeObjective> = null;
+    if (body.objective !== undefined) {
+      if (typeof body.objective !== "string" || !body.objective.trim()) {
+        throw new ApiError(400, "goal_objective_invalid", "A goal needs an objective.");
+      }
+      if (body.objective.trim().length > 4_000) {
+        throw new ApiError(400, "goal_objective_invalid", "A goal objective must be at most 4000 characters.");
+      }
+      objectiveEdit = editGoalModeObjective({
+        conversationPublicId: conversation.public_id,
+        objective: body.objective,
+      });
+      if (!objectiveEdit) {
+        throw new ApiError(404, "goal_not_found", "This conversation has no goal to edit.");
+      }
+    }
+    if (turnBudget !== undefined || tokenBudget !== undefined) {
       extendGoalModeBudget({
         conversationPublicId: conversation.public_id,
-        turnBudget: turnBudget as number | null,
+        turnBudget: turnBudget as number | null | undefined,
+        tokenBudget: tokenBudget as number | null | undefined,
       });
-    }
-    if (body.tokenBudget !== undefined) {
-      const tokenBudget = body.tokenBudget;
-      if (tokenBudget !== null && (typeof tokenBudget !== "number" || !Number.isSafeInteger(tokenBudget) || tokenBudget <= 0)) {
-        throw new ApiError(400, "goal_budget_invalid", "A token budget must be a positive whole number, or unlimited.");
-      }
-      extendGoalModeBudget({ conversationPublicId: conversation.public_id, tokenBudget: tokenBudget as number | null });
     }
     if (status !== undefined) {
       setGoalModeStatus({
@@ -131,11 +174,20 @@ export async function PATCH(request: Request, context: RouteContext) {
       payload: {
         conversationPublicId: conversation.public_id,
         status: status ?? null,
+        objectiveChanged: objectiveEdit?.objectiveChanged ?? false,
         turnBudgetChanged: body.turnBudget !== undefined,
         tokenBudgetChanged: body.tokenBudget !== undefined,
       },
     });
-    if (status === "active") scheduleGoalContinuation(conversation.id);
+    const after = readGoalModeState(conversation.public_id);
+    if (objectiveEdit?.objectiveChanged && after?.status === "active") {
+      // Codex steers the running turn onto the new wording; an idle goal just
+      // continues below, and its next turn reads the new objective anyway.
+      await steerObjectiveUpdate(session, after);
+    }
+    if (after?.status === "active" && (status === "active" || objectiveEdit || tokenBudget !== undefined || turnBudget !== undefined)) {
+      scheduleGoalContinuation(conversation.id);
+    }
     return NextResponse.json(goalPayload(conversation.public_id));
   } catch (error) {
     return apiErrorResponse(error);

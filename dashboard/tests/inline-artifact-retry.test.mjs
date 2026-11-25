@@ -31,6 +31,8 @@ test("a second visualizer version stays in its reply and opens the matching vers
       export const ARTIFACT_BROWSER_EVENT = 'artifact-test-refresh';
       export const artifactDescription = () => 'Interactive model';
       export const artifactPdfHref = () => null;
+      export const artifactVideoHref = () => null;
+      export const useFileExplorerAvailable = () => false;
       export const artifactUrl = a => '/preview?id=' + a.id + '&version=' + a.version;
       export const ArtifactFileIcon = () => null;`,
     "./artifact-image-studio": "export default () => null;",
@@ -54,7 +56,7 @@ test("a second visualizer version stays in its reply and opens the matching vers
       }
       createRoot(document.getElementById('root')).render(<Chat/>);
     ` },
-    bundle: true, write: false, platform: "browser", format: "iife", jsx: "automatic",
+    bundle: true, write: false, outfile: "fixture.js", platform: "browser", format: "iife", jsx: "automatic",
     define: { "process.env.NODE_ENV": '"production"' },
     plugins: [{ name: "unrelated-artifact-editors", setup(builder) {
       builder.onResolve({ filter: /.*/ }, args => args.path in stubs ? { path: args.path, namespace: "fixture" } : null);
@@ -140,6 +142,8 @@ test("artifacts wait for thinking while earlier frames survive retries, branches
       export const ARTIFACT_BROWSER_EVENT = 'artifact-test-refresh';
       export const artifactDescription = () => 'Interactive model';
       export const artifactPdfHref = () => null;
+      export const artifactVideoHref = () => null;
+      export const useFileExplorerAvailable = () => false;
       export const artifactUrl = a => '/preview?id=' + a.id;
       export const ArtifactFileIcon = () => null;`,
     "./artifact-image-studio": "export default () => null;",
@@ -169,7 +173,7 @@ test("artifacts wait for thinking while earlier frames survive retries, branches
       }
       createRoot(document.getElementById('root')).render(<Chat/>);
     ` },
-    bundle: true, write: false, platform: "browser", format: "iife", jsx: "automatic",
+    bundle: true, write: false, outfile: "fixture.js", platform: "browser", format: "iife", jsx: "automatic",
     define: { "process.env.NODE_ENV": '"production"' },
     plugins: [{ name: "unrelated-artifact-editors", setup(builder) {
       builder.onResolve({ filter: /.*/ }, args => args.path in stubs ? { path: args.path, namespace: "fixture" } : null);

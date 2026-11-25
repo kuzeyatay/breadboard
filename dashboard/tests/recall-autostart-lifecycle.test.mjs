@@ -132,7 +132,7 @@ test("the root mount rechecks authentication after client navigation", () => {
   );
 
   assert.match(component, /const pathname = usePathname\(\)/);
-  assert.match(component, /getSession\(\)/);
+  assert.match(component, /getSession\(\{ broadcast: false \}\)/);
   assert.match(component, /announceRecallAutostart\(\{/);
   assert.match(component, /\}, \[pathname\]\)/);
 });

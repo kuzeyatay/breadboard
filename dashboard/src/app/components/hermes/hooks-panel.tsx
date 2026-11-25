@@ -130,6 +130,15 @@ const PROVIDERS: ProviderDef[] = [
     ],
   },
   {
+    id: "message_starred",
+    label: "Answer starred",
+    emoji: "⭐",
+    fields: [{ key: "matcher", label: "Answer contains", placeholder: "Optional word or pattern", optional: true, plain: true }],
+    internal: true,
+    summary: "when you star an answer",
+    instructions: ["Runs when you add a star to an assistant answer in a saved chat."],
+  },
+  {
     id: "prompt_submitted",
     label: "Prompt sent",
     emoji: "✉️",

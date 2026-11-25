@@ -86,8 +86,10 @@ test("the create route stages quarantine only and never promotes", () => {
   const route = read("src/app/api/hermes/skills/create/route.ts");
   assert.match(route, /requireUserId/);
   assert.match(route, /requireEnabled/);
-  assert.match(route, /quarantineSkill/);
-  assert.match(route, /skill\.authored_quarantined/);
+  assert.match(route, /stageAuthoredSkill\(userId, body\)/);
+  const staging = read("src/lib/hermes/stage-authored-skill.ts");
+  assert.match(staging, /quarantineSkill/);
+  assert.match(staging, /skill\.authored_quarantined/);
   assert.doesNotMatch(route, /promoteSkill/);
 });
 

@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
 import { toolSearchPath } from "../../../scripts/host-path.mjs";
+import { sameRuntimePath as samePath } from "../../../scripts/runtime-v2-paths.mjs";
 
 export const LOCAL_MCP_PROFILE_REVISION = 1 as const;
 
@@ -60,8 +61,10 @@ interface LaunchOptions extends ProfileOptions {
   now?: number;
 }
 
+export class LocalMcpProfileError extends Error {}
+
 function fail(message: string): never {
-  throw new Error(message);
+  throw new LocalMcpProfileError(message);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -71,12 +74,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function exactRecord(value: unknown, keys: string[]): value is Record<string, unknown> {
   return isRecord(value) &&
     Object.keys(value).sort().join(",") === [...keys].sort().join(",");
-}
-
-function samePath(left: string, right: string): boolean {
-  const a = path.resolve(left);
-  const b = path.resolve(right);
-  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 
 function safeSlug(value: string): string {
@@ -556,6 +553,17 @@ export function prepareApprovedLocalMcpLaunch(
   }, LAUNCH_ENVELOPE_LIFETIME_MS + 5_000);
   cleanup.unref?.();
   return { envelopePath, expiresAtMs };
+}
+
+/** Discard the broker artifacts of a private, one-use installation probe. */
+export function discardLocalMcpProbe(userId: number, slug: string) {
+  if (!/^probe-[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(slug)) fail("Invalid probe scope.");
+  const root = registryRoot();
+  for (const branch of ["definitions", "launch"] as const) {
+    const directory = scopeDirectory(root, branch, userId, slug);
+    for (const file of fs.readdirSync(directory)) fs.unlinkSync(path.join(directory, file));
+    fs.rmdirSync(directory);
+  }
 }
 
 export function isApprovedLocalMcpProfileReference(

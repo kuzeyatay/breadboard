@@ -9,6 +9,7 @@ test('Terminal lighting shares random and album palettes, blend phase, and playb
     stdin: {resolveDir: path.resolve(import.meta.dirname, '..'), loader: 'tsx', contents: `
       import React from 'react'; import {createRoot} from 'react-dom/client';
       import Background from './src/app/components/spotify-ambient-background';
+      import AmbientFrameGovernorRuntime from './src/app/components/ambient-frame-governor-runtime';
       import {SpotifyAmbientProvider, useSpotifyAmbientSource, usePublishSpotifyAmbient} from './src/app/components/spotify-ambient-context';
       function App() {
         const [sample, setSample] = React.useState(undefined);
@@ -21,12 +22,13 @@ test('Terminal lighting shares random and album palettes, blend phase, and playb
           <div id="preview"><Background theme="dark" randomColors/></div></>;
       }
       createRoot(document.getElementById('root')).render(<React.StrictMode>
+        <AmbientFrameGovernorRuntime/>
         <SpotifyAmbientProvider ownerKey={new URLSearchParams(location.search).get('owner') ?? 'same-user'}><App/></SpotifyAmbientProvider>
       </React.StrictMode>);
     `}, bundle: true, write: false, platform: 'browser', format: 'iife', jsx: 'automatic', outfile: 'sync.js',
   });
   const js = bundle.outputFiles.find(file => file.path.endsWith('.js')).text;
-  const css = bundle.outputFiles.find(file => file.path.endsWith('.css')).text;
+  const css = '#main { --bb-ambient-fps: 30; }\n' + bundle.outputFiles.find(file => file.path.endsWith('.css')).text;
   const browser = await chromium.launch({headless: true, channel: 'msedge'});
   try {
     const context = await browser.newContext();

@@ -24,7 +24,7 @@ const WORKSPACE_KEY = "breadboard:office:workspace";
 const ACCEPT = OFFICE_KINDS.flatMap(info => info.extensions.map(ext => `.${ext}`)).join(",");
 
 /** What each tile makes. Whiteboard is an AFFiNE page that opens in edgeless mode. */
-interface Tile { id: string; info: OfficeKindInfo; label: string; detail: string; whiteboard?: boolean }
+interface Tile { id: string; info: OfficeKindInfo; label: string; detail: string; whiteboard?: boolean; templateId?: string }
 const kind = (id: string) => officeKind(id)!;
 const TILES: Tile[] = [
   { id: "docx", info: kind("docx"), label: "Docs", detail: ".docx" },
@@ -96,6 +96,7 @@ export default function SpacesHome({ ownerKey }: { ownerKey: string }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [creating, setCreating] = useState<Tile | null>(null);
+  const [templates, setTemplates] = useState<Tile[]>([]);
   const [title, setTitle] = useState(""), [brief, setBrief] = useState("");
   const dialog = useRef<HTMLDialogElement>(null), upload = useRef<HTMLInputElement>(null);
 
@@ -106,7 +107,11 @@ export default function SpacesHome({ ownerKey }: { ownerKey: string }) {
   const load = useCallback(async () => {
     window.clearTimeout(retry.current.timer);
     try {
-      const body = await request<{ files: OfficeFile[]; workspaces: OfficeWorkspace[] }>("/api/office/files");
+      const body = await request<{ files: OfficeFile[]; workspaces: OfficeWorkspace[]; templates?: Array<{ id: string; name: string; kind: string; extension: string }> }>("/api/office/files");
+      setTemplates((body.templates ?? []).flatMap(template => {
+        const info = officeKind(template.kind);
+        return info ? [{ id: template.id, templateId: template.id, info, label: template.name, detail: "." + template.extension }] : [];
+      }));
       loaded.current = true; retry.current.delay = 1_000;
       setFiles(body.files); setWorkspaces(body.workspaces); setError(current => current === LOAD_ERROR ? "" : current);
       setWorkspace(current => {
@@ -164,9 +169,9 @@ export default function SpacesHome({ ownerKey }: { ownerKey: string }) {
 
   const open = (file: { id: string; gardenId: string }, ask?: string) => router.push(spacesEditHref(file, ask));
 
-  const startCreate = (tile: Tile) => { setCreating(tile); setTitle(""); setBrief(""); setError(""); dialog.current?.showModal(); };
+  const startCreate = (tile: Tile) => { setCreating(tile); setTitle(tile.templateId ? tile.label : ""); setBrief(""); setError(""); dialog.current?.showModal(); };
   // Bread writes documents; for a design it works in the open design. Pages and videos start empty.
-  const breadWrites = creating ? ["docx", "xlsx", "pptx", "md", "html", "pdf", "png"].includes(creating.info.kind) : false;
+  const breadWrites = creating && !creating.templateId ? ["docx", "xlsx", "pptx", "md", "html", "pdf", "png"].includes(creating.info.kind) : false;
 
   const create = async (withBread: boolean) => {
     if (!creating || busy) return;
@@ -181,7 +186,7 @@ export default function SpacesHome({ ownerKey }: { ownerKey: string }) {
       }
       const { file } = await request<{ file: GardenFileEntry }>("/api/office/files", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ kind: creating.info.kind, gardenId, title: name, whiteboard: creating.whiteboard === true }),
+        body: JSON.stringify({ kind: creating.info.kind, gardenId, title: name, whiteboard: creating.whiteboard === true, templateId: creating.templateId }),
       });
       dialog.current?.close();
       const ask = !withBread ? undefined : creating.info.kind === "png"
@@ -276,7 +281,7 @@ export default function SpacesHome({ ownerKey }: { ownerKey: string }) {
         <h1 className={styles.greeting}>What would you like to create today?</h1>
 
         <div className={styles.tiles}>
-          {TILES.map(tile => <button key={tile.id} type="button" className={styles.tile} onClick={() => startCreate(tile)} disabled={files === null}>
+          {[...TILES, ...templates].map(tile => <button key={tile.id} type="button" className={styles.tile} onClick={() => startCreate(tile)} disabled={files === null}>
             <SpacesFileBadge info={tile.info} whiteboard={tile.whiteboard} />
             <span className={styles.tileName}>{tile.label}</span>
             <span className={styles.tileExt}>{tile.detail}</span>

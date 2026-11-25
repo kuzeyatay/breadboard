@@ -1,4 +1,5 @@
 import { hasSquircleCorners, squircleCornerPoint, SQUIRCLE_QUARTER_LENGTH } from "../../../lib/squircle-corner";
+import { setAmbientEffectPlaying } from "../../../lib/ambient-frame-governor";
 
 const SPEED_PX_PER_SECOND = 90;
 const CORNER_STEPS = 12;
@@ -20,7 +21,7 @@ function borderTrajectory(width: number, height: number, radius: number, squircl
 
   point(radius, 0);
   // Each straight edge is followed by a sampled quarter circle. The browser
-  // interpolates the transforms between samples; JavaScript never ticks frames.
+  // interpolates these transforms at both native and shared-clock playback rates.
   for (let side = 0; side < 4; side++) {
     distance += side % 2 === 0 ? horizontal : vertical;
     const cx = side < 2 ? width - radius : radius;
@@ -43,7 +44,7 @@ function borderTrajectory(width: number, height: number, radius: number, squircl
   return { keyframes, duration: perimeter / SPEED_PX_PER_SECOND * 1000 };
 }
 
-export function startComposerBeam(surface: HTMLElement) {
+export function startComposerBeam(surface: HTMLElement, sharedClock = false) {
   const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
   let active = false;
   let visible = true;
@@ -64,7 +65,8 @@ export function startComposerBeam(surface: HTMLElement) {
     const playing = shouldPlay();
     for (const { animation } of tracks) {
       if (!animation) continue;
-      if (playing && animation.playState !== "running") animation.play();
+      if (sharedClock) setAmbientEffectPlaying(surface.ownerDocument, animation, playing);
+      else if (playing && animation.playState !== "running") animation.play();
       else if (!playing && animation.playState !== "paused") animation.pause();
     }
   }
