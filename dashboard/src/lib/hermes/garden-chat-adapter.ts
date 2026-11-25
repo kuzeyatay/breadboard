@@ -3,6 +3,7 @@ import { codeWithoutRepositoryDirective, codexDriveDirective, isCodeWritingReque
 import { gardenHasRepository } from "../code-index/create-repository.ts";
 import { modelLaunchableRuntimeAgents } from "./capability-combinations.ts";
 import { recallEarlierConversations } from "../conversations/earlier-chats.ts";
+import { recentActivityContext } from "../conversations/recent-activity.ts";
 import { isBareProviderError } from "../provider-error.ts";
 import { voiceReplyWithOpener } from "../speech/voice-opener-context.ts";
 import { parseBrowserTerminalAccess } from "../browser-terminal.ts";
@@ -1129,6 +1130,10 @@ export async function openGardenAgentChat(
         // "We talked about X before": the earlier chat may be on any surface.
         recallEarlierConversations({ userId, conversationId: conversation.id, query: resolved.userText || text, gardenId: session.row.cluster_id,
           surface: "garden_chat", temporary: conversation.temporary, personalize: payload.personalize !== false, internal: payload.internalAgentContinuation === true }),
+        // What the user was just doing in their other chats and PDFs.
+        await recentActivityContext({ userId, conversationId: conversation.id, query: resolved.userText || text, gardenId: session.row.cluster_id,
+          surface: "garden_chat", temporary: conversation.temporary, personalize: payload.personalize !== false,
+          internal: payload.internalAgentContinuation === true, allowedTools: decision.allowedTools }),
         // Directly after memory, so the repository reads as something the
         // assistant knows about this Garden rather than a tool it was handed.
         repository?.systemContext ?? "",

@@ -35,3 +35,18 @@ export const DIRECT_PROVIDER_PROMPT = [
       "You can read the messages supplied in this conversation. Never claim to have read external files, written, run, saved, sent, or remembered anything through tools.",
       "Use supplied current-location context when geography affects the answer. If no current area or user-specified destination is available, do not assume a country from the conversation language, device time zone, or an earlier assistant guess; ask for the region only when needed.",
     ].join("\n");
+
+/**
+ * How a turn uses the `# recent_activity` stack (conversations/recent-activity.ts):
+ * connect and explain when an item relates, stay silent when none does.
+ */
+export const RECENT_ACTIVITY_PROMPT = [
+  "Below is what the user was doing in Breadboard shortly before this message: their latest questions in other chats, with the gist of the answer they got, the PDF pages they were reading, the websites they opened, and what was recently added to their Gardens (uploaded files and new pages). It is there so your answer can build on what they were just studying.",
+  "When something recently added to a Garden covers the current question, point the user to it by Garden and page title (\"You added Chapter 37 to your Neuro Comp Garden on Thursday; its page on spike coding covers this\") and use what it says, searching that Garden if your tools allow.",
+  "Use an item only when it genuinely relates to the current question: the same concept, the same object seen from another course, or a step the user is building on. When one does, connect it explicitly in the answer and explain the link so it stands on its own:",
+  "1. Say where and when (\"Earlier in your Math 1 chat you asked how to find the intersection of two planes\").",
+  "2. Recall in a sentence or two what that answer established, in plain words, defining any term it relied on.",
+  "3. Show step by step how it applies to what they are asking now, and what the connection adds (\"so the dashed line here is exactly that kind of intersection: …\").",
+  "A website, PDF page or earlier question about the same topic as the current question is always relevant: the user was just studying it. Name it and relate your answer to it (\"The GeeksforGeeks page on the Perceptron Convergence Theorem you opened a few minutes ago proves exactly this; here is its argument in plain words: …\"), saying what it covers and what your answer adds or clarifies. Do this even when you would explain the topic anyway.",
+  "Leave unrelated items out entirely. Never list this activity back to the user, and do not mention that you can see it unless an item is relevant. If an earlier answer was wrong or incomplete, correct it rather than repeating it.",
+].join("\n");

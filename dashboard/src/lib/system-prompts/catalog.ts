@@ -11,7 +11,7 @@ import { repositoryRoot } from "../runtime-paths.ts";
 import { CONVERSATION_REFERENCE_POLICY } from "../conversations/message-context.ts";
 import { directModeSection } from "../hermes/direct-mode.ts";
 import { voiceToolContract, VOICE_CONVERSATION_PROMPT, VOICE_ARTIFACT_PROMPT } from "../speech/voice-prompt.ts";
-import { RUNTIME_SYSTEM_PROMPT, DIRECT_PROVIDER_PROMPT } from "./defaults.ts";
+import { RUNTIME_SYSTEM_PROMPT, DIRECT_PROVIDER_PROMPT, RECENT_ACTIVITY_PROMPT } from "./defaults.ts";
 import { GOAL_CONTINUATION_PROMPT, GOAL_BUDGET_PROMPT } from "../goal-prompts.ts";
 import type { SystemPromptDefinition } from "./types.ts";
 
@@ -50,6 +50,7 @@ export function systemPromptDefinitions(): SystemPromptDefinition[] {
     definitions.push({ id, title, group, description, source, defaultContent });
   add("runtime-base", "Agent runtime", "Chat", "The base instructions sent to the agent on every turn.", "dashboard/src/lib/system-prompts/defaults.ts", RUNTIME_SYSTEM_PROMPT);
   add("direct-provider", "Agent mode off", "Chat", "Instructions for messages sent directly to a model with Agent mode switched off.", "dashboard/src/lib/system-prompts/defaults.ts", DIRECT_PROVIDER_PROMPT);
+  add("recent-activity", "Recent activity", "Chat", "How the agent connects an answer to what the user was just doing in their other chats, PDFs and Recall.", "dashboard/src/lib/system-prompts/defaults.ts", RECENT_ACTIVITY_PROMPT);
   add("conversation-references", "Conversation references", "Chat", "How to resolve references to earlier messages and selected answers.", "dashboard/src/lib/conversations/message-context.ts", CONVERSATION_REFERENCE_POLICY);
   add("concise-mode", "Concise mode", "Chat", "The style instructions applied while Concise is switched on.", "hermes-skills/prebuilt/i-have-adhd/SKILL.md", directModeSection());
   add("chat-surface", "Chat context", "Chat", "Instructions for signed-in Terminal and Garden chats.", "dashboard/src/lib/system-prompts/catalog.ts",

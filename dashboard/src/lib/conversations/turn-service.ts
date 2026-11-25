@@ -105,6 +105,7 @@ import { loadConversationMemoryBundle } from "./memory.ts";
 import { personalTurnPrompt } from "../personal-context/resolve.ts";
 import { answerFeedbackContext } from "../hermes/answer-signals.ts";
 import { recallEarlierConversations } from "./earlier-chats.ts";
+import { recentActivityContext } from "./recent-activity.ts";
 import {
   findAgencyAgent,
   renderAgencyAgentPersona,
@@ -1894,6 +1895,11 @@ export async function startConversationTurn(
       // "We talked about X before": the earlier chat may be on any surface.
       recallEarlierConversations({ userId: input.conversation.user_id, conversationId: input.conversation.id, query: resolved.userText || input.text,
         gardenId: session.row.cluster_id, surface: input.surface, temporary: input.conversation.temporary, personalize: input.personalize, internal: Boolean(input.internalAgentContinuation || input.chatCoordination) }),
+      // What the user was just doing in their other chats and PDFs, so the
+      // answer can connect to it (the Math 1 question before a Neuro Comp one).
+      await recentActivityContext({ userId: input.conversation.user_id, conversationId: input.conversation.id, query: resolved.userText || input.text,
+        gardenId: session.row.cluster_id, surface: input.surface, temporary: input.conversation.temporary, personalize: input.personalize,
+        internal: Boolean(input.internalAgentContinuation || input.chatCoordination), allowedTools: decision.allowedTools }),
       // Not on a quick question about a selection: the answer there is a few lines in a popover.
       input.textSelection?.mode === "inline" ? "" : chatWorkspaceNotice(db, input.conversation.public_id),
       superAgentInventory
