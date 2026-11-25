@@ -59,6 +59,7 @@ import {
   recordAgentLaunchRequest,
   releaseAgentLaunchRequestSlot,
   reserveAgentLaunchRequestSlot,
+  agentLaunchRepeats,
 } from "@/lib/hermes/agent-launch-store.ts";
 import { MAX_PARALLEL_AGENT_LAUNCHES } from "@/lib/hermes/agent-launch.ts";
 import { unifiedWorkflowSelectionAllows, unifiedWorkflowRepeatsCompletedWork } from "@/lib/workflows/unified-command.ts";
@@ -271,11 +272,18 @@ export async function POST(request: Request) {
     // Independent workers get distinct hidden transcript turns, so a Super
     // Agent may staff a small batch in one response. The ceiling prevents a
     // model loop from turning one user message into an unbounded fan-out.
+    if (agentLaunchRepeats(run.id, agent.id, brief)) {
+      throw new ApiError(
+        409,
+        "agent_launch_repeated",
+        `${agent.name} was already started with this exact brief in this turn. Use that run's result, or give a different brief for a different job.`,
+      );
+    }
     if (!reserveAgentLaunchRequestSlot(run.id)) {
       throw new ApiError(
         429,
         "agent_launch_batch_limit_reached",
-        `This assistant turn already launched ${MAX_PARALLEL_AGENT_LAUNCHES} workers. Finish the batch with those results before starting another round.`,
+        `This assistant turn already staged ${MAX_PARALLEL_AGENT_LAUNCHES} launches. Finish the batch with those results before starting another round.`,
       );
     }
     try {
@@ -351,7 +359,9 @@ export async function POST(request: Request) {
       brief,
       reason,
       awaitResult,
-      requiresApproval: agent.requiresLaunchApproval,
+      // YOLO (and Super Agent, which runs with it) launches without a
+      // separate start chip; otherwise the agent's own policy applies.
+      requiresApproval: agent.requiresLaunchApproval && dispatch.teamApproval !== true,
       originClientMessageId,
       ...(startedRun ? { startedRun } : {}),
     });

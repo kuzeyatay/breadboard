@@ -3,7 +3,8 @@ import { requireUserId } from "@/lib/server-auth";
 import { ApiError, apiErrorResponse } from "@/lib/hermes/route-helpers.ts";
 import { getRuntimeSessionById, listRuntimeSessionsForConversation, recordAuditEvent, setRuntimeStatus } from "@/lib/hermes/runtime-store.ts";
 import { getActiveRuntimeRun, getLatestRuntimeRun, parseRuntimeRunDispatch } from "@/lib/hermes/run-store.ts";
-import { cancelConversationTurn, cancelLatestConversationTurn, failAssistantMessage, getConversationForUser } from "@/lib/conversations/store.ts";
+import { cancelConversationTurn, cancelLatestConversationTurn, failAssistantMessage, getConversationById, getConversationForUser } from "@/lib/conversations/store.ts";
+import { readGoalModeState, setGoalModeStatus } from "@/lib/goal-mode.ts";
 import { finishExternalAgentTurn } from "@/lib/conversations/external-agent-turns.ts";
 import { cancelRunningExternalAgentRuns } from "@/lib/conversations/external-agent-cancel.ts";
 import { cancelRuntimeSessionWork } from "@/lib/hermes/session-cancel.ts";
@@ -54,6 +55,17 @@ export async function POST(
         if (clientMessageId) failAssistantMessage({
           conversationId, clientMessageId, status: "aborted", error: "cancelled_by_user",
         });
+      }
+    }
+    // Stop on a goal turn means stop, not "start the next goal turn": the
+    // finished stream and the goal card's poll would otherwise both schedule a
+    // continuation the moment this run ends. Pause before the runtime unwinds;
+    // Resume on the goal card picks it back up.
+    if (!inlineTurnId && conversationId !== null) {
+      const publicId = conversation?.public_id ?? getConversationById(conversationId)?.public_id;
+      const goal = publicId ? readGoalModeState(publicId) : null;
+      if (publicId && goal && goal.status !== "complete" && goal.status !== "paused") {
+        setGoalModeStatus({ conversationPublicId: publicId, status: "paused" });
       }
     }
     // Seal before awaiting network cleanup so a still-preparing request sees

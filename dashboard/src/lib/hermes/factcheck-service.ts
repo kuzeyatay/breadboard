@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { repositoryRoot } from "../runtime-paths.ts";
+import { toolSearchPath } from "../../../scripts/host-path.mjs";
 
 /**
  * The deterministic half of the vendored `SerhiiKorniienko/bullshit-detector`
@@ -149,7 +150,7 @@ function configuredValue(value: string | undefined): string | null {
 }
 
 function findOnPath(command: string, env: NodeJS.ProcessEnv): string | null {
-  const entries = (env.PATH ?? env.Path ?? "").split(path.delimiter);
+  const entries = toolSearchPath(env);
   const names = process.platform === "win32"
     ? [`${command}.exe`, `${command}.cmd`, command]
     : [command];

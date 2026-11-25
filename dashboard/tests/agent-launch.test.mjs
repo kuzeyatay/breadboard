@@ -160,12 +160,15 @@ test("the launch store is per-run, capped, and forgets on demand", async () => {
     [second],
   );
 
-  // A turn that keeps asking is told to stop rather than silently dropped.
+  // No small per-turn cap (the route refuses a repeated brief instead), but a
+  // runaway turn is still told to stop rather than silently dropped.
   for (let index = 0; index < 10; index += 1) request("run-3");
-  assert.equal(store.countAgentLaunchRequests("run-3"), 4);
+  assert.equal(store.countAgentLaunchRequests("run-3"), 10);
+  for (let index = 10; index < 256; index += 1) request("run-3");
+  assert.equal(store.countAgentLaunchRequests("run-3"), 256);
   assert.equal(request("run-3"), null);
 
-  for (let index = 0; index < 4; index += 1) {
+  for (let index = 0; index < 256; index += 1) {
     assert.equal(store.reserveAgentLaunchRequestSlot("run-reserved"), true);
   }
   assert.equal(store.reserveAgentLaunchRequestSlot("run-reserved"), false);
@@ -378,7 +381,8 @@ test("the continuation carries the outcome and repairs failures while respecting
   assert.doesNotMatch(retainedResearch, /Say what failed and what you would do about it/);
 
   assert.ok(MAX_AGENT_LAUNCH_HOPS >= 2 && MAX_AGENT_LAUNCH_HOPS <= 6);
-  assert.equal(MAX_PARALLEL_AGENT_LAUNCHES, 4);
+  // Codex-like: no small fixed cap on launches; machine memory bounds them.
+  assert.ok(MAX_PARALLEL_AGENT_LAUNCHES >= 64);
 });
 
 test("agent-result continuations stay in context without impersonating the user", () => {
@@ -421,7 +425,7 @@ test("a delegated research hand-back remains one populated assistant field", () 
   ]) {
     assert.match(
       sourceText,
-      /storedMessage\.delegatedAgentRun === true &&\s*!storedMessage\.godsEyeRun &&\s*messages\[index \+ 1\]\?\.internalAgentContinuation === true/,
+      /storedMessage\.delegatedAgentRun === true &&\s*!storedMessage\.godsEyeRun &&\s*isDelegationPrompt\(messages\[index \+ 1\]\)/,
       `${surface} must fold the delegated owner into its continuation`,
     );
     assert.match(
@@ -637,11 +641,11 @@ test("every model-launchable agent uses structured same-message delegation", asy
   // semantics in the rendered transcript.
   assert.match(
     runtimePanel,
-    /storedMessage\.delegatedAgentRun === true &&\s*!storedMessage\.godsEyeRun &&\s*messages\[index \+ 1\]\?\.internalAgentContinuation === true/,
+    /storedMessage\.delegatedAgentRun === true &&\s*!storedMessage\.godsEyeRun &&\s*isDelegationPrompt\(messages\[index \+ 1\]\)/,
   );
   assert.match(
     garden,
-    /storedMessage\.delegatedAgentRun === true &&\s*!storedMessage\.godsEyeRun &&\s*messages\[index \+ 1\]\?\.internalAgentContinuation === true/,
+    /storedMessage\.delegatedAgentRun === true &&\s*!storedMessage\.godsEyeRun &&\s*isDelegationPrompt\(messages\[index \+ 1\]\)/,
   );
   assert.match(terminal, /continuedDelegatedTurnsRef/);
   assert.match(garden, /continuedDelegatedRunsRef/);
@@ -673,7 +677,7 @@ test("the answer a delegation hands back survives a reload", () => {
   // answer needs none of its own.
   assert.match(
     runtimePanel,
-    /messages\[index - 1\]\?\.internalAgentContinuation === true/,
+    /isDelegationPrompt\(messages\[index - 1\]\)/,
   );
   // Redo re-asks the question rather than resending the worker's hand-back.
   assert.match(runtimePanel, /retryTargetUserMessageIndex\(\s*\n?\s*messages,/);
@@ -930,7 +934,7 @@ test("the hand-back turn carries the delegation into its own evidence", () => {
   // whether the delegation is read at all.
   assert.match(
     conversationTurns,
-    /const carriedDelegations = input\.internalAgentContinuation[\s\S]{0,160}carriedExternalAgentsForContinuation\(/,
+    /const workerHandback = input\.internalAgentContinuation === true[\s\S]*const carriedDelegations = workerHandback[\s\S]{0,160}carriedExternalAgentsForContinuation\(/,
   );
   assert.match(
     gardenAdapter,
@@ -1034,7 +1038,7 @@ test("the visible answer reports the whole delegated operation's duration", () =
   assert.match(superAgentActivity, /containsDelegatedWorker/);
   assert.match(
     superAgentActivity,
-    /message\.role === "user"[\s\S]{0,100}message\.internalAgentContinuation === true[\s\S]{0,40}break/,
+    /message\.role === "user"[\s\S]{0,100}isDelegationPrompt\(message\)[\s\S]{0,40}break/,
   );
   for (const [name, text] of [
     ["runtimePanel", runtimePanel],

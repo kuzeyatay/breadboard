@@ -8,6 +8,7 @@ import {
   rankBridgePages,
   renderGardenBridgeContext,
   restateForBridge,
+  fallbackTopicTerms,
   shouldBridgeGardens,
 } from "../src/lib/hermes/garden-bridge.ts";
 import { embeddingCentering } from "../src/lib/thought-topology/scoring.ts";
@@ -236,4 +237,23 @@ test("a turn that asked for the bridge carries pages from the user's own Gardens
     else process.env.QUARTZ_CONTENT_PATH = oldRoot;
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("a highlight question's passage reaches the restater, since the question alone names no topic", async () => {
+  let prompt = "";
+  const restated = await restateForBridge({
+    request: "so its the line where two planes meet?",
+    selection: "The thicker dashed line is the decision boundary of the perceptron.",
+    fetcher: async (_url, init) => {
+      prompt = JSON.parse(init.body).messages[1].content;
+      return new Response(JSON.stringify({ choices: [{ message: { content: "Structure: A linear decision boundary.\nTopics: Hyperplanes" } }] }));
+    },
+  });
+  assert.match(prompt, /passage the question is about[\s\S]*decision boundary[\s\S]*BEGIN QUESTION[\s\S]*two planes meet/);
+  assert.deepEqual(restated?.topics, ["Hyperplanes"]);
+});
+
+test("with no restater, the question's own key terms stand in for topic names", () => {
+  assert.deepEqual(fallbackTopicTerms("is that a hyperplane?"), ["hyperplane"]);
+  assert.deepEqual(fallbackTopicTerms("can you explain the difference again"), []);
 });

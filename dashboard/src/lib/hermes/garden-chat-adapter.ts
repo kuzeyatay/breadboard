@@ -13,7 +13,7 @@ import { codeOriginPrompt } from "../conversations/origin-label.ts";
 import { hermesPromptText } from "../agent-runtime/hermes-prompt.ts";
 import { selectedGardenDocumentContext, selectedGardenDocumentQuestionPrompt } from "./garden-reader.ts";
 import { agentPreferencesContext } from "../agent-preferences/store.ts";
-import { retrieveTerminalGardenGrounding } from "./terminal-garden-grounding.ts";
+import { retrieveTerminalGardenGrounding, withGardenConnections } from "./terminal-garden-grounding.ts";
 import { normalizeChatTextSelectionReference } from "../chat-text-selection.ts";
 // Compatibility adapter for the existing garden workspace chat UI.
 // It preserves that UI's SSE contract while replacing its model transport with
@@ -23,6 +23,7 @@ import path from "node:path";
 import db from "../db.ts";
 import { persistAssistantProgress } from "../conversations/live-progress.ts";
 import { recordQuestionNotification, resolveQuestionNotification } from "../chat-notifications/questions.ts";
+import { recordApprovalNotification } from "../chat-notifications/approvals.ts";
 import { normalizeChatTokenUsage } from "../chat-token-usage.ts";
 import { requireUserId } from "../server-auth.ts";
 import { getAgentRuntimeByKind } from "../agent-runtime/runtime.ts";
@@ -1074,13 +1075,20 @@ export async function openGardenAgentChat(
         : [];
     const gardenSourceInventory = await gardenSourceInventoryContext(clusterSlug);
     const gardenGrounding = await retrieveTerminalGardenGrounding({
-      userId, request: resolved.userText || text, plan: prepared.plan,
+      // What was asked decides whether Garden material belongs in the turn,
+      // not the reach Super Agent or YOLO added on top of it.
+      userId, request: resolved.userText || text, plan: prepared.requestedPlan,
       activeGardenSlug: clusterSlug, hasAttachments: Boolean(attachments?.length || selectedSlugs.length),
       // See turn-service.ts: withheld with Personalize off, in speech, and on
-      // turns that are not a person asking a fresh question.
+      // worker hand-backs. A highlight question is a person asking, and the
+      // one most likely to need the bridge: "is that a hyperplane?" asked in
+      // Neuro Comp is answered by a Math 1 page.
       bridge: payload.personalize !== false && payload.voice !== true &&
-        payload.internalAgentContinuation !== true && !payload.textSelection && !payload.selectedText,
+        payload.internalAgentContinuation !== true,
       priorRequests,
+      selection: textSelection?.quote ??
+        normalizeQuartzAssistantSelection(payload.selectedTextContext)?.text ??
+        (typeof payload.selectedText === "string" ? payload.selectedText : undefined),
     });
     const runSystem = composeHermesSystemPrompt({
       userId,
@@ -1259,7 +1267,7 @@ export async function openGardenAgentChat(
         : [];
     // A Garden selection is shown as an attachment chip. Carry its reading in
     // this user turn so a resumed session cannot rely on stale system context.
-    const runtimeText = selectedGardenDocumentQuestionPrompt(
+    const runtimeText = withGardenConnections(selectedGardenDocumentQuestionPrompt(
       quartzAssistantSelectionQuestionPrompt(
         voiceReplyWithOpener(
           resolved.text || "Acknowledge the persona selection briefly and ask how you can help.",
@@ -1269,7 +1277,7 @@ export async function openGardenAgentChat(
         normalizeQuartzAssistantSelection(payload.selectedTextContext) ?? payload.selectedText,
       ),
       selectedDocumentEvidence,
-    );
+    ), gardenGrounding.connections);
     let run: ReturnType<typeof beginRuntimeRun>;
     try {
       // Document retrieval, command resolution, and skill preparation can take
@@ -2045,6 +2053,14 @@ function legacyGardenEventStream(
           emitAgentLaunchRequests();
           if (event.type === "permission.requested") {
             emit({ type: "permission", ...event.payload });
+            recordApprovalNotification(db, {
+              runtimeSessionId: session.row.id,
+              runId,
+              requestId: event.payload.requestId,
+              description: event.payload.description,
+              command: event.payload.command,
+              allowSession: event.payload.allowSession,
+            });
             recordAuditEvent({
               eventType: "permission.requested",
               runtimeSessionId: session.row.id,

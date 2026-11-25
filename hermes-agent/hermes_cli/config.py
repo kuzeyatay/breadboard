@@ -949,6 +949,9 @@ DEFAULT_CONFIG = {
         # Extra model-call windows for one client-managed desktop/TUI turn.
         # Reuse saved history and the active client turn. 0 disables renewal.
         "max_auto_continuations": 8,
+        # A correction sent while tools run stops the running tool batch so
+        # the model answers it at once. false: wait for the batch to finish.
+        "instant_steer": True,
         # Inactivity timeout for gateway agent execution (seconds).
         # The agent can run indefinitely as long as it's actively calling
         # tools or receiving API responses.  Only fires when the agent has
@@ -2393,7 +2396,8 @@ DEFAULT_CONFIG = {
                                      # (floor 30s) to enforce a hard cap.
         "reasoning_effort": "",  # subagent effort: "ultra", "max", "xhigh", "high",
                                  # "medium", "low", "minimal", "none" (empty = inherit)
-        "max_concurrent_children": 3,  # unified concurrency cap: max parallel children per batch
+        # max_concurrent_children: unset, so delegate_tool sizes it to the machine
+        # (at least 6, like Codex); a batch larger than it queues instead of failing.
                                        # AND max concurrent background (background=true)
                                        # delegation units. New async dispatches beyond the cap
                                        # fall back to synchronous execution. Floor of 1, no ceiling.

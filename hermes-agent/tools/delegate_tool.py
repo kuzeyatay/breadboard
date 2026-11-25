@@ -159,7 +159,19 @@ def _get_subagent_approval_callback():
 # "delegation" toolset in _build_child_agent), NOT by the model naming toolsets
 # — the model has no toolsets argument. Subagents inherit the parent's toolsets.
 
-_DEFAULT_MAX_CONCURRENT_CHILDREN = 3
+def _auto_concurrent_children() -> int:
+    """How many subagents run at once when the user has not set a number.
+
+    Codex runs up to 6 agent threads by default (DEFAULT_AGENT_MAX_THREADS) and
+    counts only running ones. Subagents here are mostly waiting on the model
+    API, so the machine's cores are a fair bound: at least Codex's 6, at most 16.
+    This is a running limit, not a cap on how many tasks may be handed out:
+    a larger batch queues and each task starts as a slot frees up.
+    """
+    return max(6, min(16, os.cpu_count() or 6))
+
+
+_DEFAULT_MAX_CONCURRENT_CHILDREN = _auto_concurrent_children()
 # One-shot guard: the high-concurrency cost advisory is emitted at most once
 # per process. _get_max_concurrent_children() runs on every get_definitions()
 # schema rebuild (via _build_top_level_description / _build_tasks_param_description),
@@ -2610,14 +2622,8 @@ def delegate_task(
         tasks = recovered_tasks
 
     if tasks and isinstance(tasks, list):
-        if len(tasks) > max_children:
-            return tool_error(
-                f"Too many tasks: {len(tasks)} provided, but "
-                f"max_concurrent_children is {max_children}. "
-                f"Either reduce the task count, split into multiple "
-                f"delegate_task calls, or increase "
-                f"delegation.max_concurrent_children in config.yaml."
-            )
+        # No cap on the batch: max_children bounds how many run at once, and
+        # the pool below queues the rest (Codex counts running agents too).
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
         task_list = [{"goal": goal, "context": context, "role": top_role}]

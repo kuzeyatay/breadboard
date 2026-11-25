@@ -2,14 +2,14 @@
 
 import { memo, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import Link from "next/link";
 import AttachmentPreviewDialog, {
+  documentPreviewSource,
+  storedFilePreviewSource,
   type AttachmentPreviewSource,
 } from "@/app/components/attachment-preview-dialog";
 import ModelAttachmentViewer from "@/app/components/model-attachment-viewer";
 import { ChatVideoAttachmentCard } from "@/app/components/chat-video-link-embed";
 import {
-  chatAttachmentHref,
   visibleChatMessageAttachments,
   type ChatMessageAttachment,
 } from "@/lib/chat-attachments";
@@ -387,11 +387,17 @@ function ChatMessageAttachments({
             ))}
             {fileEntries.map((attachment, index) => {
               const key = `${attachment.name}-${index}`;
-              // A stored document has a reader of its own, so its chip is a
-              // way into it rather than a label. Everything else stays a label:
-              // there is nowhere for it to go.
-              const viewerHref = chatAttachmentHref(attachment);
-              if (!viewerHref) {
+              // A stored file opens in a popup over the chat: documents in
+              // their reader (a workbook as a spreadsheet), ordinary files as
+              // text, a grid or a rendering. A name with no stored bytes stays
+              // a label: there is nothing to open.
+              const preview =
+                attachment.type === "document"
+                  ? documentPreviewSource(attachment)
+                  : attachment.type === "file" && "blobId" in attachment && typeof attachment.blobId === "string" && attachment.blobId
+                    ? storedFilePreviewSource({ name: attachment.name, blobId: attachment.blobId })
+                    : null;
+              if (!preview) {
                 return (
                   <span key={key} className={FILE_CHIP_CLASS}>
                     <PaperclipIcon />
@@ -399,36 +405,16 @@ function ChatMessageAttachments({
                   </span>
                 );
               }
-              if (
-                attachment.type === "document" &&
-                attachment.format === "pdf"
-              ) {
-                return (
-                  <AttachmentPreviewDialog
-                    key={key}
-                    source={{
-                      kind: "pdf",
-                      name: attachment.name,
-                      href: viewerHref,
-                    }}
-                    className={`${FILE_CHIP_CLASS} cursor-pointer transition-colors hover:border-[var(--botanical)] hover:text-[var(--ink)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--botanical)]`}
-                    title={`Open ${attachment.name}`}
-                  >
-                    <PaperclipIcon />
-                    <span className="truncate">{attachment.name}</span>
-                  </AttachmentPreviewDialog>
-                );
-              }
               return (
-                <Link
+                <AttachmentPreviewDialog
                   key={key}
-                  href={viewerHref}
-                  className={`${FILE_CHIP_CLASS} transition-colors hover:border-[var(--botanical)] hover:text-[var(--ink)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--botanical)]`}
+                  source={preview}
+                  className={`${FILE_CHIP_CLASS} cursor-pointer transition-colors hover:border-[var(--botanical)] hover:text-[var(--ink)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--botanical)]`}
                   title={`Open ${attachment.name}`}
                 >
                   <PaperclipIcon />
                   <span className="truncate">{attachment.name}</span>
-                </Link>
+                </AttachmentPreviewDialog>
               );
             })}
           </div>

@@ -205,6 +205,7 @@ import { cachedVideoSource, ensureVideoSource } from "../video-sources/resolve.t
 import type { VideoAttachmentFormat } from "../video-attachments.ts";
 import {
   retrieveTerminalGardenGrounding,
+  withGardenConnections,
   type TerminalGardenGrounding,
 } from "../hermes/terminal-garden-grounding.ts";
 import { connectedAppRegistryForTurn } from "../hermes/unified-tool-registry.ts";
@@ -1695,19 +1696,25 @@ export async function startConversationTurn(
     });
   }
   const gardenGrounding: TerminalGardenGrounding =
-    input.surface === "dashboard_terminal" || input.surface === "garden_chat"
+    // Every surface: Quartz too. Grounding reads only the Gardens this viewer
+    // may open (listAuthorizedGardens), so a reader never sees another's notes.
+    input.surface === "dashboard_terminal" || input.surface === "garden_chat" || input.surface === "quartz_ai"
       ? await retrieveTerminalGardenGrounding({
           userId: input.conversation.user_id,
           request: resolved.userText || input.text,
-          plan: prepared.plan,
+          // The request's own plan: Super Agent and YOLO add operational reach
+          // to every turn, which would otherwise withhold the Gardens from all of them.
+          plan: prepared.requestedPlan,
           hasAttachments: Boolean(input.attachments?.length),
           activeGardenSlug: context.activeGardenSlug ?? session.row.garden_id,
           // Withheld wherever the user's own material is: Personalize off,
-          // speech (no time for a second model call), and turns that are not
-          // a person asking a fresh question.
+          // speech (no time for a second model call), and worker hand-backs.
+          // A highlight question is a person asking; its passage names the
+          // subject the bridge looks for in the user's other Gardens.
           bridge: input.personalize !== false && !input.voice &&
-            !input.internalAgentContinuation && !input.textSelection,
+            !input.internalAgentContinuation,
           priorRequests,
+          selection: input.textSelection?.quote,
         })
       : { attempted: false, sources: [], context: "" };
   if (gardenGrounding.attempted) {
@@ -2059,7 +2066,7 @@ export async function startConversationTurn(
     input.voice && input.personalize !== false && input.surface !== 'quartz_ai' && !input.conversation.temporary && !input.internalAgentContinuation
       ? input.voiceOpener : undefined,
   );
-  const runtimeText = input.chatCoordination
+  const runtimeText = withGardenConnections(input.chatCoordination
     ? `Message from chat ${JSON.stringify(input.chatCoordination.sourceTitle)} (${input.chatCoordination.sourceChatId}):\n\n${defaultRuntimeText}`
     : input.textSelection
     ? chatTextSelectionQuestionPrompt(
@@ -2069,7 +2076,7 @@ export async function startConversationTurn(
       )
     : input.scheduledRunContext
     ? `${input.scheduledRunContext}\n\n${defaultRuntimeText}`
-    : defaultRuntimeText;
+    : defaultRuntimeText, gardenGrounding.connections);
   const requiredVisualizerSkill = selectedInteractiveVisualizerSkill(
     new Set(
       resolved.invocations
@@ -2222,6 +2229,8 @@ export async function startConversationTurn(
     instruction: resolved.userText || input.text,
     dispatch: {
       teamApproval: approvalPolicy.yoloMode,
+      // Read by the capability decision layer: a turn nobody can answer gets no card.
+      interactive: approvalPolicy.interactive,
       ...(input.swarmWorker ? { swarmWorker: { runId: input.swarmWorker.runId, taskKey: input.swarmWorker.taskKey,
         workflowId: input.swarmWorker.executor.kind === "workflow" ? input.swarmWorker.executor.id : undefined } } : {}),
       ...(resolved.workflowSelection ? { workflowSelection: resolved.workflowSelection } : {}),

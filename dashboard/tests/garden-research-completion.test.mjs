@@ -63,6 +63,7 @@ test("Garden delivers research once after live completion, missed events, and ch
     import {assistantExternalAgentRunId,externalAgentCardContent,externalAgentResponseDurationMs,reconcileExternalAgentMessages} from './src/lib/conversations/external-agent-runs.ts';
     import {agentLaunchContinuationMessage,MAX_AGENT_LAUNCH_HOPS} from './src/lib/hermes/agent-launch.ts';
     import {gardenTurnCompletedOnServer} from './src/lib/hermes/garden-response-stream.ts';
+    import {preserveInlineQuestionMessages,reconcileInlineQuestionMessages,retireCompletedInlineQuestionViewers} from './src/lib/conversations/garden-inline-question.ts';
     window.streams=[]; window.submissions=[];
     class FakeEvents {
       constructor(url){this.url=url;this.listeners={};window.streams.push(this)}

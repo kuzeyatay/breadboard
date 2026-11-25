@@ -1,0 +1,10 @@
+export function expandWindowsVariables(value: string, env?: NodeJS.ProcessEnv): string;
+export function parseRegQueryPath(output: string): string;
+export function wellKnownToolDirectories(env?: NodeJS.ProcessEnv): string[];
+export function hostSearchPath(env?: NodeJS.ProcessEnv, options?: { now?: number }): string[];
+export function withHostPath(env?: NodeJS.ProcessEnv): NodeJS.ProcessEnv;
+export function resolveHostExecutable(name: string, env?: NodeJS.ProcessEnv): string | null;
+export function resetHostPathCacheForTest(): void;
+export function toolSearchPath(env?: NodeJS.ProcessEnv): string[];
+export function parseRegQueryValues(output: string): Record<string, string>;
+export function registryUserEnvironment(env?: NodeJS.ProcessEnv): Record<string, string>;

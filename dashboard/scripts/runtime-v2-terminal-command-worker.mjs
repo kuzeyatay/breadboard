@@ -3,7 +3,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import os from "node:os";
+
 import { runRuntimeV2FiniteMcpWorker } from "./runtime-v2-finite-mcp-worker-core.mjs";
+import { registryUserEnvironment, withHostPath } from "./host-path.mjs";
 
 const MAX_COMMAND_BYTES = 2_000;
 const MAX_PATH_BYTES = 32 * 1024;
@@ -102,6 +105,31 @@ export function legacyWindowsPath(value) {
   if (/^\\\\\?\\UNC\\/i.test(value)) return `\\\\${value.slice(8)}`;
   if (/^\\\\\?\\[a-z]:\\/i.test(value)) return value.slice(4);
   return value;
+}
+
+// The environment the user's command runs in. Runtime V2 hands this worker a
+// closed PATH (bundled runtimes + System32), so `git`, `python`, `uv`,
+// `docker`, `gh`, `code` were "not recognized" although installed. Like Codex
+// (WINDOWS_CORE_ENV_VARS + inherited PATH), the command gets the user's real
+// PATH after the bundled folders, and the core Windows identity variables.
+export function commandEnvironment(source = process.env) {
+  const env = withHostPath(sealedEnvironment(source));
+  if (process.platform === "win32") {
+    for (const name of ["USERNAME", "USERDOMAIN", "PROGRAMW6432", "COMPUTERNAME", "PSModulePath"]) {
+      const key = Object.keys(source).find((candidate) => candidate.toUpperCase() === name.toUpperCase());
+      if (key && source[key] !== undefined && !(key in env)) env[key] = source[key];
+    }
+    // Variables the user set in Windows (JAVA_HOME, license modes, SDK roots),
+    // minus secrets; values already in the sealed environment win.
+    const present = new Set(Object.keys(env).map((key) => key.toUpperCase()));
+    for (const [name, value] of Object.entries(registryUserEnvironment(source))) {
+      if (!present.has(name.toUpperCase())) env[name] = value;
+    }
+    if (!Object.keys(env).some((key) => key.toUpperCase() === "USERNAME")) {
+      try { env.USERNAME = os.userInfo().username; } catch { /* no identity to add */ }
+    }
+  }
+  return env;
 }
 
 export function sealedEnvironment(source = process.env) {
@@ -208,7 +236,7 @@ export async function executeTerminalCommand(launch, signal, progress) {
     cwd: workspaceRoot,
     windowsHide: true,
     detached: process.platform !== "win32",
-    env: sealedEnvironment(),
+    env: commandEnvironment(),
     stdio: ["ignore", "pipe", "pipe"],
   });
   const state = {

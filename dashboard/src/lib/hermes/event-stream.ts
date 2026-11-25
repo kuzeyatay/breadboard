@@ -11,7 +11,9 @@ import { leastPrivilegeDecision } from "./dispatch-core.ts";
 import { productSearchTurnEvent } from "../product-search/turn.ts";
 import db from "../db.ts";
 import { persistAssistantProgress } from "../conversations/live-progress.ts";
+import { intermediateResponsesEnabled } from "./intermediate-responses.ts";
 import { recordQuestionNotification, resolveQuestionNotification } from "../chat-notifications/questions.ts";
+import { recordApprovalNotification } from "../chat-notifications/approvals.ts";
 import { getAgentRuntimeByKind } from "../agent-runtime/runtime.ts";
 import { runtimeStartupResourceFailure } from "../agent-runtime/startup-error.ts";
 import { encodeSseEvent, type NormalizedAgentEvent } from "./events.ts";
@@ -231,6 +233,12 @@ function driveSessionEventPump(
   let runtimeSubscription = new AbortController();
 
   let assistantText = "";
+  // Live drafts follow the user's Settings switch, read once per turn. Each
+  // forwarded delta carries a sequence number so the client's replay
+  // de-duplication (byte-identical frames) never drops a repeated token.
+  const streamIntermediateResponses = initialSession.row.user_id === null
+    || intermediateResponsesEnabled(initialSession.row.user_id);
+  let deltaSequence = 0;
   let answerModel: string | undefined;
   let usedFallback = false;
   let reasoning = "";
@@ -486,11 +494,13 @@ function driveSessionEventPump(
         assistantText = narrationSegments[narrationSegments.length - 1];
       }
     };
-    // A raw delta is ambiguous until the model either starts a tool (making it
-    // progress narration) or completes the turn (making it the answer). Hold it
-    // server-side and reveal the answer exactly once at a terminal boundary.
-    // This prevents text from appearing in the answer bubble and then being
-    // erased a moment later when a tool call classifies it as provisional.
+    // Raw deltas stream to the client as a live draft (Codex-style), but a
+    // delta is still ambiguous until the model either starts a tool (making it
+    // progress narration) or completes the turn (making it the answer). The
+    // client moves a draft into the progress notes when assistant.segment
+    // classifies it, and this emits the authoritative answer exactly once at a
+    // terminal boundary as replacementText, which replaces whatever draft the
+    // client accumulated (including any frames lost to a reconnect).
     const emitStableAnswer = () => {
       if (stableAnswerEmitted) return;
       promoteNarrationFallback();
@@ -565,6 +575,7 @@ function driveSessionEventPump(
         awaitingPermission,
         finalized: persisted,
         timedOut: silentStreamTimedOut,
+        runAgeMs: streamRun ? now - Date.parse(streamRun.started_at) : undefined,
       });
       if (!decision) return;
       if (decision.kind === "rebind") {
@@ -581,11 +592,15 @@ function driveSessionEventPump(
           code:
             decision.kind === "inactivity_timeout"
               ? "runtime_stream_stalled"
-              : "runtime_stream_silent",
+              : decision.kind === "dispatch_timeout"
+                ? "runtime_dispatch_stalled"
+                : "runtime_stream_silent",
           message:
             decision.kind === "inactivity_timeout"
               ? "The agent stopped responding partway through this turn. The turn was stopped so you can try again."
-              : "The agent accepted this turn but never sent any output. The turn was stopped so you can try again.",
+              : decision.kind === "dispatch_timeout"
+                ? "The agent could not be reached to start this turn. The turn was stopped so you can try again."
+                : "The agent accepted this turn but never sent any output. The turn was stopped so you can try again.",
           recoverable: true,
         },
       });
@@ -1129,11 +1144,16 @@ function driveSessionEventPump(
             assistantMessageId ??= event.messageId;
             assistantText += event.payload.text;
             sawTurnOutput = sawTurnOutput || event.payload.text.length > 0;
-            // Do not paint an unclassified model segment as an answer. If a
-            // tool follows, the upcoming assistant.segment event presents it
-            // permanently as a progress note; otherwise emitStableAnswer shows
-            // it once as the final response.
-            forwardEvent = false;
+            // Forward the delta so the user sees an intermediate answer while
+            // the turn runs. It is a provisional draft: if a tool follows, the
+            // upcoming assistant.segment moves it into the progress notes;
+            // otherwise emitStableAnswer replaces it with the final response.
+            // With intermediate responses off, hold it until that moment.
+            if (streamIntermediateResponses) {
+              (event as { seq?: number }).seq = ++deltaSequence;
+            } else {
+              forwardEvent = false;
+            }
             // Speech can consume public words as they arrive. Keep this on a
             // separate channel: the chat bubble still waits for classification,
             // and private reasoning never enters the speech stream. A segment
@@ -1161,6 +1181,9 @@ function driveSessionEventPump(
             // clients can present it as a permanent progress note without ever
             // drawing it in the answer bubble first.
             event.payload.progressIndex = narrationSegments.length;
+            // Surfaces that cannot read the account switch themselves (the
+            // Quartz reader) learn from the event whether to draw it inline.
+            (event.payload as { inline?: boolean }).inline = streamIntermediateResponses;
             if (event.payload.streamed) {
               const sealed = assistantText.trim()
                 ? assistantText
@@ -1245,6 +1268,16 @@ function driveSessionEventPump(
             );
             recordCompletedTool(event);
           } else if (event.type === "permission.requested") {
+            // Answerable from a notification, so a turn nobody is watching
+            // does not just wait out its card.
+            recordApprovalNotification(db, {
+              runtimeSessionId: session.row.id,
+              runId: streamRun.id,
+              requestId: event.payload.requestId,
+              description: event.payload.description,
+              command: event.payload.command,
+              allowSession: event.payload.allowSession,
+            });
             recordAuditEvent({
               eventType: "permission.requested",
               runtimeSessionId: session.row.id,

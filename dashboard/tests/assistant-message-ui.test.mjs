@@ -211,7 +211,8 @@ test("tool-boundary prose stays behind the thinking disclosure", () => {
     eventStream.indexOf('if (event.type === "assistant.delta")'),
     eventStream.indexOf('} else if (event.type === "assistant.segment")'),
   );
-  assert.match(serverDelta, /forwardEvent = false/);
+  assert.match(serverDelta, /if \(streamIntermediateResponses\) \{[\s\S]*?\.seq = \+\+deltaSequence;[\s\S]*?\} else \{\s*forwardEvent = false;/,
+    "deltas stream as a live draft unless intermediate responses are off");
 
   const serverCompletion = eventStream.slice(
     eventStream.indexOf('} else if (event.type === "assistant.completed")'),
@@ -241,7 +242,8 @@ test("tool-boundary prose stays behind the thinking disclosure", () => {
     agentSession.indexOf('case "reasoning.status":'),
   );
   assert.match(clientSegment, /progressNotes/);
-  assert.doesNotMatch(clientSegment, /content: ""/);
+  assert.match(clientSegment, /payload\.streamed === true\)[\s\S]*?content: ""/,
+    "a classified streamed draft moves out of the answer bubble into the progress notes");
   assert.match(activity, /progressNotes\?: string\[\]/);
   assert.match(activity, /data-response-progress/);
   assert.match(activity, /aria-label="Thinking updates"/);
@@ -255,7 +257,7 @@ test("tool-boundary prose stays behind the thinking disclosure", () => {
   assert.match(gardenAssistant, /assistantVisibleContent/);
   assert.match(runtime, /progressNotes=\{thinkingUpdates\}/);
   assert.match(workspace, /progressNotes=\{thinkingUpdates\}/);
-  assert.match(gardenAssistant, /progressNotes=\{delegatedThinkingUpdates\(message\)\}/);
+  assert.match(gardenAssistant, /progressNotes=\{hideNotes \? \[\] : delegatedThinkingUpdates\(message\)\}/);
   assert.match(eventStream, /progressNotes\.length \? \{ progressNotes \} : \{\}/);
   assert.match(sessionPresentation, /metadata\.progressNotes/);
 });

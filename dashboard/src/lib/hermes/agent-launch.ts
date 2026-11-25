@@ -46,8 +46,12 @@ export interface AgentLaunchRequestPayload {
  */
 export const MAX_AGENT_LAUNCH_HOPS = 4;
 
-/** Independent workers a single Super Agent turn may start together. */
-export const MAX_PARALLEL_AGENT_LAUNCHES = 4;
+/**
+ * Launches a turn may stage before its batch is shown. No longer a cap on
+ * staffing (see agent-launch-store.ts): a turn may start as many distinct
+ * agents as the job needs; repeats of the same brief are refused as a loop.
+ */
+export const MAX_PARALLEL_AGENT_LAUNCHES = 256;
 
 /** Stable client id used when a pre-batch event does not yet carry one. */
 export function agentLaunchWorkerClientMessageId(

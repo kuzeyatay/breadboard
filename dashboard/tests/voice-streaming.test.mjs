@@ -66,7 +66,7 @@ test('the API emits a speech-only channel for an active voice run; stopped and t
   function run(voice,status){
     const emitted=[];
     new Function('event','parseRuntimeRunDispatch','getRuntimeRun','emit',`
-      let assistantMessageId,assistantText='',sawTurnOutput=false,forwardEvent=true;
+      let assistantMessageId,assistantText='',sawTurnOutput=false,forwardEvent=true,deltaSequence=0;const streamIntermediateResponses=true;
       const streamRun={id:'test'};const narrationSegments=[];
       for(const once of [0]){${code}}
       return {assistantText,forwardEvent};

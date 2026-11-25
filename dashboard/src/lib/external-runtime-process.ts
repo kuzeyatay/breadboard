@@ -18,3 +18,4 @@ function loadRuntimeProcess(): NodeChildProcess {
 const runtimeProcess = loadRuntimeProcess();
 export const externalRuntimeSpawn: NodeChildProcess["spawn"] = runtimeProcess.spawn;
 export const externalRuntimeSpawnSync: NodeChildProcess["spawnSync"] = runtimeProcess.spawnSync;
+export const externalRuntimeExecFileSync: NodeChildProcess["execFileSync"] = runtimeProcess.execFileSync;

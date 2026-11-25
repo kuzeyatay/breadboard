@@ -985,7 +985,7 @@ export class TabManager {
     const senderUrl = sender.getURL();
     const hideDock = page === sender ? await page.insertCSS("[data-side-chat-dock] { opacity: 0 !important; }") : null;
     try {
-      let image = await capturePageWithFreshFrame(page);
+      let image = await capturePageWithFreshFrame(page, { beyondViewport: false });
       if (target() !== page || page.isDestroyed() || page.getURL() !== url || sender.getURL() !== senderUrl) return null;
       const { width, height } = image.getSize();
       if (Math.max(width, height) > 1920) image = image.resize(width >= height ? { width: 1920 } : { height: 1920 });

@@ -17,6 +17,9 @@
 
 import { memo, useMemo, useState, type ReactNode } from "react";
 import BreadboardVideoPlayer from "@/app/components/breadboard-video-player";
+import AttachmentPreviewDialog, {
+  type AttachmentPreviewSource,
+} from "@/app/components/attachment-preview-dialog";
 import type { ChatMessageAttachment } from "@/lib/chat-attachments";
 import { paletteFromCover, type PlayerPalette } from "@/lib/spotify/player-palette";
 import { videoSourceFor, videoUrlsIn, type VideoSource } from "@/lib/video-sources/identity";
@@ -169,32 +172,48 @@ function VideoCardShell({
   href,
   title,
   caption,
+  preview,
   children,
 }: {
   vertical?: boolean;
   href: string;
   title?: string;
   caption: string;
+  /** An attached file opens in the popup player rather than a new tab. */
+  preview?: AttachmentPreviewSource;
   children: ReactNode;
 }) {
-  // Enlarging is left to the player itself: YouTube, TikTok and Instagram ship
-  // a fullscreen control inside their iframes (delegated via allow="fullscreen"),
-  // and the native <video> has one in its controls. A second button here only
-  // ever duplicated that.
+  // A pasted link's caption goes to the site it came from. An attached file
+  // has nowhere better than the conversation, so its caption opens the same
+  // popup player every other attachment opens in.
   return (
     <div className={`w-full ${vertical ? "max-w-[min(17rem,64vw)]" : "max-w-[min(32rem,72vw)]"}`}>
       <div className="neu-surface-raised w-full overflow-hidden rounded-[22px] border border-[var(--line)] p-1">
         {children}
         <div className="flex items-center px-2 pt-1">
-          <a
-            href={href}
-            target="_blank"
-            rel="noreferrer"
-            className="min-w-0 flex-1 truncate text-xs text-[var(--ink-muted)] hover:text-[var(--ink-heading)] hover:underline"
-            title={title}
-          >
-            {caption} ↗
-          </a>
+          {preview ? (
+            <AttachmentPreviewDialog
+              source={preview}
+              className="flex min-w-0 flex-1 items-center gap-1 text-left text-xs text-[var(--ink-muted)] hover:text-[var(--ink-heading)]"
+              title={`Open ${preview.name} in a larger player`}
+            >
+              <span className="min-w-0 flex-1 truncate hover:underline">{caption}</span>
+              <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden className="shrink-0">
+                <path d="M10 2h4v4M14 2l-4.5 4.5" />
+                <path d="M6 14H2v-4M2 14l4.5-4.5" />
+              </svg>
+            </AttachmentPreviewDialog>
+          ) : (
+            <a
+              href={href}
+              target="_blank"
+              rel="noreferrer"
+              className="min-w-0 flex-1 truncate text-xs text-[var(--ink-muted)] hover:text-[var(--ink-heading)] hover:underline"
+              title={title}
+            >
+              {caption} ↗
+            </a>
+          )}
         </div>
       </div>
     </div>
@@ -248,7 +267,12 @@ export function ChatVideoAttachmentCard({
   const [posterFailed, setPosterFailed] = useState(false);
   const showFrame = nativelyPlayable && !posterFailed;
   return (
-    <VideoCardShell href={href} title={name} caption={sizeLabel ? `${name} · ${sizeLabel}` : name}>
+    <VideoCardShell
+      href={href}
+      title={name}
+      caption={sizeLabel ? `${name} · ${sizeLabel}` : name}
+      preview={{ kind: "video", name, href: playbackHref, downloadHref: href }}
+    >
       <div className="relative aspect-video w-full overflow-hidden rounded-[18px] bg-black">
         {playing ? (
           <BreadboardVideoPlayer src={playbackHref} title={name} autoPlay className="absolute inset-0 h-full w-full" />

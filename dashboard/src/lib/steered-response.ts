@@ -4,6 +4,8 @@ export interface CourseCorrectionBoundary {
   id: string;
   content: string;
   offset: number;
+  /** Progress notes written before this steer, when the row recorded it. */
+  noteIndex?: number;
   textSelection?: ChatTextSelectionReference;
 }
 
@@ -95,4 +97,54 @@ export function splitSteeredResponse(
     });
   }
   return segments;
+}
+
+export type ProgressTimelineItem<T> =
+  | { kind: "note"; key: string; text: string }
+  | { kind: "correction"; correction: T };
+
+/**
+ * Lay out a response's progress notes inline in the transcript (Codex-style
+ * commentary), with each steer between the notes at the point it was sent.
+ *
+ * - A steer with no `noteIndex` (older rows) or sent before the first note
+ *   keeps its existing place above the whole response (`leading`).
+ * - A steer sent after `noteIndex` notes, before any answer text, follows
+ *   note `noteIndex` in the timeline.
+ * - A steer that split visible answer text (`offset > 0`) stays in the answer.
+ *
+ * The last note is not repeated when it is also the answer (a turn that ended
+ * after narration promotes its final note to the answer).
+ */
+export function interleaveProgressNotes<T extends { offset: number; noteIndex?: number }>(
+  notes: readonly string[],
+  corrections: readonly T[],
+  answer: string,
+): { leading: T[]; timeline: ProgressTimelineItem<T>[]; inline: T[] } {
+  const visible = notes.filter((note) => note.trim());
+  if (visible.length && answer.trim() && visible[visible.length - 1].trim() === answer.trim()) {
+    visible.pop();
+  }
+  const leading: T[] = [];
+  const inline: T[] = [];
+  const after = new Map<number, T[]>();
+  for (const correction of corrections) {
+    if (correction.offset > 0) {
+      inline.push(correction);
+      continue;
+    }
+    const index = correction.noteIndex;
+    if (typeof index !== "number" || index <= 0 || visible.length === 0) {
+      leading.push(correction);
+      continue;
+    }
+    const slot = Math.min(index, visible.length);
+    after.set(slot, [...(after.get(slot) ?? []), correction]);
+  }
+  const timeline: ProgressTimelineItem<T>[] = [];
+  visible.forEach((text, i) => {
+    timeline.push({ kind: "note", key: `note-${i}`, text });
+    for (const correction of after.get(i + 1) ?? []) timeline.push({ kind: "correction", correction });
+  });
+  return { leading, timeline, inline };
 }

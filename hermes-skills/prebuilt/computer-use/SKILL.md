@@ -4,6 +4,7 @@ description: Operate graphical desktop applications with Hermes Agent, using bac
 license: MIT
 allowed-tools:
   - computer_use
+  - open_app
 ---
 
 # Computer Use
@@ -21,6 +22,17 @@ breadboard:
   requiredRuntimes: []
   requiredMcpServers: []
   optionalMcpServers: []
+
+## Starting an app
+
+Start a desktop app with `open_app`, never with `terminal_execute_command`
+or `Start-Process`. Terminal commands run inside a sandbox job that is closed
+when the command ends, and Windows kills every app that command started, so
+the window never appears. `open_app` launches from Breadboard's desktop shell,
+outside that job: pass the Start menu name ("Mendix Studio Pro 11.17.0"), an
+absolute `.exe` path with `args`, or a project/document path (such as an
+`.mpr`) to open it in its associated app. Wait a few seconds, then find the
+window with `computer_use` before acting.
 
 ## When to use it
 

@@ -171,3 +171,11 @@ condition = "AND"
 paths = ['''^dashboard/tests/browser-ai-flag-ui\.test\.mjs$''']
 regexTarget = "match"
 regexes = ['''aiflag-ui-test-secret-0123456789''']
+
+[[allowlists]]
+description = "Hermes instant-steer test placeholder key"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^hermes-agent/tests/run_agent/test_instant_steer\.py$''']
+regexTarget = "match"
+regexes = ['''test-key-1234567890''']

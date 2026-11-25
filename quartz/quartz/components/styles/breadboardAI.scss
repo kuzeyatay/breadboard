@@ -408,6 +408,27 @@
       align-self: flex-start;
       color: #e5e7eb;
     }
+    // Intermediate responses: Bread's commentary before a tool call, in the
+    // transcript above its answer. Muted so the answer stays the focus.
+    .breadboard-ai-progress-note {
+      align-self: flex-start;
+      position: relative;
+      padding-left: 0.9rem;
+      color: #9ca3af;
+      font-size: 0.82rem;
+      line-height: 1.5;
+      &::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 0.55em;
+        width: 0.35rem;
+        height: 0.35rem;
+        border-radius: 999px;
+        background: currentColor;
+        opacity: 0.6;
+      }
+    }
     .breadboard-ai-command-text {
       color: var(--bb-ai-command);
       font-weight: 500;

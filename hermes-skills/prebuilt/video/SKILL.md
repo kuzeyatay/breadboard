@@ -4,6 +4,7 @@ description: Make a video from a description and publish it as an MP4, with musi
 license: MIT
 allowed-tools:
   - video_render
+  - speech_synthesize
 ---
 
 # Video
@@ -86,6 +87,28 @@ rejects the first two of these; the rest are on you.
 - Numbers get units and plain formatting: "42 ms", "3 of 5", "12%".
 
 The same rules apply to narration text.
+
+## Videos you assemble yourself
+
+Sometimes the video is footage you put together rather than a Remotion
+composition: a screencast of an app, a walkthrough over slides or exported
+images, stitched with ffmpeg. The same rules apply, plus these:
+
+- Voice every line with `speech_synthesize`. It speaks with the user's
+  read-aloud voice, the same one `video_render` uses, and returns one file per
+  line. Never use an OS voice (Windows SAPI or System.Speech, macOS `say`,
+  espeak, pyttsx3); they sound robotic and read as generated. If
+  `speech_synthesize` says speech is off, tell the user instead of falling back.
+- No progress chrome. No slide or step counter ("01 / 13", "Demo 1 of 2"), no
+  breadcrumb or eyebrow line above the title, no course code or file name
+  stamped in a corner, no footer bar on every frame. The viewer can see where
+  they are.
+- Titles, when a shot needs one at all, are sentence case and short. Never
+  all caps, never letter-spaced small caps.
+- Narration does not read the slide title or number aloud and does not say
+  "on this slide" or "in this section". Talk about the thing on screen.
+- Let the footage fill the frame. Do not shrink a screen recording into a card
+  with a title band over it.
 
 ## Look
 

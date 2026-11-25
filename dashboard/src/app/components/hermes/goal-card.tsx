@@ -195,11 +195,18 @@ export default function GoalCard({
   }, [ticking]);
 
   const send = useCallback(
-    async (init: RequestInit) => {
+    async (init: RequestInit, optimistic?: (current: GoalCardState | null) => GoalCardState | null) => {
       const target = endpointRef.current;
       const version = ++requestVersion.current;
       mutating.current = true;
-      setBusy(true);
+      // Pause and Abandon show at once; the server's answer then confirms or
+      // rolls back. Waiting on the round trip read as a Stop that did nothing.
+      let before: GoalCardState | null = null;
+      if (optimistic) {
+        setGoal((current) => { before = current; return optimistic(current); });
+      } else {
+        setBusy(true);
+      }
       try {
         const response = await fetch(target, init);
         if (!response.ok) throw new Error('goal_update_failed');
@@ -210,6 +217,7 @@ export default function GoalCard({
         }
       } catch {
         if (endpointRef.current === target && version === requestVersion.current) {
+          if (optimistic) setGoal(before);
           setError('That change to the goal did not take.');
         }
       } finally {
@@ -238,7 +246,9 @@ export default function GoalCard({
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
-    });
+    }, body.status === 'paused'
+      ? (current) => (current ? { ...current, status: 'paused' } : current)
+      : undefined);
 
   const turnBudget = goal.turnBudget;
   const tokenBudget = goal.tokenBudget ?? null;
@@ -367,7 +377,7 @@ export default function GoalCard({
               disabled={busy}
               onClick={() => {
                 setConfirmingAbandon(false);
-                void send({ method: 'DELETE' });
+                void send({ method: 'DELETE' }, () => null);
               }}
             >
               Abandon

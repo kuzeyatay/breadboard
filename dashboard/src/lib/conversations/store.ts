@@ -1285,6 +1285,8 @@ export function appendConversationSteerMessage(input: {
   clarificationAnswer?: boolean;
   targetClientMessageId?: string;
   assistantContentOffset?: number;
+  /** Progress notes already written when the steer was sent. */
+  progressNoteIndex?: number;
 }, database: Database.Database = db): ConversationMessageRow {
   const clientMessageId = normalizeClientMessageId(input.clientMessageId);
   const content = normalizeMessageContent(input.content);
@@ -1317,6 +1319,10 @@ export function appendConversationSteerMessage(input: {
       : {}),
     ...(input.assistantContentOffset !== undefined
       ? { courseCorrectionOffset: input.assistantContentOffset }
+      : {}),
+    ...(input.progressNoteIndex !== undefined &&
+      Number.isSafeInteger(input.progressNoteIndex) && input.progressNoteIndex >= 0
+      ? { courseCorrectionNoteIndex: input.progressNoteIndex }
       : {}),
   });
   const append = database.transaction(() => {
@@ -1485,6 +1491,45 @@ function finishAssistantMessage(input: {
     );
     if (!row) throw new ConversationStoreError(404, "turn_not_found", "Conversation turn not found.");
     if (row.status !== "pending") {
+      // Stop seals the row first (so nothing can re-dispatch the turn) with
+      // no text, and the runtime's own final write — the partial answer, its
+      // tool calls and progress notes — arrives a moment later. Dropping that
+      // write is what made a stopped answer vanish on the next reload. Fill a
+      // still-empty Stop-sealed row once; it stays aborted by the user.
+      const existingMetadata = parseObject(row.metadata);
+      const incomingMetadata = input.metadata ?? {};
+      const carriesWork = Boolean(input.content.trim()) ||
+        (Array.isArray(incomingMetadata.toolCalls) && incomingMetadata.toolCalls.length > 0) ||
+        (Array.isArray(incomingMetadata.progressNotes) && incomingMetadata.progressNotes.length > 0);
+      if (
+        row.status === "aborted" &&
+        existingMetadata.error === "cancelled_by_user" &&
+        existingMetadata.stoppedWorkRecovered !== true &&
+        !row.content.trim() &&
+        carriesWork
+      ) {
+        database.prepare(`
+          UPDATE conversation_messages
+          SET content = ?, metadata = ?, sources = COALESCE(?, sources),
+              token_usage = COALESCE(?, token_usage), updated_at = datetime('now')
+          WHERE id = ? AND status = 'aborted'
+        `).run(
+          scrubbed(stripEchoedAskHereWrapper(input.content)),
+          JSON.stringify({
+            ...existingMetadata,
+            ...incomingMetadata,
+            error: "cancelled_by_user",
+            stoppedWorkRecovered: true,
+          }),
+          input.sources === undefined ? null : JSON.stringify(input.sources),
+          input.tokenUsage === undefined ? null : JSON.stringify(input.tokenUsage),
+          row.id,
+        );
+        const recovered = getConversationMessageById(row.id, database)!;
+        const conversation = getConversationById(input.conversationId, database);
+        if (conversation) dualWriteAssistantMessage(conversation, recovered, database);
+        return recovered;
+      }
       // A compatibility Garden PATCH can race a server-owned completion after
       // rewriting the legacy projection. Replaying the already-terminal
       // canonical row must converge that projection again instead of leaving

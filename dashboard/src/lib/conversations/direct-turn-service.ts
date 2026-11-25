@@ -99,6 +99,9 @@ import {
 import { scheduleMemoryProfileSynthesisForConversation } from "./memory-profile.ts";
 import type { CurrentLocationSnapshot } from "../current-location.ts";
 import { renderCurrentLocationContext } from "../hermes/current-location-context.ts";
+import db from "../db.ts";
+import { retrieveTerminalGardenGrounding, withGardenConnections } from "../hermes/terminal-garden-grounding.ts";
+import { planTask } from "../hermes/task-plan.ts";
 import { fetchWeatherForecast } from "../weather/forecast.ts";
 import {
   parseWeatherChatIntent,
@@ -331,6 +334,15 @@ function selectedModel(value: unknown, userId: number): string {
  * store is written by the stream itself, so an aborted read still persists the
  * partial answer rather than leaving a pending assistant message behind.
  */
+/** The Garden a direct conversation belongs to, when the user still owns it. */
+function directGardenSlug(conversation: ConversationRow): string | null {
+  if (conversation.default_garden_id === null) return null;
+  const row = db
+    .prepare("SELECT slug FROM clusters WHERE id = ? AND user_id = ?")
+    .get(conversation.default_garden_id, conversation.user_id) as { slug: string } | undefined;
+  return row?.slug ?? null;
+}
+
 export async function startDirectProviderTurn(
   input: StartDirectTurnInput,
 ): Promise<Response> {
@@ -652,6 +664,22 @@ export async function startDirectProviderTurn(
       focus:input.pageTitle || input.textSelection?.sourceTitle,
       temporary:input.conversation.temporary, internal:input.internalAgentContinuation,
     });
+    // The same Garden evidence an agent turn gets: the open Garden searched in
+    // full, the user's other Gardens for passages naming what was asked, and
+    // the bridge to pages on other subjects resting on the same idea. Without
+    // it, switching Agent mode off cut every answer off from the Gardens.
+    const gardenGrounding = input.internalAgentContinuation
+      ? null
+      : await retrieveTerminalGardenGrounding({
+          userId: input.conversation.user_id,
+          request: questionText,
+          plan: planTask({ request: questionText, authenticated: true }),
+          hasAttachments: attachments.length > 0,
+          activeGardenSlug: directGardenSlug(input.conversation),
+          bridge: input.personalize === true,
+          priorRequests: previousMessages.filter(message => message.role === "user").slice(-5).map(message => message.content),
+          selection: input.textSelection?.quote,
+        }).catch(() => null);
     const requestBody = {
       model,
       instructions: directSystemPrompt(
@@ -671,12 +699,13 @@ export async function startDirectProviderTurn(
         input.conversation.user_id,
       )
         + (feedback ? "\n\n" + feedback : "")
+        + (gardenGrounding?.context ? "\n\n" + gardenGrounding.context : "")
         + (personalContext ? "\n\n"+personalContext+"\nThis turn can explain the supplied evidence. It cannot use tools or perform actions." : "")
         + (attachments.some(item => item.type === "image") ? "\n\n" + imageAnnotationPrompt(attachments, reservation.userMessage) : "")
         + "\n\n" + await browserTerminalPrompt(input.surface !== "quartz_ai" ? input.browserAccess : undefined, false, { userId: input.conversation.user_id }),
       input: [
         ...history,
-        currentUserInput(requestText, attachments),
+        currentUserInput(withGardenConnections(requestText, gardenGrounding?.connections), attachments),
       ],
       stream: true,
       store: false,

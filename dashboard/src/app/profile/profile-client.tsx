@@ -10,6 +10,7 @@ import {
 } from "react";
 import Link from "next/link";
 import { OptionalComponentsSection } from "./optional-components-section";
+import { invalidateAssistantPreferences } from "@/lib/assistant-bootstrap-client";
 import { useRouter } from "next/navigation";
 import SignOutButton from "@/app/components/sign-out-button";
 import { FileArchive, RefreshCw } from "lucide-react";
@@ -723,6 +724,48 @@ function WebPdfCleanupPanel({ initialEnabled }: { initialEnabled: boolean }) {
           </p>
         </div>
         <Switch checked={enabled} label="Clean up unopened files" busy={busy} onChange={toggle} />
+      </div>
+      {error && <p className="mt-4 text-xs text-red-400" role="alert">{error}</p>}
+    </Card>
+  );
+}
+
+function IntermediateResponsesPanel({ initialEnabled }: { initialEnabled: boolean }) {
+  const [enabled, setEnabled] = useState(initialEnabled);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function toggle() {
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/assistant-preferences", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ switches: { intermediateResponses: !enabled } }),
+      });
+      if (!response.ok) throw new Error("save failed");
+      invalidateAssistantPreferences();
+      setEnabled(!enabled);
+    } catch {
+      setError("Could not save the intermediate responses preference. Please try again.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card title="Intermediate responses" hint="See Bread's reply as it is written, before the turn finishes.">
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-white">Stream replies while Bread works</p>
+          <p className="mt-0.5 text-xs leading-5 text-gray-500">
+            {enabled
+              ? "A draft answer appears right away. Notes written before a tool move into Thinking, and the final answer replaces the draft."
+              : "The answer appears once, when Bread has finished."}
+          </p>
+        </div>
+        <Switch checked={enabled} label="Stream replies while Bread works" busy={busy} onChange={toggle} />
       </div>
       {error && <p className="mt-4 text-xs text-red-400" role="alert">{error}</p>}
     </Card>
@@ -2360,6 +2403,7 @@ export default function ProfileClient({
   returnTo,
   initialThoughtTopologyAutoUpdate = true,
   initialWebPdfCleanup = true,
+  initialIntermediateResponses = true,
   initialAskPasswordAtStartup = true,
   initialClapAction,
   initialSnapAction,
@@ -2378,6 +2422,7 @@ export default function ProfileClient({
   returnTo?: string;
   initialThoughtTopologyAutoUpdate?: boolean;
   initialWebPdfCleanup?: boolean;
+  initialIntermediateResponses?: boolean;
   initialAskPasswordAtStartup?: boolean;
   initialClapAction: ClapActionSettings;
   initialSnapAction: ClapActionSettings;
@@ -2676,6 +2721,10 @@ export default function ProfileClient({
 
           <Packed>
             <StartupPasswordPanel initialEnabled={initialAskPasswordAtStartup} />
+          </Packed>
+
+          <Packed>
+            <IntermediateResponsesPanel initialEnabled={initialIntermediateResponses} />
           </Packed>
 
           <Packed>

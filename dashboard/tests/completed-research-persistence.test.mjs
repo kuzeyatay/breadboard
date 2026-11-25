@@ -12,6 +12,9 @@ const store = await import("../src/lib/conversations/store.ts");
 const { deliverCompletedResearch, completedResearchEventStream } = await import("../src/lib/conversations/deliver-completed-research.ts");
 // A second connection exercises normal store transactions but suppresses hooks.
 const db = new Database(globalDb.name);
+// The read view calls a per-connection SQL function; install it here too.
+const { ensureChatPayloadSchema } = await import("../src/lib/storage/chat-payloads.ts");
+ensureChatPayloadSchema(db);
 after(() => {
   db.close(); globalDb.close();
   assert.equal(path.dirname(dataRoot), path.resolve(os.tmpdir()));

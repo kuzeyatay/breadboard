@@ -16,6 +16,7 @@ function database() {
       (3,'conv_garden',1,'Canonical garden','garden_chat',1);
     CREATE TABLE conversation_messages(id INTEGER PRIMARY KEY,conversation_id INTEGER,client_message_id TEXT,
       role TEXT,content TEXT,status TEXT,metadata TEXT,updated_at TEXT);
+    CREATE VIEW conversation_message_reads AS SELECT * FROM conversation_messages;
     INSERT INTO conversation_messages VALUES
       (1,1,NULL,'assistant','A completed answer','complete',NULL,'2026-10-10 10:00:00'),
       (2,2,NULL,'assistant','Private to account two','complete',NULL,'2026-10-10 10:01:00'),

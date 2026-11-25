@@ -410,7 +410,9 @@ class TestDelegateTask(unittest.TestCase):
         mock_run.assert_not_called()
 
     @patch("tools.delegate_tool._run_single_child")
-    def test_batch_capped_at_3(self, mock_run):
+    def test_batch_larger_than_concurrency_queues_instead_of_failing(self, mock_run):
+        # Like Codex, the limit bounds how many run at once, not how many tasks
+        # may be handed out: the extra tasks queue and every one runs.
         mock_run.return_value = {
             "task_index": 0, "status": "completed",
             "summary": "Done", "api_calls": 1, "duration_seconds": 1.0
@@ -419,10 +421,8 @@ class TestDelegateTask(unittest.TestCase):
         limit = _get_max_concurrent_children()
         tasks = [{"goal": f"Task {i}"} for i in range(limit + 2)]
         result = json.loads(delegate_task(tasks=tasks, parent_agent=parent))
-        # Should return an error instead of silently truncating
-        self.assertIn("error", result)
-        self.assertIn("Too many tasks", result["error"])
-        mock_run.assert_not_called()
+        self.assertNotIn("error", result)
+        self.assertEqual(mock_run.call_count, limit + 2)
 
     @patch("tools.delegate_tool._run_single_child")
     def test_batch_ignores_toplevel_goal(self, mock_run):
@@ -1168,7 +1168,7 @@ class TestBlockedTools(unittest.TestCase):
             _get_max_spawn_depth, _get_orchestrator_enabled,
             _MIN_SPAWN_DEPTH,
         )
-        self.assertEqual(_get_max_concurrent_children(), 3)
+        self.assertTrue(6 <= _get_max_concurrent_children() <= 16)
         self.assertEqual(MAX_DEPTH, 1)
         self.assertEqual(_get_max_spawn_depth(), 1)       # default: flat
         self.assertTrue(_get_orchestrator_enabled())      # default
@@ -2618,10 +2618,12 @@ class TestConcurrencyDefaults(unittest.TestCase):
                     mock_loader.assert_not_called()
 
     @patch("tools.delegate_tool._load_config", return_value={})
-    def test_default_is_three(self, mock_cfg):
-        # Clear env var if set
+    def test_default_is_sized_to_the_machine(self, mock_cfg):
+        # Unset: Codex's 6 at least, more on a bigger machine, at most 16.
+        from tools.delegate_tool import _DEFAULT_MAX_CONCURRENT_CHILDREN
         with patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(_get_max_concurrent_children(), 3)
+            self.assertEqual(_get_max_concurrent_children(), _DEFAULT_MAX_CONCURRENT_CHILDREN)
+            self.assertTrue(6 <= _get_max_concurrent_children() <= 16)
 
     @patch("tools.delegate_tool._load_config",
            return_value={"max_concurrent_children": 10})

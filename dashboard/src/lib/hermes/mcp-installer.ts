@@ -1,5 +1,4 @@
 import { spawn } from "node:child_process";
-import os from "node:os";
 import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
 import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import { dashboardDataDir } from "../runtime-paths.ts";
@@ -7,6 +6,7 @@ import { addProxyMcpConnection, proxyMcpTools, setProxyMcpConnectionConnected } 
 import { mcpSlug, parseMcpConfig, runtimeMcpConfig, saveMcpConnection, setMcpConnectionEnabled } from "./mcp-connections.ts";
 import { ApiError } from "./route-core.ts";
 import { MCP_INSTALLER_CONNECTION } from "./mcp-installer-context.ts";
+import { resolveHostExecutable, withHostPath } from "../../../scripts/host-path.mjs";
 
 /**
  * Built-in connection that lets a chat turn find an MCP server on GitHub and
@@ -159,22 +159,11 @@ async function inspect(args: Record<string, unknown>, signal?: AbortSignal) {
 }
 
 function which(name: string): string {
-  const directories = [
-    ...(process.env.PATH ?? process.env.Path ?? "").split(path.delimiter),
-    path.join(os.homedir(), ".local", "bin"),
-    process.env.APPDATA ? path.join(process.env.APPDATA, "npm") : "",
-    process.env.ProgramFiles ? path.join(process.env.ProgramFiles, "nodejs") : "",
-    process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, "Microsoft", "WindowsApps") : "",
-  ].filter(Boolean);
-  const extensions = process.platform === "win32" ? [".exe", ".cmd", ".bat", ""] : [""];
-  for (const directory of directories) {
-    for (const extension of extensions) {
-      const candidate = path.join(directory, name + extension);
-      try {
-        if (fs.statSync(candidate).isFile()) return candidate;
-      } catch { /* keep looking */ }
-    }
-  }
+  // Runtime V2 gives this server a closed PATH (bundled runtimes + System32),
+  // so PATH alone reported Git "not installed" on machines that have it. Resolve
+  // like the user's own shell: their registry PATH plus well-known install folders.
+  const resolved = resolveHostExecutable(name);
+  if (resolved) return resolved;
   throw new ApiError(503, "mcp_launcher_missing", `${name} is not installed on this computer, so this MCP cannot be launched that way. Try another launch method or ask the user to install ${name}.`);
 }
 
@@ -200,7 +189,8 @@ function launcher(name: string): { executable: string; prefix: string[] } {
 
 function run(executable: string, args: string[], cwd: string | undefined, signal?: AbortSignal, env?: NodeJS.ProcessEnv): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn(executable, args, { cwd, signal, env: env ?? process.env, windowsHide: true, timeout: 10 * 60_000 });
+    // Setup tools call others by name (uv and npm invoke git), so they need the host PATH too.
+    const child = spawn(executable, args, { cwd, signal, env: withHostPath(env ?? process.env), windowsHide: true, timeout: 10 * 60_000 });
     let tail = "";
     const keep = (chunk: Buffer) => { tail = (tail + chunk.toString()).slice(-6_000); };
     child.stdout?.on("data", keep);

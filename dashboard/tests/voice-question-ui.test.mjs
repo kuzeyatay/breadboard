@@ -42,15 +42,20 @@ test('voice companion speaks tool questions, hears their answers and narrates th
     bundle: true, write: false, format: 'iife', platform: 'browser',
     loader: { '.css': 'empty', '.module.css': 'empty' },
     define: { 'process.env.NODE_ENV': '"production"' },
+    // Next inlines other NEXT_PUBLIC_/env reads at build time; a browser has no process.
+    banner: { js: 'var process = globalThis.process || { env: {} };' },
     plugins: [{ name: 'voice-fixtures', setup(build) {
       build.onResolve({ filter: /(use-agent-session|use-assistant-intelligence|chat-notification-inbox|voice-assistant-runtime|subscription-live|prepare-client|request-client)$/ }, args => ({ path: args.path, namespace: 'fixture' }));
       build.onLoad({ filter: /.*/, namespace: 'fixture' }, ({ path: modulePath }) => {
         let contents;
+        // Each stub re-exports the real module and overrides only what this
+        // test fakes, so new exports elsewhere in the panel tree keep building.
         if (modulePath.endsWith('use-agent-session')) contents = `
+          export * from './src/app/components/hermes/use-agent-session.ts';
           import {useState} from 'react';
           export const isActiveAgentRunState=state=>state==='running'||state==='waiting_for_permission';
           export function useAgentSession(){
-            const [state,setState]=useState({messages:[],runState:'idle',sessionId:'voice-test',loadingSession:false});
+            const [state,setState]=useState({messages:[],runState:'idle',sessionId:'voice-test',loadingSession:false,agentLaunchRequests:[]});
             window.updateSession=patch=>setState(current=>({...current,...patch}));
             window.complete=text=>setState(current=>({...current,runState:'completed',messages:current.messages.map(m=>m.role==='assistant'?{...m,content:text}:m)}));
             return {...state,send:async (text,options)=>{
@@ -69,7 +74,7 @@ test('voice companion speaks tool questions, hears their answers and narrates th
             return {setListening(value){window.cloudListening=value;},resetTranscript(){},finishTranscript:async()=>window.nextTranscript,
               stopSpeaking(){window.finishSpeech?.();},close:async()=>{},speak:text=>{window.played.push(text);return new Promise(resolve=>window.finishSpeech=resolve);}};
           }`;
-        else if (modulePath.endsWith('prepare-client')) contents = 'export async function prepareLocalSpeech(){} export const speechErrorMessage=(e,f)=>e?.message||f;';
+        else if (modulePath.endsWith('prepare-client')) contents = "export * from './src/lib/speech/prepare-client.ts'; export async function prepareLocalSpeech(){} export const speechErrorMessage=(e,f)=>e?.message||f;";
         else if (modulePath.endsWith('request-client')) contents = `export async function speechRequest(url,options){
           if(url.endsWith('/transcribe'))return Response.json({text:window.nextTranscript});
           if(window.failSpeech)throw Error('Speech is temporarily unavailable');
@@ -77,7 +82,7 @@ test('voice companion speaks tool questions, hears their answers and narrates th
         }`;
         else if (modulePath.endsWith('use-assistant-intelligence')) contents = 'export const useAssistantIntelligence=()=>({model:"fixture",reasoningEffort:"low"});';
         else if (modulePath.endsWith('voice-assistant-runtime')) contents = 'export default function Runtime(){return null;}';
-        else contents = 'export function registerChatNotificationTarget(){return()=>{}}';
+        else contents = "export * from './src/lib/chat-notification-inbox.ts'; export function registerChatNotificationTarget(){return()=>{}}";
         return { contents, loader: 'js', resolveDir: root };
       });
     } }],
@@ -88,7 +93,7 @@ test('voice companion speaks tool questions, hears their answers and narrates th
       res.setHeader('Content-Type', 'application/json');
       res.end(JSON.stringify({ preferences: { readAloudNotifications: false, alwaysOnVoiceAssistant: false, startVoiceOnStartup: true, voiceModel: 'anthropic/claude-sonnet-4-5' }, effectiveVoiceModel: 'anthropic/claude-sonnet-4-5' }));return;
     }
-    if (req.url === '/app.js') { res.setHeader('Content-Type', 'text/javascript'); res.end(bundle.outputFiles[0].text); }
+    if (req.url === '/app.js') { res.setHeader('Content-Type', 'text/javascript; charset=utf-8'); res.end(bundle.outputFiles[0].text); }
     else if (req.url === '/style.css') { res.setHeader('Content-Type', 'text/css'); res.end(css.slice(css.indexOf('.voice-stage {'))); }
     else { res.setHeader('Content-Type', 'text/html'); res.end('<!doctype html><html><head><link rel="stylesheet" href="/style.css"><style>body{margin:0;font-family:Arial}*{box-sizing:border-box}button{font:inherit}p{margin:0}</style></head><body><main id="root"></main><script src="/app.js"></script></body></html>'); }
   });
@@ -107,7 +112,7 @@ test('voice companion speaks tool questions, hears their answers and narrates th
       assert.equal(await page.locator('.voice-widget-name,.voice-widget-hint').count(), 0);
       await page.evaluate(() => window.say('I want help with fitness.'));
       await page.waitForFunction(() => window.sent.length === 1);
-      assert.deepEqual(await page.evaluate(() => window.sentOptions[0]), { model: 'anthropic/claude-sonnet-4-5', voice: true });
+      assert.deepEqual(await page.evaluate(() => window.sentOptions[0]), { model: 'anthropic/claude-sonnet-4-5', reasoningEffort: 'low', voice: true });
       const transcript = page.getByRole('log', { name: 'Conversation transcript' });
       assert.equal(await transcript.innerText(), 'I want help with fitness.');
       const question = 'What do you want help with first?';

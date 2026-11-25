@@ -47,6 +47,26 @@ export async function GET(request: Request, { params }: { params: Promise<{ arti
     if (artifact.garden_slug) authorizeGardenAccess(userId, artifact.garden_slug);
     const requestedVersion = Number(url.searchParams.get("version") ?? artifact.current_version);
     if (!Number.isInteger(requestedVersion) || requestedVersion <= 0) throw new ApiError(400, "invalid_artifact_version", "A valid version is required.");
+    // A .pptx without a stored HTML snapshot is drawn from the file itself.
+    // The markup is generated here with every text run escaped; the one inline
+    // script only scales slides to the frame, so scripts are allowed and
+    // nothing else is (no network, no same-origin in the viewer's sandbox).
+    if (url.searchParams.get("render") === "pptx") {
+      if (!artifact.filename.toLowerCase().endsWith(".pptx")) {
+        throw new ApiError(422, "artifact_pptx_render_unsupported", "Only .pptx artifacts can be rendered as slides.");
+      }
+      const source = artifactFile({ artifact, version: requestedVersion, purpose: "download" });
+      const html = await renderedPptx(source.path);
+      return new Response(html, {
+        headers: {
+          "Content-Type": "text/html; charset=utf-8",
+          "Content-Disposition": "inline",
+          "Cache-Control": "private, no-store",
+          "X-Content-Type-Options": "nosniff",
+          "Content-Security-Policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:; frame-ancestors 'self'; form-action 'none'; base-uri 'none'",
+        },
+      });
+    }
     const file = artifactFile({ artifact, version: requestedVersion, purpose: "preview" });
     const interactive = artifact.renderer_id === "interactive-visualizer";
     const contentSecurityPolicy = interactive
@@ -132,6 +152,21 @@ export async function PUT(request: Request, { params }: { params: Promise<{ arti
     if (error instanceof ArtifactStoreError) return new Response(JSON.stringify({ error: error.message, code: error.code }), { status: error.status, headers: { "Content-Type": "application/json" } });
     return apiErrorResponse(error);
   }
+}
+
+// Rendering a deck parses the whole package; keep the last few by file
+// identity (path, size, mtime) so reopening the panel is instant.
+const renderedPptxCache = new Map<string, string>();
+async function renderedPptx(filePath: string): Promise<string> {
+  const stat = fs.statSync(filePath);
+  const key = `${filePath}:${stat.size}:${stat.mtimeMs}`;
+  const cached = renderedPptxCache.get(key);
+  if (cached) return cached;
+  const { renderPptxPreviewHtml } = await import("@/lib/genoffice/pptx-preview.ts");
+  const html = await renderPptxPreviewHtml(new Uint8Array(fs.readFileSync(filePath)), { fitToWidth: true });
+  renderedPptxCache.set(key, html);
+  while (renderedPptxCache.size > 8) renderedPptxCache.delete(renderedPptxCache.keys().next().value!);
+  return html;
 }
 
 function parseRange(

@@ -8,7 +8,7 @@ import crypto from "node:crypto";
 import { registerHooks } from "node:module";
 import db from "../src/lib/db.ts";
 import { planTask } from "../src/lib/hermes/task-plan.ts";
-import { retrieveTerminalGardenGrounding, shouldGroundTerminalInGardens } from "../src/lib/hermes/terminal-garden-grounding.ts";
+import { retrieveTerminalGardenGrounding, shouldGroundTerminalInGardens, gardenConnectionReminder, withGardenConnections } from "../src/lib/hermes/terminal-garden-grounding.ts";
 
 function shouldGround(request, options = {}) {
   return shouldGroundTerminalInGardens({
@@ -154,5 +154,44 @@ test("active Garden grounding carries actual passages and directed topology with
     assert.equal(path.dirname(path.resolve(root)), path.resolve(os.tmpdir()));
     assert.ok(path.basename(root).startsWith("garden-teaching-"));
     fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Super Agent and highlight questions still reach the user's Gardens", async () => {
+  const { prepareTurn } = await import("../src/lib/hermes/dispatch-core.ts");
+  const prepared = prepareTurn({
+    request: "is that a hyperplane?", surface: "garden_chat", userId: 1, grants: [],
+    workspaceRoot: "/runtime/hermes/ws1", superAgent: true, yoloMode: true,
+  });
+  // The elevated plan reads as an operational turn; the request's own does not.
+  assert.equal(shouldGroundTerminalInGardens({ request: "is that a hyperplane?", plan: prepared.plan, activeGardenSlug: "neuro-comp" }), false);
+  assert.equal(shouldGroundTerminalInGardens({ request: "is that a hyperplane?", plan: prepared.requestedPlan, activeGardenSlug: "neuro-comp" }), true);
+
+  for (const file of ["../src/lib/conversations/turn-service.ts", "../src/lib/hermes/garden-chat-adapter.ts"]) {
+    const source = readFileSync(new URL(file, import.meta.url), "utf8");
+    const call = source.slice(source.indexOf("retrieveTerminalGardenGrounding({"), source.indexOf("retrieveTerminalGardenGrounding({") + 1600);
+    assert.match(call, /plan: prepared\.requestedPlan/, `${file} grounds on the request's own plan`);
+    assert.match(call, /selection:/, `${file} hands the selected passage to the bridge`);
+    assert.doesNotMatch(call, /bridge:[^,]*(?:,\s*\n?\s*)?[^,]*!(?:input|payload)\.textSelection/, `${file} keeps the bridge on for highlight questions`);
+  }
+  const turnService = readFileSync(new URL("../src/lib/conversations/turn-service.ts", import.meta.url), "utf8");
+  assert.match(turnService, /input\.surface === "quartz_ai"\s*\?\s*await retrieveTerminalGardenGrounding/, "Quartz answers are grounded too");
+  const direct = readFileSync(new URL("../src/lib/conversations/direct-turn-service.ts", import.meta.url), "utf8");
+  assert.match(direct, /retrieveTerminalGardenGrounding\(/, "Agent mode off still reads the Gardens");
+  assert.match(direct, /gardenGrounding\?\.context/);
+});
+
+test("a connection note travels beside the question, and only when another Garden matched", () => {
+  // In a full agent prompt the evidence sat far above a highlight's "keep this
+  // local" instruction and the model followed the nearer one (2026-11-25).
+  const page = { title: "1.57 Hyperplanes and Linear Functionals", garden: "Math 1", location: "/garden/math-1?note=hyperplanes" };
+  assert.equal(gardenConnectionReminder([]), "");
+  assert.equal(withGardenConnections("is that a hyperplane?", undefined), "is that a hyperplane?");
+  const sent = withGardenConnections("is that a hyperplane?", [page]);
+  assert.ok(sent.startsWith("is that a hyperplane?\n\n"));
+  assert.match(sent, /"1\.57 Hyperplanes and Linear Functionals" \(Math 1 Garden, \/garden\/math-1\?note=hyperplanes\)/);
+  assert.match(sent, /even when the question is short or scoped to a highlighted excerpt/);
+  for (const file of ["../src/lib/conversations/turn-service.ts", "../src/lib/hermes/garden-chat-adapter.ts", "../src/lib/conversations/direct-turn-service.ts"]) {
+    assert.match(readFileSync(new URL(file, import.meta.url), "utf8"), /withGardenConnections\(/, `${file} sends the note with the question`);
   }
 });

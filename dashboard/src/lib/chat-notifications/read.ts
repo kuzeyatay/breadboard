@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import { listPendingChatNotifications } from "./store.ts";
 import { listPendingLearnNotifications } from "./learn.ts";
 import { listPendingQuestionNotifications } from "./questions.ts";
+import { listPendingApprovalNotifications } from "./approvals.ts";
 
 export const DEFAULT_NOTIFICATION_LIMIT = 5;
 export const MAX_NOTIFICATION_LIMIT = 10;
@@ -23,6 +24,7 @@ export function readLatestNotifications(database: Database.Database, userId: num
   const pending = [
     ...listPendingChatNotifications(database, userId),
     ...listPendingQuestionNotifications(database, userId),
+    ...listPendingApprovalNotifications(database, userId),
     ...listPendingLearnNotifications(database, userId),
   ].reverse().sort((left, right) => notificationTimestamp(right.updatedAt) - notificationTimestamp(left.updatedAt));
   return {

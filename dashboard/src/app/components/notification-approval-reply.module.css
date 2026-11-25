@@ -1,0 +1,43 @@
+.form {
+  margin-top: 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.command {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--ink);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.button {
+  padding: 7px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+.button:hover { background: color-mix(in srgb, var(--ink) 6%, transparent); }
+.button:focus-visible { outline: 2px solid var(--botanical); outline-offset: 2px; }
+.button:disabled { cursor: default; opacity: 0.6; }
+
+.allow {
+  border-color: var(--botanical);
+  background: color-mix(in srgb, var(--botanical) 14%, transparent);
+}
+.allow:hover { background: color-mix(in srgb, var(--botanical) 22%, transparent); }
+
+.error { margin: 8px 0 0; color: var(--danger); font-size: 12px; }
+.sent { margin: 12px 0 0; color: var(--ink-muted); font-size: 12px; }

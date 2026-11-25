@@ -204,6 +204,332 @@ export function readXlsxGrid(buffer: Buffer): {
   return { sheets, warnings };
 }
 
+// ---------------------------------------------------------------------------
+// The workbook as a person sees it.
+//
+// `readXlsxGrid` is shaped for a model: empty rows dropped, values raw. A
+// viewer needs the opposite: rows where Excel puts them, merged cells merged,
+// columns at their widths, and a date showing as a date rather than 45291.
+
+const VIEW_MAX_ROWS = 3000;
+const VIEW_MAX_COLUMNS = 120;
+
+export interface XlsxViewCell {
+  /** 0-based column. */
+  c: number;
+  /** The value as the sheet displays it. */
+  v: string;
+  /** Numeric, so it sits right-aligned the way Excel puts it. */
+  n?: 1;
+  /** An error value such as #REF!. */
+  e?: 1;
+  /** Bold, from the cell's font. */
+  b?: 1;
+  /** The formula behind the value, without its leading "=". */
+  f?: string;
+}
+
+export interface XlsxViewRow {
+  /** 1-based row number, exactly as the sheet numbers it. */
+  r: number;
+  cells: XlsxViewCell[];
+}
+
+export interface XlsxViewSheet {
+  name: string;
+  rows: XlsxViewRow[];
+  /** Highest row and column with anything in them (1-based / count). */
+  rowCount: number;
+  columnCount: number;
+  /** 0-based top-left plus spans. */
+  merges: { r: number; c: number; rs: number; cs: number }[];
+  /** 0-based column → width in pixels, for the columns the sheet sizes. */
+  columnWidths: Record<number, number>;
+  truncated: boolean;
+  hidden: boolean;
+}
+
+interface CellStyle {
+  kind: "general" | "date" | "time" | "datetime" | "percent" | "number" | "text";
+  decimals: number;
+  grouping: boolean;
+  prefix: string;
+  suffix: string;
+  bold: boolean;
+}
+
+const BUILTIN_FORMATS: Record<number, string> = {
+  1: "0", 2: "0.00", 3: "#,##0", 4: "#,##0.00", 9: "0%", 10: "0.00%",
+  11: "0.00E+00", 12: "# ?/?", 13: "# ??/??", 14: "yyyy-mm-dd", 15: "d-mmm-yy",
+  16: "d-mmm", 17: "mmm-yy", 18: "h:mm AM/PM", 19: "h:mm:ss AM/PM", 20: "h:mm",
+  21: "h:mm:ss", 22: "yyyy-mm-dd h:mm", 37: "#,##0 ;(#,##0)", 38: "#,##0 ;[Red](#,##0)",
+  39: "#,##0.00;(#,##0.00)", 40: "#,##0.00;[Red](#,##0.00)", 45: "mm:ss", 46: "[h]:mm:ss",
+  47: "mmss.0", 48: "##0.0E+0", 49: "@",
+};
+
+function describeFormat(code: string, bold: boolean): CellStyle {
+  const style: CellStyle = { kind: "general", decimals: 0, grouping: false, prefix: "", suffix: "", bold };
+  if (!code || /^general$/i.test(code.trim())) return style;
+  const section = code.split(";")[0] ?? "";
+  if (section.trim() === "@") return { ...style, kind: "text" };
+  const currency = /\[\$([^\-\]]+)[^\]]*\]/.exec(section)?.[1] ?? "";
+  // What is left once quoted literals, escapes and [colour]/[locale] blocks go
+  // is the part that says what kind of number this is.
+  const bare = section
+    .replace(/"[^"]*"/g, "")
+    .replace(/\\./g, "")
+    .replace(/\[(?!h\]|m\]|s\])[^\]]*\]/gi, "")
+    .replace(/_.|\*./g, "");
+  if (/[ymdhs]/i.test(bare) && !/[0#?]/.test(bare.replace(/s\.0+/gi, ""))) {
+    const hasDate = /[yd]/i.test(bare) || (/m/i.test(bare) && !/[hs]/i.test(bare));
+    const hasTime = /[hs]/i.test(bare);
+    return { ...style, kind: hasDate && hasTime ? "datetime" : hasTime ? "time" : "date" };
+  }
+  const decimals = /\.([0#?]+)/.exec(bare)?.[1].length ?? 0;
+  const grouping = /[#0?],[#0?]/.test(bare);
+  const literalBefore = /^"([^"]*)"/.exec(section)?.[1] ?? "";
+  const symbol = currency || literalBefore || (/^[^0#?]*([$€£¥])/.exec(bare)?.[1] ?? "");
+  const literalAfter = /"([^"]*)"\s*$/.exec(section)?.[1] ?? "";
+  return {
+    ...style,
+    kind: bare.includes("%") ? "percent" : /E[+-]/i.test(bare) ? "general" : "number",
+    decimals,
+    grouping,
+    prefix: symbol,
+    suffix: literalAfter && literalAfter !== literalBefore ? literalAfter : "",
+  };
+}
+
+function readStyles(zip: AdmZip): CellStyle[] {
+  const root = readPart(zip, "xl/styles.xml");
+  if (!root) return [];
+  const custom = new Map<number, string>();
+  const numFmts = childNamed(root, "numFmts");
+  if (numFmts) {
+    for (const format of childrenNamed(numFmts, "numFmt")) {
+      const id = Number(attribute(format, "numFmtId"));
+      const code = attribute(format, "formatCode");
+      if (Number.isInteger(id) && code) custom.set(id, code);
+    }
+  }
+  const fonts = childNamed(root, "fonts");
+  const boldFonts = fonts
+    ? childrenNamed(fonts, "font").map((font) => {
+        const b = childNamed(font, "b");
+        return Boolean(b) && attribute(b!, "val") !== "0" && attribute(b!, "val") !== "false";
+      })
+    : [];
+  const cellXfs = childNamed(root, "cellXfs");
+  if (!cellXfs) return [];
+  return childrenNamed(cellXfs, "xf").map((xf) => {
+    const id = Number(attribute(xf, "numFmtId") ?? "0");
+    const fontId = Number(attribute(xf, "fontId") ?? "0");
+    const code = custom.get(id) ?? BUILTIN_FORMATS[id] ?? "";
+    // Locale-dependent built-ins with no code written down are dates.
+    const builtinDate = !code && ((id >= 27 && id <= 36) || (id >= 50 && id <= 58));
+    return builtinDate
+      ? { ...describeFormat("", false), kind: "date" as const, bold: Boolean(boldFonts[fontId]) }
+      : describeFormat(code, Boolean(boldFonts[fontId]));
+  });
+}
+
+function pad2(value: number): string {
+  return String(value).padStart(2, "0");
+}
+
+function formatSerialDate(serial: number, kind: CellStyle["kind"], date1904: boolean): string {
+  const epochOffset = date1904 ? 24107 : 25569;
+  // Lotus's phantom 29 February 1900 shifts every earlier serial by one day.
+  const adjusted = !date1904 && serial < 60 ? serial + 1 : serial;
+  const ms = Math.round((adjusted - epochOffset) * 86_400_000);
+  const date = new Date(ms);
+  if (Number.isNaN(date.getTime())) return String(serial);
+  const day = `${date.getUTCFullYear()}-${pad2(date.getUTCMonth() + 1)}-${pad2(date.getUTCDate())}`;
+  const seconds = date.getUTCSeconds();
+  const time = `${pad2(date.getUTCHours())}:${pad2(date.getUTCMinutes())}${seconds ? `:${pad2(seconds)}` : ""}`;
+  if (kind === "time") return time;
+  if (kind === "datetime") return `${day} ${time}`;
+  return day;
+}
+
+function formatGeneral(value: number): string {
+  if (!Number.isFinite(value)) return String(value);
+  if (Number.isInteger(value) && Math.abs(value) < 1e15) return String(value);
+  const abs = Math.abs(value);
+  if (abs !== 0 && (abs >= 1e11 || abs < 1e-9)) return value.toExponential(5).replace(/\.?0+e/, "e");
+  // Excel's General shows about eleven significant digits; this is what hides
+  // 0.1 + 0.2's float noise the way the spreadsheet itself does.
+  return String(Number(value.toPrecision(11)));
+}
+
+function formatNumber(raw: string, style: CellStyle | undefined, date1904: boolean): string {
+  const value = Number(raw);
+  if (!raw || !Number.isFinite(value)) return raw;
+  if (!style || style.kind === "general" || style.kind === "text") return formatGeneral(value);
+  if (style.kind === "date" || style.kind === "time" || style.kind === "datetime") {
+    return formatSerialDate(value, style.kind, date1904);
+  }
+  const scaled = style.kind === "percent" ? value * 100 : value;
+  const formatted = Math.abs(scaled).toLocaleString("en-US", {
+    minimumFractionDigits: style.decimals,
+    maximumFractionDigits: style.decimals,
+    useGrouping: style.grouping,
+  });
+  const sign = scaled < 0 && Number(formatted.replace(/,/g, "")) !== 0 ? "-" : "";
+  return `${sign}${style.prefix}${formatted}${style.kind === "percent" ? "%" : ""}${style.suffix}`;
+}
+
+/** "B3" → { r: 2, c: 1 } (0-based). */
+function parseReference(reference: string): { r: number; c: number } | null {
+  const match = /^([A-Z]+)(\d+)$/i.exec(reference.replace(/\$/g, ""));
+  if (!match) return null;
+  return { r: Number(match[2]) - 1, c: columnIndex(match[1]) - 1 };
+}
+
+/**
+ * Read a workbook for display: every sheet, rows at their real numbers,
+ * merged ranges, column widths and number formats applied. Never throws.
+ */
+export function readXlsxForView(buffer: Buffer): { sheets: XlsxViewSheet[]; warnings: string[] } {
+  const warnings: string[] = [];
+  let zip: AdmZip;
+  try {
+    zip = new AdmZip(buffer);
+  } catch {
+    return { sheets: [], warnings: ["That workbook could not be opened."] };
+  }
+  const sharedStrings = readSharedStrings(zip);
+  const styles = readStyles(zip);
+  const workbook = readPart(zip, "xl/workbook.xml");
+  const workbookPr = workbook ? childNamed(workbook, "workbookPr") : null;
+  const date1904 = workbookPr ? ["1", "true"].includes(attribute(workbookPr, "date1904") ?? "") : false;
+  const hiddenNames = new Set(
+    workbook
+      ? descendants(workbook, "sheet")
+          .filter((sheet) => (attribute(sheet, "state") ?? "visible") !== "visible")
+          .map((sheet) => attribute(sheet, "name") ?? "")
+      : [],
+  );
+  const sheetRefs = readSheets(zip);
+  if (!sheetRefs.length) return { sheets: [], warnings: ["That workbook has no readable sheets."] };
+
+  const sheets: XlsxViewSheet[] = [];
+  for (const sheet of sheetRefs) {
+    const root = readPart(zip, sheet.entryName);
+    if (!root) {
+      warnings.push(`Sheet "${sheet.name}" could not be read.`);
+      continue;
+    }
+    const data = childNamed(root, "sheetData");
+    const rows: XlsxViewRow[] = [];
+    let rowCount = 0;
+    let columnCount = 0;
+    let truncated = false;
+    let previousRow = 0;
+    for (const row of data ? childrenNamed(data, "row") : []) {
+      const r = Number(attribute(row, "r")) || previousRow + 1;
+      previousRow = r;
+      if (r > VIEW_MAX_ROWS) {
+        truncated = true;
+        break;
+      }
+      const cells: XlsxViewCell[] = [];
+      let previousColumn = -1;
+      for (const cell of childrenNamed(row, "c")) {
+        const reference = attribute(cell, "r");
+        const c = reference ? Math.max(1, columnIndex(reference)) - 1 : previousColumn + 1;
+        previousColumn = c;
+        if (c >= VIEW_MAX_COLUMNS) {
+          truncated = true;
+          continue;
+        }
+        const type = attribute(cell, "t") ?? "n";
+        const style = styles[Number(attribute(cell, "s") ?? "0")];
+        const formulaNode = childNamed(cell, "f");
+        const formula = formulaNode ? textContent(formulaNode).trim() : "";
+        const valueNode = childNamed(cell, "v");
+        const raw = valueNode ? textContent(valueNode) : "";
+        let value = "";
+        let numeric = false;
+        let error = false;
+        if (type === "inlineStr") {
+          value = descendants(cell, "t").map((node) => textContent(node)).join("");
+        } else if (type === "s") {
+          const index = Number(raw.trim());
+          value = Number.isInteger(index) ? sharedStrings[index] ?? "" : "";
+        } else if (type === "b") {
+          value = raw.trim() === "1" ? "TRUE" : "FALSE";
+        } else if (type === "e") {
+          value = raw.trim();
+          error = true;
+        } else if (type === "str") {
+          value = raw;
+        } else if (raw.trim()) {
+          value = formatNumber(raw.trim(), style, date1904);
+          numeric = true;
+        }
+        if (!value && formula) value = `=${formula}`;
+        if (!value && !formula) continue;
+        cells.push({
+          c,
+          v: value,
+          ...(numeric ? { n: 1 as const } : {}),
+          ...(error ? { e: 1 as const } : {}),
+          ...(style?.bold ? { b: 1 as const } : {}),
+          ...(formula ? { f: formula } : {}),
+        });
+        columnCount = Math.max(columnCount, c + 1);
+      }
+      if (cells.length) {
+        rows.push({ r, cells });
+        rowCount = Math.max(rowCount, r);
+      }
+    }
+
+    const merges: XlsxViewSheet["merges"] = [];
+    const mergeCells = childNamed(root, "mergeCells");
+    for (const merge of mergeCells ? childrenNamed(mergeCells, "mergeCell") : []) {
+      const [from, to] = (attribute(merge, "ref") ?? "").split(":");
+      const start = from ? parseReference(from) : null;
+      const end = to ? parseReference(to) : start;
+      if (!start || !end) continue;
+      if (start.r >= VIEW_MAX_ROWS || start.c >= VIEW_MAX_COLUMNS) continue;
+      const rs = Math.min(end.r, VIEW_MAX_ROWS - 1) - start.r + 1;
+      const cs = Math.min(end.c, VIEW_MAX_COLUMNS - 1) - start.c + 1;
+      if (rs < 1 || cs < 1 || (rs === 1 && cs === 1)) continue;
+      merges.push({ r: start.r, c: start.c, rs, cs });
+      rowCount = Math.max(rowCount, start.r + rs);
+      columnCount = Math.max(columnCount, start.c + cs);
+    }
+
+    const columnWidths: Record<number, number> = {};
+    const cols = childNamed(root, "cols");
+    for (const col of cols ? childrenNamed(cols, "col") : []) {
+      const min = Number(attribute(col, "min"));
+      const max = Math.min(Number(attribute(col, "max")), VIEW_MAX_COLUMNS);
+      const width = Number(attribute(col, "width"));
+      const hidden = ["1", "true"].includes(attribute(col, "hidden") ?? "");
+      if (!Number.isInteger(min) || !Number.isInteger(max) || max < min) continue;
+      if (max - min > VIEW_MAX_COLUMNS) continue;
+      const px = hidden ? 0 : Number.isFinite(width) && width > 0 ? Math.round(width * 7 + 5) : 0;
+      if (!px && !hidden) continue;
+      for (let index = min; index <= max; index += 1) columnWidths[index - 1] = Math.min(px, 640);
+    }
+
+    sheets.push({
+      name: sheet.name,
+      rows,
+      rowCount,
+      columnCount,
+      merges,
+      columnWidths,
+      truncated,
+      hidden: hiddenNames.has(sheet.name),
+    });
+  }
+  return { sheets, warnings };
+}
+
 export function readXlsx(buffer: Buffer): DocumentStructure {
   const structure = emptyStructure();
   const grid = readXlsxGrid(buffer);

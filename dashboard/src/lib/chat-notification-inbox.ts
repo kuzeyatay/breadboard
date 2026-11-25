@@ -32,6 +32,7 @@ export const CHAT_RESPONSE_NOTIFICATION_TITLES = [
   "Response ready",
   "Response failed",
   "Answer needed",
+  "Approval needed",
 ] as const;
 
 export const LEARN_NOTIFICATION_TITLES = [
@@ -47,7 +48,29 @@ export type ChatNotificationTitle =
   | (typeof CHAT_RESPONSE_NOTIFICATION_TITLES)[number]
   | (typeof LEARN_NOTIFICATION_TITLES)[number];
 
-export type ChatNotificationKind = "chat_response" | "chat_question" | "learn";
+export type ChatNotificationKind = "chat_response" | "chat_question" | "chat_approval" | "learn";
+
+/** A runtime approval card, answerable from the notification without opening the chat. */
+export interface NotificationApproval {
+  sessionId: number;
+  requestId: string;
+  /** What Bread wants to do, as the card states it. */
+  description: string;
+  /** Exact command, when the card is a terminal command. */
+  command?: string;
+  /** Whether "Allow for this chat" is offered (never for overwrite/delete/sensitive). */
+  allowSession: boolean;
+}
+
+export function isNotificationApproval(value: unknown): value is NotificationApproval {
+  if (!value || typeof value !== "object") return false;
+  const approval = value as NotificationApproval;
+  return Number.isSafeInteger(approval.sessionId) && approval.sessionId > 0 &&
+    typeof approval.requestId === "string" && Boolean(approval.requestId.trim()) &&
+    typeof approval.description === "string" && Boolean(approval.description.trim()) &&
+    (approval.command === undefined || typeof approval.command === "string") &&
+    typeof approval.allowSession === "boolean";
+}
 
 export interface NotificationClarification {
   sessionId: number;
@@ -85,6 +108,8 @@ export interface ChatNotificationRecord {
   kind?: ChatNotificationKind;
   /** Exact runtime question to answer without starting another conversation turn. */
   clarification?: NotificationClarification;
+  /** Exact runtime approval card to answer without opening the chat. */
+  approval?: NotificationApproval;
   /** One line of status detail for a Learn notice (stage, section, page). */
   message?: string;
   /** 0-100 while a Learn run is in progress; drives the status bar on the card. */
@@ -147,9 +172,11 @@ export function isChatNotificationRecord(
     typeof candidate.chatTitle === "string" &&
     typeof candidate.updatedAt === "string" &&
     (candidate.clarification === undefined || isNotificationClarification(candidate.clarification)) &&
+    (candidate.approval === undefined || isNotificationApproval(candidate.approval)) &&
     (candidate.kind === undefined ||
       candidate.kind === "chat_response" ||
       candidate.kind === "chat_question" ||
+      candidate.kind === "chat_approval" ||
       candidate.kind === "learn") &&
     (candidate.message === undefined || typeof candidate.message === "string") &&
     (candidate.progressPercent === undefined ||
@@ -197,9 +224,10 @@ export function isChatNotificationTargetViewed(target: ChatNotificationTarget): 
       : !viewed.observeMessages && sameChatNotificationTarget(viewed, target));
 }
 
-export function isChatNotificationRecordViewed(record: Pick<ChatNotificationRecord, 'id' | 'target' | 'messageKeys' | 'inlineSelectionId' | 'clarification'>): boolean {
+export function isChatNotificationRecordViewed(record: Pick<ChatNotificationRecord, 'id' | 'target' | 'messageKeys' | 'inlineSelectionId' | 'clarification' | 'approval'>): boolean {
   const keys = record.messageKeys ?? (record.clarification
     ? [`question:${record.clarification.requestId}`]
+    : record.approval ? [`approval:${record.approval.requestId}`]
     : [`message:${record.id.replace(/^msg_/, '')}`]);
   return readNotificationViewTargets().filter(isChatNotificationTarget).some(viewed =>
     viewed.surface === 'garden_learn'

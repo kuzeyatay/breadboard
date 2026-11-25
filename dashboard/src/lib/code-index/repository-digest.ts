@@ -1,7 +1,8 @@
-import { execFileSync } from "node:child_process";
+import { externalRuntimeExecFileSync as execFileSync } from "../external-runtime-process.ts";
 import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
 import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import { graftRepositoryKey, type GraftIndexState } from "./index-service.ts";
+import { resolveHostExecutable, withHostPath } from "../../../scripts/host-path.mjs";
 
 /**
  * What a chat turn is told about the repository its Garden is connected to.
@@ -48,8 +49,10 @@ const cache = new Map<string, { digest: RepositoryDigest; at: number }>();
 
 function git(repositoryPath: string, args: string[]): string | null {
   try {
-    return execFileSync("git", args, {
+    // The server runs on Runtime V2's closed PATH; find the user's Git like their shell would.
+    return execFileSync(resolveHostExecutable("git") ?? "git", args, {
       cwd: repositoryPath,
+      env: withHostPath(process.env),
       encoding: "utf8",
       timeout: GIT_TIMEOUT_MS,
       windowsHide: true,

@@ -212,14 +212,36 @@ class TestActiveTurnRedirect:
         assert agent.redirect("too late") is False
         assert calls == []
 
-    def test_redirect_during_tool_execution_uses_safe_steer_boundary(self):
+    def test_redirect_during_tool_execution_stops_the_tool_batch(self):
         agent = _bare_agent()
         agent._executing_tools = True
+        agent._pending_steer = "earlier note"
+
+        assert agent.redirect("also check migrations") is True
+        # Queued as a redirect that interrupts the tools, carrying any earlier
+        # steer so clear_interrupt() cannot drop it.
+        assert agent._pending_redirect == "earlier note\n\nalso check migrations"
+        assert agent._pending_steer is None
+        assert agent._interrupt_requested is True
+        assert agent._redirect_interrupted_tools is True
+
+    def test_redirect_during_tools_without_instant_steer_waits(self):
+        agent = _bare_agent()
+        agent._executing_tools = True
+        agent.instant_steer = False
 
         assert agent.redirect("also check migrations") is True
         assert agent._pending_redirect is None
         assert agent._pending_steer == "also check migrations"
         assert agent._interrupt_requested is False
+
+    def test_redirect_during_tools_loses_to_a_hard_stop(self):
+        agent = _bare_agent()
+        agent._executing_tools = True
+        agent._interrupt_requested = True  # /stop already landed
+
+        assert agent.redirect("also check migrations") is False
+        assert agent._pending_redirect is None
 
 
 class TestActiveTurnRedirectCheckpoint:

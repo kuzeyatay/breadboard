@@ -8707,15 +8707,17 @@ html[data-breadboard-desktop="true"] .bb-artifact-dock-floating {
   }
 }
 
-/* Expanded, the panel is the window: it has no edge to sit against, so the
-   left border and the shadow that sold it as a layer over the app both go. */
+/* Expanded, the panel is a popup over a dimmed app — the same lightbox an
+   image opens in — rather than a page of its own: a full border, rounded
+   corners and a lifting shadow on every side instead of the dock's left edge. */
 .bb-artifact-dock-expanded {
-  border-left: 0;
-  box-shadow: none;
+  border: 1px solid color-mix(in srgb, white 14%, transparent);
+  border-radius: 1rem;
+  box-shadow: 0 30px 80px rgb(0 0 0 / 45%);
 }
 
 html[data-theme="dark"] .bb-artifact-dock-expanded {
-  box-shadow: none;
+  box-shadow: 0 30px 80px rgb(0 0 0 / 65%);
 }
 
 /* It arrives by growing, not by sliding in from a right edge it no longer
@@ -8723,6 +8725,9 @@ html[data-theme="dark"] .bb-artifact-dock-expanded {
 @media (prefers-reduced-motion: no-preference) {
   .bb-artifact-dock-expanded {
     animation: bb-artifact-dock-expand-in 180ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .bb-artifact-popup-backdrop {
+    animation: bb-artifact-dock-fade-in 160ms ease;
   }
 }
 
@@ -13307,4 +13312,16 @@ html[data-user-idle] .bb-terminal-dock-outline path {
 
 .bb-terminal-dock[data-terminal-resizing="true"] .bb-terminal-dock-outline path:last-child {
   animation-play-state: paused;
+}
+
+/* Intermediate responses: while a turn runs, its Thinking row keeps its label,
+   seconds and tokens but has no arrow and cannot be opened; the progress notes
+   are shown inline beneath it until the answer is in. */
+[data-thinking-locked] .assistant-response-chevron,
+[data-thinking-locked] [data-response-progress] {
+  display: none;
+}
+[data-thinking-locked] .assistant-response-trigger {
+  pointer-events: none;
+  cursor: default;
 }

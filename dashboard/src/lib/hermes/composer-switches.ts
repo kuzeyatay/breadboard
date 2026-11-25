@@ -27,6 +27,7 @@ export const COMPOSER_SWITCH_KEYS = [
   "thoughtTopologyAutoUpdate",
   "webPdfCleanup",
   "askPasswordAtStartup",
+  "intermediateResponses",
 ] as const;
 
 export type ComposerSwitchKey = (typeof COMPOSER_SWITCH_KEYS)[number];

@@ -25,6 +25,7 @@ import { usePersonalize } from "./use-personalize";
 import PromptSuggestionOverlay from "./prompt-suggestion-overlay";
 import type { PromptSuggestionSelection } from "@/lib/chat-prompt-suggestion";
 import ActivityPanel from "./hermes/activity-panel";
+import { IntermediateTurn } from "./hermes/inline-progress-notes";
 import MetalSendButton from "./effects/metal-send-button";
 import InlineQuestionAttachments from "./inline-question-attachments";
 import ViewportPopover from "./viewport-popover";
@@ -1334,10 +1335,15 @@ export function InlineSelectionAnswerPopover({
       {!editing ? attachmentPreviews(savedAttachments, false) : null}
       <div className={`[&:has(.bb-inline-artifact-list)_.bb-inline-answer-empty]:hidden ${question ? "mt-4" : "mt-1"}`}>
         {pending || answer || reasoning || progressNotes?.length ? (
+          <IntermediateTurn
+            live={Boolean(pending)}
+            notes={progressNotes}
+            answer={answer ?? ""}
+            renderPanel={(hideNotes) => (
           <ActivityPanel
             activities={[]}
             reasoning={reasoning}
-            progressNotes={progressNotes}
+            progressNotes={hideNotes ? [] : progressNotes}
             answerContent={answer}
             connection={pending ? "streaming" : "idle"}
             pendingPermission={null}
@@ -1346,6 +1352,8 @@ export function InlineSelectionAnswerPopover({
             responseDurationMs={responseDurationMs}
             responseStartedAt={startedAt}
             responseCompletedAt={responseCompletedAt}
+          />
+            )}
           />
         ) : null}
         {answer ? (

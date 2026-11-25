@@ -114,7 +114,9 @@ _API_CALL_MODULES = frozenset({
 })
 
 
-def _apply_active_turn_redirect(agent: Any, messages: List[Dict[str, Any]], text: str) -> None:
+def _apply_active_turn_redirect(
+    agent: Any, messages: List[Dict[str, Any]], text: str, *, after_tools: bool = False,
+) -> None:
     """Append a provider-safe checkpoint and correction to the live turn.
 
     Incomplete provider reasoning blocks are not valid replay items (Anthropic
@@ -123,6 +125,11 @@ def _apply_active_turn_redirect(agent: Any, messages: List[Dict[str, Any]], text
     then add the correction as a real user message. This keeps role alternation
     valid and leaves every previously cached message byte-for-byte unchanged.
     """
+    if after_tools:
+        # The streamed text belongs to the assistant message that issued the
+        # stopped tool calls and is already in history; do not repeat it.
+        agent._current_streamed_assistant_text = ""
+        agent._current_streamed_reasoning_text = ""
     reasoning = str(
         getattr(agent, "_current_streamed_reasoning_text", "") or ""
     ).strip()
@@ -130,7 +137,11 @@ def _apply_active_turn_redirect(agent: Any, messages: List[Dict[str, Any]], text
         getattr(agent, "_current_streamed_assistant_text", "") or ""
     ).strip()
 
-    checkpoint_parts = ["[This response was interrupted by a user correction.]"]
+    checkpoint_parts = [
+        "[Tool execution was stopped by a user correction.]"
+        if after_tools
+        else "[This response was interrupted by a user correction.]"
+    ]
     if reasoning:
         checkpoint_parts.extend(
             ["Reasoning shown before the interruption:", reasoning]
@@ -1030,9 +1041,18 @@ def run_conversation(
             break
         if guardrail_final_attempt:
             guardrail_final_attempt_sent = True
+        # An instant steer during tools stopped the batch through the
+        # interrupt bit. It is a redirect, not a stop: clear the bit (keeping
+        # the correction) so the turn continues instead of breaking below.
+        _redirect_after_tools = bool(getattr(agent, "_redirect_interrupted_tools", False))
+        if agent._interrupt_requested and agent._has_pending_redirect():
+            agent.clear_interrupt(preserve_redirect=True)
+        agent._redirect_interrupted_tools = False
         _redirect_text = agent._drain_pending_redirect()
         if _redirect_text:
-            _apply_active_turn_redirect(agent, messages, _redirect_text)
+            _apply_active_turn_redirect(
+                agent, messages, _redirect_text, after_tools=_redirect_after_tools,
+            )
             if isinstance(original_user_message, str):
                 original_user_message = (
                     f"{original_user_message}\n\n"

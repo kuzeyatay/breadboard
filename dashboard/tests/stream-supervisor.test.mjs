@@ -7,6 +7,7 @@ import {
   PRE_DISPATCH_STREAM_TIMEOUT_MS,
   RUNTIME_INACTIVITY_TIMEOUT_MS,
   SILENT_STREAM_TIMEOUT_MS,
+  UNSUBMITTED_RUN_TIMEOUT_MS,
   runtimeIdentityKey,
   streamSupervisorDecision,
   streamSupervisorTiming,
@@ -284,4 +285,23 @@ test("the pump re-reads identity from SQLite and resubscribes in place", () => {
 
   // The supervisor must not outlive the turn.
   assert.match(eventStream, /clearInterval\(supervisor\)/);
+});
+
+test("a run whose prompt hand-off never returns is stopped instead of thinking forever", () => {
+  const base = {
+    boundIdentity: "a",
+    currentIdentity: "a",
+    sawRuntimeEvent: false,
+    submitted: false,
+    elapsedMs: 0,
+    finalized: false,
+    timedOut: false,
+  };
+  assert.equal(streamSupervisorDecision({ ...base, runAgeMs: UNSUBMITTED_RUN_TIMEOUT_MS - 1 }), null);
+  assert.deepEqual(
+    streamSupervisorDecision({ ...base, runAgeMs: UNSUBMITTED_RUN_TIMEOUT_MS }),
+    { kind: "dispatch_timeout" },
+  );
+  // A run that has no age yet (no durable row) keeps the old behaviour.
+  assert.equal(streamSupervisorDecision({ ...base }), null);
 });

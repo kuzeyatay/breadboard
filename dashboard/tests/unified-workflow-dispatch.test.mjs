@@ -3,7 +3,8 @@ import fs from "node:fs";
 import test from "node:test";
 import ts from "typescript";
 import { prepareTurn, mergeSelectedTools } from "../src/lib/hermes/dispatch-core.ts";
-import { findCapabilityConflict, modelLaunchableRuntimeAgents, runtimeAgentById } from "../src/lib/hermes/capability-combinations.ts";
+import * as combinations from "../src/lib/hermes/capability-combinations.ts";
+const { findCapabilityConflict, modelLaunchableRuntimeAgents, runtimeAgentById } = combinations;
 import { parseUnifiedWorkflowCommand, unifiedWorkflowSelectionAllows, unifiedWorkflowRepeatsCompletedWork } from "../src/lib/workflows/unified-command.ts";
 
 const read = (file) => fs.readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8");
@@ -53,6 +54,7 @@ function terminalDispatch(workflowSelection, workflowCompletedWork) {
     systemWithProducts: "", productSearch: null, requiredArtifacts: [],
     gardenGrounding: { attempted: false }, geographicGrounding: { required: false }, webGroundingVerdict: { required: false },
     researchPipeline: null, capabilitySelection: {}, carriedDelegations: [],
+    approvalPolicy: { yoloMode: false, interactive: true }, codexDrive: false,
     beginRuntimeRun: (input) => ({ ...input, dispatch_json: JSON.stringify(input.dispatch) }),
   }, "run");
   return { run, decision };
@@ -83,21 +85,27 @@ async function launch({ workflow = "/master-agent:research", agent = "get-doc", 
   const POST = execute(declaration("app/api/hermes/tools/agent-launch/route.ts", "POST"), {
     TOOL: "agent_launch", MAX_BRIEF_LENGTH: 8000, MAX_REASON_LENGTH: 240, MAX_PARALLEL_AGENT_LAUNCHES: 4,
     requireEnabled: () => {}, capabilityForInternalToolRequest: () => "signed-token",
-    verifyCapabilityToken: () => ({ ok: true, token: { breadboardSessionId: 10, hermesSessionId: "session", conversationId: 20 } }),
+    verifyCapabilityToken: () => ({ ok: true, token: { breadboardSessionId: 10, hermesSessionId: "session", conversationId: 20, userId, surface } }),
     tokenAllows: () => allowed,
     getRuntimeSessionById: () => ({ id: 10, user_id: userId, conversation_id: 20, surface }),
     runtimeExternalSessionId: () => "session", getActiveRuntimeRun: () => run,
     getActiveCapabilityDecision: () => ({ allowedTools: allowed ? ["agent_launch"] : [] }),
     readJsonBody: async () => ({ args: { agent, brief: "Complete this specific task", reason: "This specialist has the required file and research tools." } }),
+    ...combinations,
     parseRuntimeRunDispatch, unifiedWorkflowSelectionAllows, unifiedWorkflowRepeatsCompletedWork, modelLaunchableRuntimeAgents, runtimeAgentById, findCapabilityConflict,
-    ApiError: FixtureApiError,
+    ApiError: FixtureApiError, SwarmError: class SwarmError extends Error {},
     apiErrorResponse: (error) => { if (!(error instanceof FixtureApiError)) throw error; return Response.json({ code: error.code }, { status: error.status }); },
     NextResponse: { json: (body) => Response.json(body) },
     listAgentLaunchRequestsAfter: () => [],
     reserveAgentLaunchRequestSlot: () => { state.reservations++; return true; },
+    agentLaunchRepeats: () => false,
     releaseAgentLaunchRequestSlot: () => {}, randomUUID: () => "worker",
     recordAgentLaunchRequest: (request) => { state.queued.push(request); return { requestId: "queued" }; },
     recordAuditEvent: () => {},
+    // The route reads the originating message's delivery channel.
+    getConversationById: () => ({ id: 20, user_id: userId }),
+    getConversationMessageByClientId: () => ({ metadata: {} }),
+    presentConversationMessage: (message) => message,
   }, "POST");
   const response = await POST(new Request("http://localhost/api/hermes/tools/agent-launch", { method: "POST" }));
   return { ...state, status: response.status, body: await response.json() };

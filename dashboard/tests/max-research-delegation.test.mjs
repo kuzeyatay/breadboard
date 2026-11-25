@@ -39,6 +39,7 @@ async function launch({ instruction, agentId = "max-research", delegatedAgents =
     listAgentLaunchRequestsAfter: () => queuedAgents,
     reserveAgentLaunchRequestSlot: () => { calls.reserved++; return true; },
     releaseAgentLaunchRequestSlot: () => {},
+    agentLaunchRepeats: () => false,
     randomUUID: () => "worker-id",
     getConversationById: () => conversation,
     getConversationMessageByClientId: () => ({ metadata: { deliveryChannel } }),

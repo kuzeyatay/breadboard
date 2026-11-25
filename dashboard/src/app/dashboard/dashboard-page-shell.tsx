@@ -36,7 +36,9 @@ export default async function DashboardPageShell({
       ? "/hooks"
       : initialTerminalPanel === "processes"
         ? "/processes"
-        : null;
+        : initialTerminalPanel === "scheduled"
+          ? "/scheduled"
+          : null;
     redirect(
       callbackUrl
         ? `/auth/login?callbackUrl=${encodeURIComponent(callbackUrl)}`

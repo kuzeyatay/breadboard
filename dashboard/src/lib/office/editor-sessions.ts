@@ -21,13 +21,53 @@ export { officeEditorApp, type OfficeEditorApp };
 type HostMessage = { type: string; [key: string]: unknown };
 type Subscriber = (message: HostMessage) => void;
 
+/**
+ * Where an editor session's document comes from and where its saves go: a
+ * Garden file (Spaces) or a chat artifact. `current` is what the editor shell
+ * is told about (Garden entry or presented artifact); the shell treats it as
+ * opaque apart from echoing it back to the page that embeds it.
+ */
+export interface OfficeTarget<Current = unknown> {
+  name: string;
+  read(): Buffer;
+  current(): Current;
+  save(bytes: Buffer): Promise<Current>;
+  /** Files the editor writes elsewhere (Save As, Export). Omitted: they are dropped. */
+  exportFile?(name: string, bytes: Buffer): Promise<unknown>;
+}
+
+/** A Garden file as an editor target: each save is the next Garden version, exports land beside it. */
+export function gardenOfficeTarget(store: GardenFileStore, scope: GardenFileScope, initial: GardenFileEntry): OfficeTarget<GardenFileEntry> {
+  let file = initial;
+  const stage = (bytes: Buffer) => store.stage(new Blob([new Uint8Array(bytes)]).stream());
+  return {
+    name: initial.name,
+    read: () => fs.readFileSync(store.content(scope, initial.id).path),
+    current: () => file,
+    async save(bytes) {
+      const staged = await stage(bytes);
+      try { file = store.save(scope, file.id, file.revision, staged); return file; }
+      finally { store.discard(staged); }
+    },
+    async exportFile(name, bytes) {
+      const staged = await stage(bytes);
+      try {
+        const folder = file.folder ? `${file.folder}/` : "";
+        const dot = name.lastIndexOf("."), base = dot > 0 ? name.slice(0, dot) : name, ext = dot > 0 ? name.slice(dot) : "";
+        const taken = new Set(store.list(scope).filter(entry => entry.folder === file.folder).map(entry => entry.name.toLowerCase()));
+        let candidate = name;
+        for (let n = 2; taken.has(candidate.toLowerCase()); n++) candidate = `${base} (${n})${ext}`;
+        return store.import(scope, `${folder}${candidate}`, staged);
+      } finally { store.discard(staged); }
+    },
+  };
+}
+
 interface Session {
   id: string;
   userId: number;
   app: OfficeEditorApp;
-  store: GardenFileStore;
-  scope: GardenFileScope;
-  file: GardenFileEntry;
+  target: OfficeTarget;
   dir: string;
   docPath: string;
   child: ChildProcess;
@@ -64,21 +104,19 @@ function broadcast(session: Session, message: HostMessage): void {
 
 export interface OpenSessionInput {
   userId: number;
-  store: GardenFileStore;
-  scope: GardenFileScope;
-  file: GardenFileEntry;
+  target: OfficeTarget;
   theme: "light" | "dark";
   ai: { baseUrl: string; model: string };
 }
 
 export async function openOfficeSession(input: OpenSessionInput): Promise<{ id: string; app: OfficeEditorApp }> {
-  const app = officeEditorApp(input.file.name);
+  const app = officeEditorApp(input.target.name);
   if (!app) throw new Error("This file type has no Office editor.");
   const id = randomUUID();
   const dir = path.join(os.tmpdir(), "breadboard-office", id);
   fs.mkdirSync(path.join(dir, "doc"), { recursive: true });
-  const docPath = path.join(dir, "doc", safeName(input.file.name));
-  const bytes = fs.readFileSync(input.store.content(input.scope, input.file.id).path);
+  const docPath = path.join(dir, "doc", safeName(input.target.name));
+  const bytes = input.target.read();
   fs.writeFileSync(docPath, bytes);
 
   const host = hostDir();
@@ -101,7 +139,7 @@ export async function openOfficeSession(input: OpenSessionInput): Promise<{ id: 
 
   let opened!: () => void, failed!: (error: Error) => void;
   const session: Session = {
-    id, userId: input.userId, app, store: input.store, scope: input.scope, file: input.file, dir, docPath, child,
+    id, userId: input.userId, app, target: input.target, dir, docPath, child,
     ready: new Promise<void>((resolve, reject) => { opened = resolve; failed = reject; }),
     pending: new Map(), subscribers: new Set(), backlog: [], syncedHash: sha(bytes), exportsSeen: new Map(),
     syncing: Promise.resolve(), closed: false,
@@ -185,12 +223,12 @@ export function officeMenu(session: Session, accelerator: string): void {
 }
 
 /** Before the editor closes: run its own Save, give the write a moment, then file the result. */
-export async function officeFlush(session: Session): Promise<GardenFileEntry> {
+export async function officeFlush(session: Session): Promise<unknown> {
   session.child.send({ type: "menu", accelerator: "Ctrl+S" });
   await new Promise(resolve => setTimeout(resolve, 800));
   scheduleSync(session);
   await session.syncing;
-  return session.file;
+  return session.target.current();
 }
 
 export function officeAnswer(session: Session, id: number, value: unknown): void {
@@ -215,7 +253,7 @@ export function subscribeOfficeSession(session: Session, subscriber: Subscriber)
   session.subscribers.add(subscriber);
   clearTimeout(session.idleTimer);
   for (const message of session.backlog.splice(0)) subscriber(message);
-  subscriber({ type: "file", file: session.file });
+  subscriber({ type: "file", file: session.target.current() });
   return () => {
     session.subscribers.delete(subscriber);
     if (!session.subscribers.size) scheduleIdleClose(session);
@@ -233,40 +271,26 @@ function scheduleSync(session: Session): void {
   });
 }
 
-async function stage(session: Session, bytes: Buffer) {
-  return session.store.stage(new Blob([new Uint8Array(bytes)]).stream());
-}
-
-/** The edited copy becomes the next Garden version; new exports become Garden files beside it. */
+/** The edited copy becomes the target's next version; new exports go wherever the target files them. */
 async function syncSession(session: Session): Promise<void> {
   if (session.closed) return;
   const bytes = fs.existsSync(session.docPath) ? fs.readFileSync(session.docPath) : null;
   if (bytes?.length && sha(bytes) !== session.syncedHash) {
-    const hash = sha(bytes), staged = await stage(session, bytes);
-    try {
-      session.file = session.store.save(session.scope, session.file.id, session.file.revision, staged);
-      session.syncedHash = hash;
-      broadcast(session, { type: "saved", file: session.file });
-    } finally { session.store.discard(staged); }
+    const hash = sha(bytes);
+    const file = await session.target.save(bytes);
+    session.syncedHash = hash;
+    broadcast(session, { type: "saved", file });
   }
   const exportsDir = path.join(session.dir, "exports");
-  if (!fs.existsSync(exportsDir)) return;
+  if (!session.target.exportFile || !fs.existsSync(exportsDir)) return;
   for (const name of fs.readdirSync(exportsDir)) {
     const target = path.join(exportsDir, name), stat = fs.statSync(target);
     if (!stat.isFile() || stat.size === 0 || session.exportsSeen.get(name) === stat.mtimeMs) continue;
     // Writers finish before their IPC call returns; a file still growing is picked up on the next pass.
     if (Date.now() - stat.mtimeMs < 1000) continue;
     session.exportsSeen.set(name, stat.mtimeMs);
-    const staged = await stage(session, fs.readFileSync(target));
-    try {
-      const folder = session.file.folder ? `${session.file.folder}/` : "";
-      const dot = name.lastIndexOf("."), base = dot > 0 ? name.slice(0, dot) : name, ext = dot > 0 ? name.slice(dot) : "";
-      const taken = new Set(session.store.list(session.scope).filter(entry => entry.folder === session.file.folder).map(entry => entry.name.toLowerCase()));
-      let candidate = name;
-      for (let n = 2; taken.has(candidate.toLowerCase()); n++) candidate = `${base} (${n})${ext}`;
-      const file = session.store.import(session.scope, `${folder}${candidate}`, staged);
-      broadcast(session, { type: "exported", file });
-    } finally { session.store.discard(staged); }
+    const file = await session.target.exportFile(name, fs.readFileSync(target));
+    broadcast(session, { type: "exported", file });
   }
 }
 

@@ -583,6 +583,21 @@ _TOOLS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
         ),
     ),
     (
+        "open_app",
+        "/api/hermes/tools/open-app",
+        "open_app",
+        _schema(
+            "open_app",
+            "Open a desktop application, or a file in its default application, as a normal visible window that keeps running after this call. Use this, never terminal_execute_command or Start-Process, to start GUI apps: commands run inside a sandbox job that closes when the command ends, which kills any app they launch. target is an app name as it appears in the Start menu (for example 'Mendix Studio Pro 11.17.0' or 'Notepad'), an absolute .exe or .lnk path, or an absolute file path such as a project file (.mpr, .sln, .docx) to open with its associated app. Returns the resolved path and process id when known. After launching, wait a few seconds and inspect the window with computer_use, or connect to the app's own MCP/API.",
+            {
+                "target": {"type": "string", "description": "App name, absolute .exe/.lnk path, or absolute file path to open."},
+                "args": {"type": "array", "items": {"type": "string"}, "description": "Command-line arguments, only for an .exe target."},
+                "cwd": {"type": "string", "description": "Working directory, only for an .exe target."},
+            },
+            ["target"],
+        ),
+    ),
+    (
         "browser_terminal",
         "/api/hermes/tools/browser-terminal",
         "browser_terminal",
@@ -1954,6 +1969,34 @@ _TOOLS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
                 },
             },
             ["title", "description", "code"],
+        ),
+    ),
+    (
+        "speech_synthesize",
+        "/api/hermes/tools/speech",
+        "video",
+        _schema(
+            "speech_synthesize",
+            (
+                "Speak narration with the voice the user set up for read-aloud "
+                "(the natural voice video_render narrates with) and save one "
+                "audio file per line in the conversation workspace. Use this for "
+                "every voiceover in a video you assemble yourself (screencast, "
+                "slide or app walkthrough mixed with ffmpeg). Never use an OS "
+                "voice such as Windows SAPI/System.Speech, macOS say, espeak or "
+                "pyttsx3: they sound robotic. Returns each file's absolute path; "
+                "measure clips with ffprobe and time the picture to them."
+            ),
+            {
+                "lines": {
+                    "type": "array",
+                    "items": {"type": "string", "maxLength": 1200},
+                    "maxItems": 60,
+                    "description": "One narration clip per item, in order. Plain spoken sentences; no slide numbers or headings read aloud.",
+                },
+                "name": {"type": "string", "maxLength": 48, "description": "Folder label under narration/, e.g. the video's slug."},
+            },
+            ["lines"],
         ),
     ),
     (
@@ -4243,7 +4286,19 @@ _TOOLS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
             "inbox', 'in two hours remind me to...', 'every Friday summarize...'); "
             "do not tell them to set it up in the Scheduled panel. Write `prompt` "
             "as a self-contained instruction for that future run (e.g. 'emails "
-            "from the last 24 hours', not 'emails received at 9am'). Give `cron` "
+            "from the last 24 hours', not 'emails received at 9am'). The future "
+            "run starts with no memory of this chat, so resolve a vague request "
+            "from the conversation first: name the exact site, account, course, "
+            "item or identifier the user means ('my grade' becomes 'the result for "
+            "Final exam Q1 5EPF0 on ans.app'), how to check it, and how to deliver "
+            "the outcome (e.g. a Telegram message). Fix typos and give the schedule "
+            "a clear meaning. For a watch that should end ('check every 5 minutes "
+            "until my grade is out'), the prompt must say: check the condition; if "
+            "it is not met, finish quietly without messaging the user; if it is "
+            "met, deliver the result once, then call schedule_list and "
+            "schedule_delete to remove this schedule so it stops running. If a "
+            "detail cannot be inferred from the chat, ask with clarify before "
+            "scheduling. Give `cron` "
             "for a recurrence or `runAt` for a single run. Times are the user's "
             "local time. Confirm what was scheduled from the result.",
             {
@@ -5938,6 +5993,15 @@ def _guard_computer_use(
     **context: Any,
 ) -> dict[str, str] | None:
     """Approve input separately for background and temporary foreground use."""
+    if tool_name == "open_app" and isinstance(args, dict):
+        # Launching a program is as consequential as running a command, so it
+        # rides the same native approval card. YOLO's session bypass answers it.
+        target = str(args.get("target") or "").strip()[:200]
+        return {
+            "action": "approve",
+            "message": f"Allow Hermes to open {target or 'an app'} on this computer?",
+            "rule_key": "breadboard-open-app:" + hashlib.sha256(target.lower().encode("utf-8")).hexdigest()[:16],
+        }
     if tool_name != "computer_use" or not isinstance(args, dict):
         return None
 
@@ -6014,8 +6078,78 @@ def _guard_computer_use(
     }
 
 
+_CAPABILITY_REQUEST_ROUTE = "/api/hermes/tools/capability-request"
+
+
+def _capability_request(task_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """POST to the dashboard's decision layer; a failure reads as a refusal."""
+    durable_session_id, subagent_task_id = _breadboard_session_identity(task_id)
+    secret = os.environ.get("BREADBOARD_HERMES_TOOL_SECRET", "").strip()
+    if not durable_session_id or not secret:
+        return {"status": "denied"}
+    connection: HTTPConnection | None = None
+    try:
+        host, port = _connection_target()
+        connection = HTTPConnection(host, port, timeout=_DEFAULT_REQUEST_TIMEOUT_SECONDS)
+        connection.request(
+            "POST",
+            _CAPABILITY_REQUEST_ROUTE,
+            body=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers=_tool_headers(secret, durable_session_id, subagent_task_id),
+        )
+        response = connection.getresponse()
+        data = json.loads(response.read(256 * 1024).decode("utf-8") or "{}")
+        return data if response.status < 400 and isinstance(data, dict) else {"status": "denied"}
+    except Exception:  # noqa: BLE001 - the old refusal is the safe fallback.
+        return {"status": "denied"}
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def _escalate_tool_access(
+    tool_access: dict, tool_name: str, args: dict, task_id: str,
+) -> str | None:
+    """Breadboard's decision layer for a tool this turn switched off.
+
+    The dashboard decides whether the tool may be switched on; Hermes's own
+    approval gate then asks the user, or passes by itself under YOLO (Super
+    Agent turns run with YOLO). Only after that does the dashboard widen the
+    turn's decision, and the tool is unblocked for the rest of the turn.
+    """
+    verdict = _capability_request(task_id, {"tool": tool_name, "phase": "check", "args": args})
+    status = verdict.get("status")
+    if status == "granted":
+        tool_access[tool_name] = True
+        return None
+    if status != "grantable":
+        message = verdict.get("message")
+        return message if isinstance(message, str) and message else None
+    from tools.approval import request_tool_approval
+
+    label = str(verdict.get("label") or tool_name)
+    approval = request_tool_approval(
+        tool_name,
+        str(verdict.get("prompt") or f"Allow Bread to {label}?"),
+        rule_key=f"breadboard-capability:{tool_name}",
+        display_target=label,
+    )
+    if not approval.get("approved"):
+        return str(approval.get("message") or f"The user did not allow {label}.")
+    granted = _capability_request(task_id, {"tool": tool_name, "phase": "grant", "args": args})
+    if granted.get("status") == "granted":
+        tool_access[tool_name] = True
+        return None
+    message = granted.get("message")
+    return message if isinstance(message, str) and message else None
+
+
 def register(ctx) -> None:
     """Register only narrow Breadboard tools in the ``breadboard`` toolset."""
+    # Hermes runs on Runtime V2's closed PATH; give it the user's real one
+    # (git, npx, uv, docker) before any tool resolves a program by name.
+    from .host_path import extend_process_path
+    extend_process_path()
     from .multisim import register_tools
     from .history_context import deduplicate_history, tag_session
 
@@ -6024,6 +6158,12 @@ def register(ctx) -> None:
     if callable(register_middleware):
         register_middleware("llm_request", deduplicate_history)
         register_middleware("llm_request", tag_session)
+    # The decision layer: a tool this turn switched off is requested, not refused.
+    try:
+        from agent.tool_access_escalation import register_escalation_handler
+        register_escalation_handler(_escalate_tool_access)
+    except ImportError:
+        pass
     register_hook = getattr(ctx, "register_hook", None)
     if callable(register_hook):
         register_hook("pre_tool_call", _guard_computer_use)

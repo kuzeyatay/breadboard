@@ -61,6 +61,7 @@ import { useAssistantIntelligence } from '@/app/components/use-assistant-intelli
 import { isSuperAgentEnabled } from '@/app/components/use-agent-mode';
 import { isYoloModeEnabled } from '@/app/components/use-yolo-mode';
 import ActivityPanel from '@/app/components/hermes/activity-panel';
+import { IntermediateTurn, isLiveConnection } from '@/app/components/hermes/inline-progress-notes';
 import { applyAutoHumanizeOutcome, useAutoHumanize, type NaturalRewriteActivity } from '@/app/components/humanizer/use-auto-humanize';
 import { UserMessageText } from '@/app/components/hermes/command-text';
 import CollapsibleUserMessage from '@/app/components/chat/collapsible-user-message';
@@ -687,9 +688,14 @@ const TranscriptRow = memo(function TranscriptRow({
           </UserMessageControls>
         ) : (
             <div className="text-sm leading-7 text-gray-200">
+              <IntermediateTurn
+                live={isLiveConnection(connection)}
+                notes={message.progressNotes}
+                answer={visibleAssistantContent}
+                renderPanel={(hideNotes) => (
               <ActivityPanel
                 activities={activities}
-                progressNotes={delegatedThinkingUpdates(message)}
+                progressNotes={hideNotes ? [] : delegatedThinkingUpdates(message)}
                 reasoning={message.thinking}
                 answerContent={visibleAssistantContent}
                 connection={connection}
@@ -701,6 +707,8 @@ const TranscriptRow = memo(function TranscriptRow({
                 responseCompletedAt={message.responseCompletedAt}
                 onPermissionDecision={onPermissionDecision}
                 completedLabel={delegatedAgentCompletedLabelForMessage(message)}
+              />
+                )}
               />
               <AssistantRichResponse
                 message={{ content: visibleAssistantContent, uiResources }}

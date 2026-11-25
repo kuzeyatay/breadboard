@@ -103,7 +103,7 @@ test("the hook feeds rebuilt hand-offs and the queue treats them as the live req
   assert.match(queue, /if \(originKey && seenRef\.current\.has\(originKey\)\) return true;/);
   // The panel never shows a finished newest reply as an empty body.
   const panel = source("../src/app/components/hermes/agent-runtime-panel.tsx");
-  assert.match(panel, /\(!streaming \? message\.content : ""\) \|\|/);
+  assert.match(panel, /revealedAssistantContent \|\|[\s\S]{0,200}\(!streaming \? storedAssistantContent : ""\)/);
 });
 
 test("Terminal does not consume a restored hand-off before its conversation scope exists", () => {

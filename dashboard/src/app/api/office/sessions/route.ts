@@ -1,7 +1,7 @@
 import { resolveChatmockBaseUrl } from "@/lib/chatmock-server";
 import { fileError, fileJson, gardenFileContext, readFileJson } from "@/lib/garden-files/server.ts";
 import { GardenFileError } from "@/lib/garden-files/store.ts";
-import { officeEditorApp, openOfficeSession } from "@/lib/office/editor-sessions.ts";
+import { gardenOfficeTarget, officeEditorApp, openOfficeSession } from "@/lib/office/editor-sessions.ts";
 import { selectedModelForUser } from "@/lib/selected-model";
 
 export const dynamic = "force-dynamic";
@@ -16,7 +16,7 @@ export async function POST(request: Request) {
     const file = store.get(scope, body.fileId);
     if (file.kind !== "file" || !officeEditorApp(file.name)) throw new GardenFileError(415, "office_editor_unsupported", "This file type has no Office editor.");
     const session = await openOfficeSession({
-      userId: scope.userId!, store, scope, file,
+      userId: scope.userId!, target: gardenOfficeTarget(store, scope, file),
       theme: body.theme === "dark" ? "dark" : "light",
       ai: { baseUrl: resolveChatmockBaseUrl(request).baseURL, model: selectedModelForUser(scope.userId) },
     });

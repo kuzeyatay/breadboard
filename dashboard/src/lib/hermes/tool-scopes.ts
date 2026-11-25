@@ -205,7 +205,10 @@ export const TO_MARKDOWN_TOOLS = ["to_markdown"] as const;
 // Remotion rendering for the default Video skill. The model supplies one
 // validated TSX composition; the server renders it with the pinned runtime and
 // imports the MP4.
-export const VIDEO_RENDER_TOOLS = ["video_render"] as const;
+// speech_synthesize speaks narration with the user's read-aloud voice into
+// workspace files, for videos an agent assembles itself with ffmpeg; it shares
+// video_render's surface rule.
+export const VIDEO_RENDER_TOOLS = ["video_render", "speech_synthesize"] as const;
 
 // Cloned Agent Loop Engineering Kit. The callback designs, checks and dry-runs
 // a loop contract inside the session's workspace; it never executes the loop's
@@ -447,7 +450,9 @@ export const HUMANIZER_TOOLS = ["humanize_text", "humanize_status"] as const;
 // immutable Hermes session toolset and the computer-use guidance provide the
 // runtime and last-resort gates.
 export const COMPUTER_USE_TOOLS = ["computer_use"] as const;
-export const BREADBOARD_USE_TOOLS = ["breadboard_use"] as const;
+// open_app is served by the same desktop bridge: the Electron main process
+// launches the app outside the runtime's kill-on-close job, so it survives.
+export const BREADBOARD_USE_TOOLS = ["breadboard_use", "open_app"] as const;
 
 // The build loop: read a file, change it, look for the next thing to change.
 // Hermes ships its own `file` toolset and it stays off — those tools take

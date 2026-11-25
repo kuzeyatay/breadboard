@@ -460,7 +460,10 @@
     & > .thought-topology-filter-panel {
       position: absolute;
       top: calc(100% + 0.4rem);
-      left: 0;
+      // No horizontal anchor here: thoughtTopologyViewer.css decides which
+      // edge the panel opens from (it follows where the toggle sits), and a
+      // `left: 0` at this later position would override its right anchor and
+      // push the panel off-screen.
       width: min(19rem, calc(100vw - 2.5rem));
       max-height: min(60vh, 30rem);
       overflow: auto;
@@ -1270,19 +1273,36 @@ html:not([data-theme=dark]):not([saved-theme=dark]) .graph.home-knowledge-graph 
     gap: 0.15rem 1rem;
     min-height: 1.9rem;
     max-width: none;
+    // Leave room for the Filters toggle, which sits left of the close button
+    // in this same row.
+    margin-right: 7.5rem;
     overflow-wrap: anywhere;
+    user-select: none;
   }
 
+  // Static so the Filters toggle below anchors to the overlay itself rather
+  // than to this row.
   > .thought-topology-controls {
-    position: relative;
-    inset: auto;
+    position: static;
     grid-row: 2;
-    z-index: 4;
     display: flex;
     flex-flow: row wrap;
     align-items: center;
     gap: 0.35rem;
     max-width: 100%;
+  }
+
+  // Filters sits beside the close button and its panel opens leftward, so it
+  // stays inside the viewport in both themes.
+  > .thought-topology-controls > .thought-topology-filter {
+    position: absolute;
+    inset: 0.65rem calc(0.65rem + 1.9rem + 0.4rem) auto auto;
+    z-index: 10001;
+
+    > .thought-topology-filter-panel {
+      inset: calc(100% + 0.4rem) 0 auto auto;
+      transform-origin: top right;
+    }
   }
 
   > .global-graph-close {

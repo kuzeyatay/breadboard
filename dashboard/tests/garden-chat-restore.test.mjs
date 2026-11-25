@@ -53,13 +53,18 @@ test("Garden history reconciles interrupted workers and preserves completed answ
       "@/lib/db": "export default globalThis.gardenRestoreFixture.db;",
       "@/lib/conversations/store": "export const {ensureConversationForLegacyChatSession, failStaleGardenPreDispatchTurns, summarizeConversationMessages} = globalThis.gardenRestoreFixture.store;",
       "../db.ts": "export default globalThis.gardenRestoreFixture.db;",
-      "../conversations/external-agent-turns.ts": "export const {finishExternalAgentTurn, reconcileExternalAgentTerminalTiming} = globalThis.gardenRestoreFixture.turns;",
-      "./runtime-run-manager.ts": "export const getTerminalResult = (...args) => globalThis.gardenRestoreFixture.getTerminalResult(...args); export const setRunTerminalHandler = (...args) => globalThis.gardenRestoreFixture.observed.push(args);",
+      "../conversations/external-agent-turns.ts": "export const {finishExternalAgentTurn, reconcileExternalAgentTerminalTiming, findExternalAgentAssistantMessage, attachExternalAgentRun, recordExternalAgentTurn} = globalThis.gardenRestoreFixture.turns;",
+      "./runtime-run-manager.ts": "export const getTerminalResult = (...args) => globalThis.gardenRestoreFixture.getTerminalResult(...args); export const setRunTerminalHandler = (...args) => globalThis.gardenRestoreFixture.observed.push(args); export const resolveHyperframesArtifactPath = () => null;",
     };
     const bundle = await build({
       entryPoints: [fileURLToPath(new URL("../src/app/api/chat-sessions/route.ts", import.meta.url))],
       bundle: true, write: false, platform: "node", format: "esm",
+      // Bundled CommonJS dependencies call require(); a data: URL module has none.
+      banner: { js: `import { createRequire as __bbCreateRequire } from "node:module"; const require = __bbCreateRequire(${JSON.stringify(fileURLToPath(new URL("../package.json", import.meta.url)))});` },
       plugins: [{ name: "isolated-chat-services", setup(builder) {
+        // Next.js's "server-only" marker has no Node entry; this bundle is server code.
+        builder.onResolve({ filter: /^server-only$/ }, () => ({ path: "server-only", namespace: "server-only" }));
+        builder.onLoad({ filter: /.*/, namespace: "server-only" }, () => ({ contents: "", loader: "js" }));
         builder.onResolve({ filter: /.*/ }, args => args.path in stubs ? { path: args.path, namespace: "stub" } : null);
         builder.onLoad({ filter: /.*/, namespace: "stub" }, args => ({ contents: stubs[args.path], loader: "js" }));
       } }],

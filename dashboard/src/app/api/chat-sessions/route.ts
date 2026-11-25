@@ -608,10 +608,20 @@ async function readSessions(
               legacy.sources, CASE WHEN legacy.runtime_status = 'pending' AND canonical.client_message_id LIKE 'goal:%'
                 THEN COALESCE(canonical.token_usage, legacy.token_usage) ELSE legacy.token_usage END AS token_usage,
               CASE WHEN legacy.runtime_status = 'pending' AND canonical.client_message_id LIKE 'goal:%'
-                THEN COALESCE(canonical.metadata, legacy.tool_calls) ELSE legacy.tool_calls END AS tool_calls,
+                THEN COALESCE(
+                  (SELECT r.metadata FROM conversation_message_reads r WHERE r.id = legacy.canonical_message_id),
+                  legacy.tool_calls)
+                ELSE legacy.tool_calls END AS tool_calls,
               legacy.runtime_status, legacy.runtime_error, legacy.created_at
        FROM chat_messages legacy
-       LEFT JOIN conversation_message_reads canonical
+       -- Never LEFT JOIN the conversation_message_reads view: SQLite cannot
+       -- flatten a view that is itself a join on the right of a LEFT JOIN, so
+       -- it materializes every conversation message through the storage
+       -- decoder on each call (~30 s on a large database, which starved the
+       -- event loop until the watchdog restarted the dashboard). The raw
+       -- columns come from the table; only the possibly-compressed metadata is
+       -- decoded, per row, through a primary-key lookup.
+       LEFT JOIN conversation_messages canonical
          ON canonical.id = legacy.canonical_message_id
        WHERE legacy.session_id IN (${placeholders})
        ORDER BY legacy.session_id, legacy.order_index`,

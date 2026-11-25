@@ -31,10 +31,14 @@ function paneArea(index: number, count: number): string {
 }
 
 /** Side-chat host per workspace: up to four tiled panes in one resizable dock. */
-export default function WorkspaceSideChat({ children, gardenSlug, messages = [] }: {
+export default function WorkspaceSideChat({ children, gardenSlug, messages = [], hidden = false, onReveal }: {
   children: ReactElement;
   gardenSlug?: string;
   messages?: readonly { role: string; content: string }[];
+  /** Hide the dock without closing its chats, e.g. while the host terminal is shut. */
+  hidden?: boolean;
+  /** Called when a side chat is opened while hidden, so the host can show itself. */
+  onReveal?: () => void;
 }) {
   const [opened, setOpened] = useState<OpenedSideChat[]>([]);
   const [active, setActive] = useState<string | null>(null);
@@ -45,6 +49,10 @@ export default function WorkspaceSideChat({ children, gardenSlug, messages = [] 
   const returnFocus = useRef<HTMLElement | null>(null);
   const openedRef = useRef(opened);
   openedRef.current = opened;
+  const hiddenRef = useRef(hidden);
+  hiddenRef.current = hidden;
+  const onRevealRef = useRef(onReveal);
+  onRevealRef.current = onReveal;
 
   useEffect(() => setWidth(readWidth()), []);
 
@@ -79,6 +87,7 @@ export default function WorkspaceSideChat({ children, gardenSlug, messages = [] 
     const key = crypto.randomUUID();
     setOpened(current => [...current, { ...request, context, key }]);
     setActive(key);
+    if (hiddenRef.current) onRevealRef.current?.();
   }, [saving, messages]);
 
   const close = useCallback((key: string) => {
@@ -145,8 +154,8 @@ export default function WorkspaceSideChat({ children, gardenSlug, messages = [] 
     {children}
     {count ? createPortal(
       <SideChatContext.Provider value={null}>
-        <div data-side-chat-dock
-          className="fixed bottom-4 right-4 top-20 z-[150] flex min-h-0 flex-col overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--paper-raised)] text-[var(--ink)] shadow-2xl"
+        <div data-side-chat-dock hidden={hidden} aria-hidden={hidden || undefined} inert={hidden || undefined}
+          className={`fixed bottom-4 right-4 top-20 z-[150] ${hidden ? "hidden" : "flex"} min-h-0 flex-col overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--paper-raised)] text-[var(--ink)] shadow-2xl`}
           style={{ width: width ? `min(${width}px, calc(100vw - 2rem))` : defaultWidth }}>
           <div role="separator" aria-orientation="vertical" aria-label="Resize side chat" tabIndex={0}
             title="Drag to resize. Double-click to reset."

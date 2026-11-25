@@ -62,6 +62,13 @@ export interface PrepareTurnInput {
 
 export interface PreparedTurn {
   plan: TaskPlan;
+  /**
+   * The plan for what the request itself asked, before Super Agent, YOLO or a
+   * goal widened its reach. Read it to judge intent ("is this an operational
+   * turn?"): the widened plan holds application_action and command_execution
+   * on every Super Agent turn, whatever was asked.
+   */
+  requestedPlan: TaskPlan;
   grant: CapabilityGrant;
   /** Compatibility view for the gateway and the runtime store. */
   decision: CapabilityDecision;
@@ -124,6 +131,7 @@ export function prepareTurn(input: PrepareTurnInput): PreparedTurn {
     );
   return {
     plan,
+    requestedPlan: planned,
     grant,
     decision: decisionForGrant(grant, input.workspaceRoot),
     // Pause for every missing filesystem grant that names a folder, whether the

@@ -3067,11 +3067,16 @@ class AIAgent:
                     logger.debug("Codex app-server turn/steer failed", exc_info=True)
                     return False
 
-        # Never kill a tool merely to deliver conversational guidance. The
-        # existing steer drain puts it on the final tool result before the next
-        # model decision, including delegate_task children.
+        # Instant steering (Codex 0.163 parity): a correction sent while tools
+        # run stops the running tool batch instead of waiting for it, so the
+        # model answers the user at once. Children are not interrupted: a
+        # delegate_task keeps its subagent and the correction lands when it
+        # returns. With instant steering off, fall back to the tool-result
+        # drain, which waits for the batch to finish.
         if getattr(self, "_executing_tools", False):
-            return self.steer(cleaned)
+            if not getattr(self, "instant_steer", True):
+                return self.steer(cleaned)
+            return self._redirect_during_tools(cleaned)
 
         _model_active = getattr(self, "_model_request_active", None)
         _redirect_lock = getattr(self, "_pending_redirect_lock", None)
@@ -3120,6 +3125,65 @@ class AIAgent:
                 _abort_active_request("redirect_abort")
             except Exception:
                 logger.debug("Failed to abort request for redirect", exc_info=True)
+        return True
+
+    def _redirect_during_tools(self, cleaned: str) -> bool:
+        """Stop the running tool batch and queue ``cleaned`` as a redirect.
+
+        Interruptible tools (terminal commands, waits, browser, MCP calls)
+        see the per-thread interrupt and return early; the executor records
+        the rest of the batch as skipped. The conversation loop then clears
+        the interrupt, applies the correction as a user message and keeps
+        the same turn going, exactly like a redirect during a model request.
+        """
+        # A steer queued earlier would be dropped by clear_interrupt(); carry
+        # it into the redirect so nothing the user sent is lost.
+        earlier_steer = self._drain_pending_steer()
+        text = f"{earlier_steer}\n\n{cleaned}" if earlier_steer else cleaned
+
+        def _queue() -> bool:
+            if self._interrupt_requested and not self._pending_redirect:
+                return False  # a hard stop is already in progress
+            if self._pending_redirect:
+                self._pending_redirect = (
+                    f"{self._pending_redirect}\n\n"
+                    f"[Additional user correction]\n{text}"
+                )
+            else:
+                self._pending_redirect = text
+            self._redirect_interrupted_tools = True
+            self._interrupt_requested = True
+            self._interrupt_message = None
+            return True
+
+        _redirect_lock = getattr(self, "_pending_redirect_lock", None)
+        if _redirect_lock is None:
+            if not hasattr(self, "_pending_redirect"):
+                self._pending_redirect = None
+            queued = _queue()
+        else:
+            with _redirect_lock:
+                queued = _queue()
+        if not queued:
+            return False
+
+        # Signal the tool threads only — not child agents, not the provider.
+        _execution_thread_id = getattr(self, "_execution_thread_id", None)
+        if _execution_thread_id is not None:
+            _set_interrupt(True, _execution_thread_id)
+            self._interrupt_thread_signal_pending = False
+        else:
+            self._interrupt_thread_signal_pending = True
+        _tracker = getattr(self, "_tool_worker_threads", None)
+        _tracker_lock = getattr(self, "_tool_worker_threads_lock", None)
+        if _tracker is not None and _tracker_lock is not None:
+            with _tracker_lock:
+                _worker_tids = list(_tracker)
+            for _wtid in _worker_tids:
+                try:
+                    _set_interrupt(True, _wtid)
+                except Exception:
+                    pass
         return True
 
     def _has_pending_redirect(self) -> bool:

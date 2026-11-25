@@ -641,3 +641,20 @@ test("drive roots are reach, never swept for produced artifacts", async () => {
   assert.equal(isFilesystemRoot(path.parse(process.cwd()).root), true);
   assert.equal(isFilesystemRoot(process.cwd()), false);
 });
+
+test("Super Agent widens the plan but keeps what the request itself asked for", () => {
+  // Grounding reads requestedPlan: the widened plan holds application_action
+  // on every Super Agent turn, which withheld the Gardens from all of them.
+  const prepared = prepareTurn({
+    request: "is that a hyperplane?",
+    surface: "garden_chat",
+    userId: 1,
+    grants: [],
+    workspaceRoot: WORKSPACE,
+    superAgent: true,
+    yoloMode: true,
+  });
+  assert.ok(prepared.plan.requiredCapabilities.includes("application_action"));
+  assert.ok(!prepared.requestedPlan.requiredCapabilities.includes("application_action"));
+  assert.ok(!prepared.requestedPlan.requiredCapabilities.includes("command_execution"));
+});

@@ -83,6 +83,13 @@ export async function POST(
     const assistantContentOffset = parseAssistantContentOffset(
       body.assistantContentOffset,
     );
+    // Optional: older clients omit it, and a malformed value is dropped rather
+    // than failing a correction the user is waiting on.
+    const progressNoteIndex =
+      Number.isSafeInteger(body.progressNoteIndex) && Number(body.progressNoteIndex) >= 0
+        && Number(body.progressNoteIndex) <= 100_000
+        ? Number(body.progressNoteIndex)
+        : undefined;
 
     const requestedRun = getRuntimeRun(runId);
     if (
@@ -213,6 +220,7 @@ export async function POST(
           ...(textSelection ? { textSelection } : {}),
           targetClientMessageId: courseCorrectionTargetClientMessageId,
           assistantContentOffset,
+          ...(progressNoteIndex !== undefined ? { progressNoteIndex } : {}),
         });
       } catch (error) {
         // Compatibility garden streams own their pending assistant row in the

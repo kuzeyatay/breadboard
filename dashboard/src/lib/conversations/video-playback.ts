@@ -15,6 +15,7 @@ import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
 import { resolveFfmpeg as resolvePinnedFfmpeg } from "../vimax/video.ts";
 import { playbackCopyPath, type StoredVideoBlob } from "./video-blob-store.ts";
+import { toolSearchPath } from "../../../scripts/host-path.mjs";
 
 const fsp = fs.promises;
 
@@ -41,7 +42,7 @@ export function resolveFfmpeg(env: NodeJS.ProcessEnv = process.env): string | nu
   const pinned = env.BREADBOARD_CHAT_VIDEO_FFMPEG_PATH?.trim() || resolvePinnedFfmpeg(env);
   if (pinned && fs.existsSync(pinned)) return pinned;
   const name = process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg";
-  for (const directory of (env.PATH ?? env.Path ?? "").split(path.delimiter)) {
+  for (const directory of toolSearchPath(env)) {
     if (!directory) continue;
     const candidate = path.join(directory, name);
     if (fs.existsSync(candidate)) return candidate;

@@ -27,6 +27,7 @@ import {
   type ChatNotificationRecord,
   type ChatNotificationTarget,
   type NotificationClarification,
+  type NotificationApproval,
 } from '@/lib/chat-notification-inbox';
 import { publishDesktopNotificationToast, handleWebsiteNotification, respondToWebsiteNotificationPermission, openDesktopNotificationTarget, onDesktopNotificationOverlayVisibility, reportDesktopChatNotifications, onDesktopChatNotificationDelivered, type DesktopChatNotification } from '@/lib/desktop-notification-overlay';
 import { desktopTabsBridge } from '@/lib/desktop-browser-tabs';
@@ -45,6 +46,7 @@ import NotificationReplyComposer, { type NotificationReplyDraft } from './notifi
 const ChatMarkdown = lazy(() => import('./chat-markdown'));
 // Load question choices only when needed; the lightweight reply input is immediate.
 const NotificationQuestionReply = dynamic(() => import('./notification-question-reply'));
+const NotificationApprovalReply = dynamic(() => import('./notification-approval-reply'));
 
 export interface ToastItem {
   id: string;
@@ -56,6 +58,8 @@ export interface ToastItem {
   notificationId?: string;
   question?: boolean;
   clarification?: NotificationClarification;
+  /** A runtime approval card answerable in place. */
+  approval?: NotificationApproval;
   website?: { id: string; origin: string };
   notificationPermission?: { id: string; origin: string; media?: ("microphone" | "camera" | "location")[] };
   target?: ChatNotificationTarget;
@@ -99,6 +103,7 @@ function notificationToast(record: ChatNotificationRecord): ToastItem {
     message: record.chatTitle,
     question: chatNotificationKind(record) === 'chat_question',
     clarification: record.clarification,
+    approval: record.approval,
     title: record.title,
     type: record.type,
     chatId: record.target.chatId,
@@ -123,6 +128,7 @@ function sameNotificationList(
       record.type === other.type &&
       record.kind === other.kind &&
       JSON.stringify(record.clarification) === JSON.stringify(other.clarification) &&
+      JSON.stringify(record.approval) === JSON.stringify(other.approval) &&
       record.inlineSelectionId === other.inlineSelectionId &&
       JSON.stringify(record.messageKeys) === JSON.stringify(other.messageKeys) &&
       JSON.stringify(record.target) === JSON.stringify(other.target) &&
@@ -702,7 +708,10 @@ function ToastCard({
               <ChatMarkdown content={response} />
             </Suspense>
           </div>
-          {toast.question && toast.clarification ? (
+          {toast.approval ? (
+            <NotificationApprovalReply key={`${toast.approval.sessionId}:${toast.approval.requestId}`}
+              approval={toast.approval} onAnswered={() => onDismiss(toast.id)} />
+          ) : toast.question && toast.clarification ? (
             <NotificationQuestionReply key={`${toast.clarification.sessionId}:${toast.clarification.requestId}`}
               clarification={toast.clarification} initialDraft={initialDraft} initialError={replyError}
               onSubmitReply={draft => onReply(toast, draft)} />

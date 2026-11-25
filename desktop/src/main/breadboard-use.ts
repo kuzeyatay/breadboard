@@ -11,6 +11,7 @@ import { breadboardDomOperation } from "./breadboard-use-dom";
 import { capturePageWithFreshFrame } from "./capture-page";
 import { waitForRevealFrame } from "./first-paint";
 import { ScreenRecordingManager } from "./screen-recording";
+import { openApp } from "./open-app";
 
 const ROUTES: Record<string, string> = {
   garden: "/garden", dashboard: "/dashboard", home: "/new-tab", settings: "/settings", profile: "/settings",
@@ -349,10 +350,11 @@ export class BreadboardUseBridge {
     };
     const token = Buffer.from(req.headers.authorization?.replace(/^Bearer /, "") ?? "");
     const secret = Buffer.from(this.token);
-    if (req.method !== "POST" || req.url !== "/breadboard-use" || req.headers.origin ||
+    if (req.method !== "POST" || (req.url !== "/breadboard-use" && req.url !== "/open-app") || req.headers.origin ||
       token.length !== secret.length || !timingSafeEqual(token, secret)) {
       send(403, { error: "Breadboard access denied." }); return;
     }
+    if (req.url === "/open-app") { await this.handleOpenApp(req, send); return; }
     let acquired = false;
     try {
       const chunks: Buffer[] = [];
@@ -387,5 +389,32 @@ export class BreadboardUseBridge {
       send(200, await this.execute(body.args, body.sessionId, body.runId));
     } catch (error) { send(400, { error: error instanceof Error ? error.message : "Breadboard action failed." }); }
     finally { if (acquired) this.busy = false; }
+  }
+
+  /** Launch an app from this process, outside Runtime V2's kill-on-close job. */
+  private async handleOpenApp(req: http.IncomingMessage, send: (status: number, data: unknown) => void) {
+    try {
+      const chunks: Buffer[] = [];
+      let size = 0;
+      for await (const chunk of req) {
+        size += chunk.length;
+        if (size > 32768) { send(413, { error: "Request too large." }); return; }
+        chunks.push(Buffer.from(chunk));
+      }
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      if (!body || typeof body.target !== "string" || !body.target.trim()) throw new Error("A target is required.");
+      const base = this.options.dashboardUrl();
+      const appTarget = base && this.targets().find(target => target.kind !== "browser" &&
+        new URL(target.contents.getURL()).origin === new URL(base).origin);
+      if (!Number.isInteger(body.userId) || body.userId <= 0 || !appTarget) {
+        send(403, { error: "Sign into the Breadboard desktop app first." }); return;
+      }
+      const signedInId = await desktopSessionAccountId(base!, appTarget.contents.session);
+      if (signedInId !== String(body.userId)) {
+        send(403, { error: "The desktop app is signed into a different account." }); return;
+      }
+      const args = Array.isArray(body.args) ? body.args.filter((value: unknown): value is string => typeof value === "string") : undefined;
+      send(200, await openApp({ target: body.target, args, cwd: typeof body.cwd === "string" ? body.cwd : undefined }));
+    } catch (error) { send(400, { error: error instanceof Error ? error.message : "The app could not be opened." }); }
   }
 }

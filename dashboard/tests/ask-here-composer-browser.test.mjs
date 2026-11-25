@@ -173,9 +173,15 @@ for (const {surface,pdfChat} of [
     await ask.click();
     await expect(cards.getByRole('button',{name:'Stop this answer',exact:true})).toBeVisible();
     assert.equal(await page.evaluate(()=>requests.length),1);
+    // Intermediate responses: while the answer runs the Thinking row keeps its
+    // label and timer but has no arrow; once it finishes, it opens as usual.
+    await expect(cards.locator('.assistant-response-meta')).toBeVisible();
+    await expect(cards.locator('[data-thinking-locked] .assistant-response-chevron')).toBeHidden();
+    await page.evaluate(()=>finish());
+    await expect(cards.locator('[data-thinking-locked]')).toHaveCount(0);
+    await expect(cards.locator('.assistant-response-chevron')).toBeVisible();
     await cards.getByTitle('Show thinking updates').click();
     await expect(cards.getByRole('list',{name:'Thinking updates'})).toContainText('I will check the surrounding explanation first.');
-    await page.evaluate(()=>finish());
     await page.mouse.click(20,20);
     await mark.click();
     await expect(cards.getByRole('textbox')).toHaveCount(0);

@@ -14,6 +14,7 @@ import {
 } from "@modelcontextprotocol/sdk/client/stdio.js";
 
 import { startRuntimeV2GatewayHttpService } from "./runtime-v2-gateway-http.mjs";
+import { withHostPath } from "./host-path.mjs";
 
 const PROFILE_REVISION = 1;
 const MAX_SAFE_RESULT_BYTES = 1024 * 1024;
@@ -416,8 +417,10 @@ async function startConnection(userId, slug, profileReference, profile, environm
     command: executable,
     args: profile.arguments,
     ...(profile.cwd ? { cwd: profile.cwd } : {}),
+    // getDefaultEnvironment() copies this service's closed Runtime V2 PATH;
+    // servers launched through uvx/npx call git, python, node by name.
     env: {
-      ...getDefaultEnvironment(),
+      ...withHostPath(getDefaultEnvironment()),
       ...environment,
     },
     // A local server may print provider settings. Runtime containment owns the

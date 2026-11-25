@@ -9,6 +9,8 @@ import {
 import { authorizeRuntimeReference } from "@/lib/hermes/session-service.ts";
 import { getAgentRuntimeByKind } from "@/lib/agent-runtime/runtime.ts";
 import { recordAuditEvent } from "@/lib/hermes/runtime-store.ts";
+import { resolveApprovalNotification } from "@/lib/chat-notifications/approvals.ts";
+import db from "@/lib/db";
 import {
   addTerminalCommandRule,
   takePendingTerminalCommand,
@@ -48,6 +50,7 @@ export async function POST(
       requestId,
       decision: decision as "once" | "always" | "reject",
     });
+    resolveApprovalNotification(db, session.row.id, requestId);
     // "Always" on a terminal card saves a Codex-style prefix rule from the
     // command the server refused, never from text the browser sends.
     const pendingCommand = takePendingTerminalCommand(session.row.id);

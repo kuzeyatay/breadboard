@@ -116,10 +116,12 @@ Then simplify the result.`;
   assert.equal(b.x,p.x);assert.ok(b.y+b.height<p.y,'bell sits above the palette');
   await bell.click();
   const dialog=page.getByRole('dialog',{name:'Notifications',exact:true});await dialog.waitFor();
-  const bounds=await dialog.boundingBox();assert.equal(bounds.width,480);assert.ok(bounds.height>=800);
+  const bounds=await dialog.boundingBox();assert.equal(bounds.width,400,'the slimmer notification column');assert.ok(bounds.height>=800);
   assert.equal(await page.locator('[data-notification-id]').first().getAttribute('data-notification-id'),'chat-notification:msg_2');
   assert.equal(await dialog.locator('img').count(),0,'no decorative logos');
   const mathCard=page.locator('[data-notification-id="chat-notification:msg_2"]');
+  // Formatting mounts lazily in a transition once the card nears the viewport.
+  await mathCard.locator('.katex').nth(3).waitFor();
   assert.equal(await mathCard.locator('.katex').count(),4,'inline TeX and dollar math render in the card');
   assert.deepEqual(await mathCard.locator('annotation').allTextContents(),['C_{gd}','R_S','r_o','A_v=-g_mr_o']);
   assert.equal(await dialog.locator('.katex-error').count(),0);

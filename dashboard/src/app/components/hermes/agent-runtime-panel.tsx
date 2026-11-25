@@ -166,10 +166,13 @@ import {
 } from "@/lib/conversations/external-agent-runs";
 import { chatTimeSeparatorLabels } from "@/lib/chat-time-separators";
 import {
+  interleaveProgressNotes,
   isClarificationAnswerMessage,
   partitionCourseCorrections,
   type CourseCorrectionBoundary,
 } from "@/lib/steered-response";
+import InlineProgressNotes, { ThinkingRow } from "./inline-progress-notes";
+import { useIntermediateResponses } from "./use-intermediate-responses";
 import {
   applyBranchVariant,
   cloneMessages,
@@ -871,6 +874,9 @@ export default function AgentRuntimePanel({
   onExternalAgentSourceReady,
   composerTextareaRef: ownerComposerTextareaRef,
 }: Props) {
+  // Intermediate responses (Settings): progress notes also appear inline in
+  // the transcript, Codex-style. The Thinking disclosure is unaffected.
+  const intermediateResponses = useIntermediateResponses();
   // The panel focuses the composer for its own reasons (asking about a
   // selection, opening an annotation). An owner that also puts text there —
   // picking an opener from the empty state — needs the same handle, so it may
@@ -1273,6 +1279,9 @@ export default function AgentRuntimePanel({
           `course-correction-${correctionIndex}`,
         content: message.content,
         offset: message.courseCorrectionOffset,
+        ...(typeof message.courseCorrectionNoteIndex === "number"
+          ? { noteIndex: message.courseCorrectionNoteIndex }
+          : {}),
         ...(message.textSelection ? { textSelection: message.textSelection } : {}),
       });
       byAssistantIndex.set(assistantIndex, boundaries);
@@ -2656,10 +2665,30 @@ export default function AgentRuntimePanel({
                 // A steer sent before any answer text was visible sits above
                 // the whole response, thinking header included; later steers
                 // split the answer at the point they arrived.
+                const rowCorrections =
+                  inlinedCourseCorrections.byAssistantIndex.get(index) ?? [];
+                // With intermediate responses on, progress notes are drawn
+                // inline and steers sent between them sit in that timeline.
+                // Like Codex: while the turn runs its notes are drawn inline
+                // and the Thinking row (seconds, tokens) has no arrow; once the
+                // answer is in, the notes live only inside that disclosure.
+                const liveIntermediateTurn =
+                  intermediateResponses &&
+                  message.role === "assistant" &&
+                  index === lastAssistantIndex &&
+                  !inlineRunActive &&
+                  !delegatedAgentActive &&
+                  (streaming || activeRun);
+                const progressLayout =
+                  liveIntermediateTurn
+                    ? interleaveProgressNotes(
+                        message.progressNotes ?? [],
+                        rowCorrections,
+                        visibleAssistantContent,
+                      )
+                    : null;
                 const { leading: leadingCorrections, inline: inlineCorrections } =
-                  partitionCourseCorrections(
-                    inlinedCourseCorrections.byAssistantIndex.get(index) ?? [],
-                  );
+                  progressLayout ?? partitionCourseCorrections(rowCorrections);
                 const retryResponse = !activeRun && !conversationLocked && !disabled
                   ? onRetryMessage && (message.interrupted || message.failed || index === lastAssistantIndex)
                     ? () => retryAssistantAsBranch(index)
@@ -3933,13 +3962,14 @@ export default function AgentRuntimePanel({
                       </div>
                     ) : (
                       <div className="text-sm leading-7 text-gray-200">
+                        <ThinkingRow locked={liveIntermediateTurn}>
                         <ActivityPanel
                           activities={
                             index === lastAssistantIndex && !inlineRunActive
                               ? activities
                               : []
                           }
-                          progressNotes={thinkingUpdates}
+                          progressNotes={liveIntermediateTurn ? [] : thinkingUpdates}
                           reasoning={message.reasoning}
                           answerContent={storedAssistantContent}
                           connection={
@@ -3998,6 +4028,7 @@ export default function AgentRuntimePanel({
                           }
                           stateFailed={responseInterrupted || Boolean(message.failed) || continuation.failed}
                         />
+                        </ThinkingRow>
                         {message.memoryUpdated ? (
                           <div className="mb-1.5 flex items-center gap-1.5 text-xs text-[var(--ink-muted)]">
                             <span aria-hidden>📖</span>
@@ -4028,6 +4059,9 @@ export default function AgentRuntimePanel({
                             onAction={handleGenerativeUiAction}
                             activeProductComparison={activeProductComparison}
                           />
+                        ) : null}
+                        {progressLayout?.timeline.length ? (
+                          <InlineProgressNotes timeline={progressLayout.timeline} />
                         ) : null}
                         {editingAssistantMessageId === assistantMessageEditId ? (
                           <form

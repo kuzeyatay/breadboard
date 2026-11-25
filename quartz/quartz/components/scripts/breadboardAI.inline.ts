@@ -33,7 +33,7 @@ interface QuartzSessionItem {
     clientMessageId?: string
     id?: string
     verification?: Record<string, unknown>
-    metadata?: { verification?: Record<string, unknown>; modelChangeLabels?: string[]; modelChangeLabel?: string }
+    metadata?: { verification?: Record<string, unknown>; modelChangeLabels?: string[]; modelChangeLabel?: string; progressNotes?: unknown }
   }>
 }
 
@@ -944,6 +944,18 @@ function setupPanel(root: HTMLElement) {
         )
       : []
   }
+  // Settings → Intermediate responses: while a turn runs, Bread's progress
+  // notes are drawn in the transcript above its answer, Codex-style. When the
+  // answer is in they move into the activity panel (see setBusy). The live
+  // stream says per note whether the setting is on.
+  function insertProgressNote(answerEl: HTMLElement, text: string) {
+    if (!text.trim() || !answerEl.parentElement) return
+    const note = document.createElement("div")
+    note.className = "breadboard-ai-progress-note breadboard-ai-markdown"
+    note.innerHTML = markdownToHtml(text)
+    answerEl.parentElement.insertBefore(note, answerEl)
+  }
+
   function renderAssistantContent(el: HTMLElement, text: string, resources?: unknown[]) {
     if (resources) messageResources.set(el, widgetResources(resources))
     el.classList.add("breadboard-ai-markdown")
@@ -1235,6 +1247,12 @@ function setupPanel(root: HTMLElement) {
             : "Completed"
       for (const entry of activityEntries.values())
         if (entry.status === "running") entry.status = "completed"
+      const notes = Array.from(messages!.querySelectorAll<HTMLElement>(".breadboard-ai-progress-note"))
+      notes.forEach((note, index) => {
+        const text = note.textContent?.trim()
+        if (text) activityEntries.set(`note-${index}-${Date.now()}`, { label: text, status: "note" })
+        note.remove()
+      })
       renderActivity()
       window.setTimeout(() => {
         activity.classList.add("collapsed")
@@ -1251,6 +1269,7 @@ function setupPanel(root: HTMLElement) {
     const rawLabel = entry.label.trim().replace(/[.!?]+$/, "")
     const phrase = rawLabel === "Writing answer" ? "Writing the answer" : rawLabel || "Working"
 
+    if (entry.status === "note") return entry.label.trim()
     if (entry.status === "permission_required") return "Permission is required."
     if (entry.status === "denied") return "Permission was denied."
     if (entry.status === "failed") return `${phrase} failed.`
@@ -1443,10 +1462,27 @@ function setupPanel(root: HTMLElement) {
           continue
         }
         if (event.type === "assistant.delta") {
+          // A live draft (intermediate responses). It is provisional: a tool
+          // boundary reclassifies it below, and the final answer replaces it.
           text += event.payload?.text ?? ""
           renderAssistantContent(assistantEl, text)
           messages!.scrollTop = messages!.scrollHeight
+        } else if (event.type === "assistant.segment") {
+          // The draft so far was narration before a tool call, not the answer.
+          if (event.payload?.streamed === true && text) {
+            text = ""
+            renderAssistantContent(assistantEl, text)
+          }
+          if (event.payload?.inline !== false && typeof event.payload?.text === "string") {
+            insertProgressNote(assistantEl, event.payload.text)
+            messages!.scrollTop = messages!.scrollHeight
+          }
         } else if (event.type === "assistant.completed") {
+          if (typeof event.payload?.replacementText === "string") {
+            text = event.payload.replacementText
+            renderAssistantContent(assistantEl, text)
+            messages!.scrollTop = messages!.scrollHeight
+          }
           const usage = event.payload?.usage
           const total = Number(usage?.totalTokens ?? usage?.total_tokens)
           if (activityTitle && Number.isFinite(total) && total > 0) {

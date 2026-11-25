@@ -112,8 +112,17 @@ function mediaResolver(archive: PackageArchive): (mediaRef: string) => string | 
   };
 }
 
+/**
+ * Slides are laid out at 960px; a narrow side panel would otherwise scroll
+ * sideways. Scale each slide down (never up) to the frame's width.
+ */
+const FIT_TO_WIDTH_SCRIPT = `<script>(function(){function fit(){var w=document.documentElement.clientWidth-32;document.body.style.padding="16px";document.querySelectorAll(".pptx-slide").forEach(function(s){var n=parseFloat(s.style.width)||960;s.style.zoom=String(Math.min(1,w/n));s.style.marginBottom="16px"})}fit();addEventListener("resize",fit)})()</script>`;
+
 /** Static, dependency-free fallback preview built from GenOffice's server-side RenderTree. */
-export async function renderPptxPreviewHtml(buffer: Uint8Array): Promise<string> {
+export async function renderPptxPreviewHtml(
+  buffer: Uint8Array,
+  options: { fitToWidth?: boolean } = {},
+): Promise<string> {
   const opened = await openPptx(buffer);
   const media = mediaResolver(opened.archive);
   const slides = opened.deck.slides.map((slide, index) => {
@@ -124,5 +133,5 @@ export async function renderPptxPreviewHtml(buffer: Uint8Array): Promise<string>
     });
     return `<section class="pptx-slide" aria-label="Slide ${index + 1}" style="width:${rendered.widthPx}px;height:${rendered.heightPx}px;background:${cssColor(rendered.background)}">${rendered.nodes.map(nodeHtml).join("")}</section>`;
   });
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><style>html{background:#e5e7eb}body{margin:0;padding:32px;font-family:Arial,sans-serif}.pptx-slide{position:relative;overflow:hidden;margin:0 auto 32px;box-shadow:0 8px 30px #0003}.pptx-node,.pptx-cell{position:absolute;box-sizing:border-box;overflow:hidden}.pptx-group{left:0!important;top:0!important;overflow:visible}.pptx-line{white-space:pre;line-height:1.05}.pptx-chip{display:grid;place-items:center;border:1px dashed #94a3b8;background:#f8fafc;color:#475569;font-size:12px}.pptx-chart{background:#fff;border:1px solid #d1d5db}.pptx-picture img{display:block}</style></head><body>${slides.join("")}</body></html>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><style>html{background:#e5e7eb}body{margin:0;padding:32px;font-family:Arial,sans-serif}.pptx-slide{position:relative;overflow:hidden;margin:0 auto 32px;box-shadow:0 8px 30px #0003}.pptx-node,.pptx-cell{position:absolute;box-sizing:border-box;overflow:hidden}.pptx-group{left:0!important;top:0!important;overflow:visible}.pptx-line{white-space:pre;line-height:1.05}.pptx-chip{display:grid;place-items:center;border:1px dashed #94a3b8;background:#f8fafc;color:#475569;font-size:12px}.pptx-chart{background:#fff;border:1px solid #d1d5db}.pptx-picture img{display:block}</style></head><body>${slides.join("")}${options.fitToWidth ? FIT_TO_WIDTH_SCRIPT : ""}</body></html>`;
 }

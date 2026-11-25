@@ -340,6 +340,8 @@ export interface AgentMessage {
   courseCorrectionTargetClientMessageId?: string;
   /** UTF-16 character boundary in the assistant response at steer time. */
   courseCorrectionOffset?: number;
+  /** Progress notes the assistant had written when this steer was sent. */
+  courseCorrectionNoteIndex?: number;
   clientRequestId?: string;
   branchGroupId?: string;
   textSelection?: ChatTextSelectionReference;
@@ -923,6 +925,13 @@ export function normalizeRestoredMessages(value: unknown): AgentMessage[] {
         delete normalized.courseCorrectionOffset;
       }
       if (
+        typeof message.courseCorrectionNoteIndex !== "number" ||
+        !Number.isSafeInteger(message.courseCorrectionNoteIndex) ||
+        message.courseCorrectionNoteIndex < 0
+      ) {
+        delete normalized.courseCorrectionNoteIndex;
+      }
+      if (
         message.memoryUpdated === true ||
         message.tools?.some(
           (tool) =>
@@ -1166,6 +1175,31 @@ function monitorBackgroundChatResponse(input: {
 
 export type ConnectionState =
   "idle" | "connecting" | "streaming" | "waiting" | "error";
+
+/**
+ * A stopped answer is sealed on the server before the runtime writes its
+ * partial text, so a reload in between returns that turn empty. Keep what
+ * this viewer already showed for such a turn instead of blanking it.
+ */
+function keepStoppedWork(restored: AgentMessage[], local: readonly AgentMessage[]): AgentMessage[] {
+  const shown = new Map<string, AgentMessage>();
+  for (const message of local) {
+    if (message.role === "assistant" && message.clientMessageId && message.interrupted &&
+      (message.content.trim() || message.tools?.length)) shown.set(message.clientMessageId, message);
+  }
+  if (!shown.size) return restored;
+  return restored.map((message) => {
+    const previous = message.role === "assistant" && message.clientMessageId
+      ? shown.get(message.clientMessageId) : undefined;
+    if (!previous || message.pending || message.content.trim()) return message;
+    return {
+      ...message,
+      content: previous.content,
+      tools: message.tools?.length ? message.tools : previous.tools,
+      interrupted: true,
+    };
+  });
+}
 
 type StreamOutcome = "completed" | "continuing" | "cancelled" | "failed";
 
@@ -2557,11 +2591,22 @@ export function useAgentSession(
               commit(assistant);
               break;
             case "assistant.segment": {
-              // The server forwards a segment only after a tool boundary has
-              // classified it as progress narration. Keep it permanently on
-              // the response, separate from both the answer and private model
-              // reasoning, so nothing the user saw is later erased.
+              // A tool boundary has classified the streamed draft as progress
+              // narration. Move it out of the answer bubble into the progress
+              // notes, where it stays permanently, so what the user already
+              // read is relocated rather than erased.
               const sealed = String(payload.text ?? "");
+              if (payload.streamed === true) {
+                assistant = { ...assistant, content: "" };
+                upsertActivity({
+                  id: "writing-answer",
+                  kind: "answer",
+                  label: "Writing answer",
+                  status: "completed",
+                  startedAt: new Date().toISOString(),
+                  completedAt: new Date().toISOString(),
+                });
+              }
               if (sealed.trim()) {
                 narrationSegments.push(sealed);
                 const progressNotes = assistant.progressNotes ?? [];
@@ -2571,7 +2616,6 @@ export function useAgentSession(
                     progressNotes, sealed, payload.progressIndex,
                   ),
                 };
-                commit(assistant);
                 upsertActivity({
                   id: `narration-${narrationSegments.length}`,
                   kind: "answer",
@@ -2582,6 +2626,7 @@ export function useAgentSession(
                   completedAt: new Date().toISOString(),
                 });
               }
+              commit(assistant);
               break;
             }
             case "reasoning.status":
@@ -4857,8 +4902,41 @@ export function useAgentSession(
         .reverse()
         .find((message) => message.role === "assistant");
       const assistantContentOffset = activeAssistant?.content.length ?? 0;
+      // Where the steer falls among the progress notes, so the transcript can
+      // show it between the notes in the order things actually happened.
+      const progressNoteIndex = activeAssistant?.progressNotes?.length ?? 0;
       setSteerError(null);
       transition("steering");
+      // Show the correction in the transcript the moment it is sent, like
+      // Codex, instead of after the server has staged attachments and Hermes
+      // has accepted it. A rejected steer is withdrawn again below, so the
+      // follow-up queue that takes over never shows it twice.
+      const steerMessage: AgentMessage = {
+        id: crypto.randomUUID(),
+        clientMessageId: `steer:${clientRequestId}`,
+        createdAt: new Date().toISOString(),
+        role: "user",
+        content: trimmed,
+        ...(attachments.length > 0
+          ? {
+              attachmentNames: attachments.map((attachment) => attachment.name),
+              attachments: chatMessageAttachments(attachments),
+            }
+          : {}),
+        courseCorrection: true,
+        ...(textSelection ? { textSelection } : {}),
+        courseCorrectionTargetClientMessageId: activeAssistant?.clientMessageId,
+        courseCorrectionOffset: assistantContentOffset,
+        courseCorrectionNoteIndex: progressNoteIndex,
+        clientRequestId,
+      };
+      const withdrawSteerMessage = () => {
+        if (sessionRef.current !== activeSessionId) return;
+        setMessages((current) =>
+          current.filter((message) => message.clientRequestId !== clientRequestId),
+        );
+      };
+      setMessages((current) => [...current, steerMessage]);
       try {
         const response = await fetch(
           `/api/hermes/sessions/${activeSessionId}/steer`,
@@ -4872,6 +4950,7 @@ export function useAgentSession(
               textSelection,
               clientRequestId,
               assistantContentOffset,
+              progressNoteIndex,
             }),
           },
         );
@@ -4881,6 +4960,7 @@ export function useAgentSession(
         // after awaiting the old stream could send into a newly selected chat.
         if (response.status === 409 &&
             (body.code === "run_not_active" || body.code === "steer_unavailable")) {
+          withdrawSteerMessage();
           if (sessionRef.current === activeSessionId && activeRunIdRef.current === runId && !stopWasRequested()) {
             transition(pendingPermission ? "waiting_for_permission" : "running");
           }
@@ -4895,42 +4975,23 @@ export function useAgentSession(
         }
 
         if (sessionRef.current !== activeSessionId) return true;
-        setMessages((current) => {
-          if (
-            current.some(
-              (message) => message.clientRequestId === clientRequestId,
-            )
-          ) {
-            return current;
-          }
-          return [
-            ...current,
-            {
-              id: crypto.randomUUID(),
-              clientMessageId: `steer:${clientRequestId}`,
-              createdAt: new Date().toISOString(),
-              role: "user",
-              content: trimmed,
-              ...(attachments.length > 0
-                ? {
-                    attachmentNames: attachments.map((attachment) => attachment.name),
-                    attachments: chatMessageAttachments(attachments),
-                  }
-                : {}),
-              courseCorrection: true,
-              ...(textSelection ? { textSelection } : {}),
-              courseCorrectionTargetClientMessageId:
-                typeof body.courseCorrectionTargetClientMessageId === "string"
-                  ? body.courseCorrectionTargetClientMessageId
-                  : activeAssistant?.clientMessageId,
-              courseCorrectionOffset:
-                typeof body.courseCorrectionOffset === "number"
-                  ? body.courseCorrectionOffset
-                  : assistantContentOffset,
-              clientRequestId,
-            },
-          ];
-        });
+        // Adopt the server's anchor for where the correction sits in the
+        // response; the optimistic bubble used the client's best guess.
+        setMessages((current) =>
+          current.map((message) =>
+            message.clientRequestId === clientRequestId
+              ? {
+                  ...message,
+                  ...(typeof body.courseCorrectionTargetClientMessageId === "string"
+                    ? { courseCorrectionTargetClientMessageId: body.courseCorrectionTargetClientMessageId }
+                    : {}),
+                  ...(typeof body.courseCorrectionOffset === "number"
+                    ? { courseCorrectionOffset: body.courseCorrectionOffset }
+                    : {}),
+                }
+              : message,
+          ),
+        );
         setActiveInstruction(trimmed);
         if (
           activeRunIdRef.current === runId &&
@@ -4942,6 +5003,7 @@ export function useAgentSession(
         }
         return true;
       } catch (steeringError) {
+        withdrawSteerMessage();
         if (sessionRef.current !== activeSessionId) throw steeringError;
         setSteerError(
           steeringError instanceof Error
@@ -5551,7 +5613,8 @@ export function useAgentSession(
     const restored = await loadHermesSessionDetail(surface, id).catch(() => null);
     if (restored?.id !== id || viewEpochRef.current !== viewEpoch || sessionRef.current !== id ||
         localTurnVersion.current !== turnVersion || isActiveAgentRunState(runStateRef.current)) return;
-    const nextMessages = normalizeRestoredMessages(restored.messages);
+    const nextMessages = keepStoppedWork(normalizeRestoredMessages(restored.messages), messagesRef.current);
+    messagesRef.current = nextMessages;
     setMessages(nextMessages);
     if (!resumeSnapshotRun(id, restored.activeRun, viewEpoch) && !rehydrateAwaitingPermission(nextMessages)) {
       resumePendingConversation(id, nextMessages, viewEpoch);
@@ -5562,6 +5625,10 @@ export function useAgentSession(
     const onGoalTurn = (event: Event) => {
       const { sessionId: id, turn } = (event as CustomEvent<{ sessionId: string; turn: GoalTurnSnapshot }>).detail;
       if (id !== sessionRef.current || isActiveAgentRunState(runStateRef.current)) return;
+      // The turn this viewer just stopped is already final on screen. Reloading
+      // the whole transcript for it is what made Stop lag on long goal chats,
+      // and it raced the runtime's own write of the partial answer.
+      if (stoppedTurnIdsRef.current.has(turn.clientMessageId) && turn.status !== "pending") return;
       const assistant = messagesRef.current.findLast((row) =>
         row.role === "assistant" && row.clientMessageId === turn.clientMessageId);
       if (!assistant || assistant.pending || turn.status === "pending") void refreshSession();

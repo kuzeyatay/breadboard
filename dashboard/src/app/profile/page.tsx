@@ -17,6 +17,7 @@ import ProfileClient from "./profile-client";
 import { readClapAction } from "@/lib/profile/clap-action-store.ts";
 import { askPasswordAtStartup } from "@/lib/first-account";
 import { thoughtTopologyAutoUpdateEnabled, webPdfCleanupEnabled } from "@/lib/thought-topology/preferences.ts";
+import { intermediateResponsesEnabled } from "@/lib/hermes/intermediate-responses.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -84,6 +85,7 @@ export default async function ProfilePage({
       returnTo={returnTo}
       initialThoughtTopologyAutoUpdate={thoughtTopologyAutoUpdateEnabled(userId)}
       initialWebPdfCleanup={webPdfCleanupEnabled(userId)}
+      initialIntermediateResponses={intermediateResponsesEnabled(userId)}
       initialAskPasswordAtStartup={askPasswordAtStartup(userId)}
       initialClapAction={readClapAction(db, userId)}
       initialSnapAction={readClapAction(db, userId, 'snap')}

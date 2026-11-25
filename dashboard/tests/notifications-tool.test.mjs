@@ -26,6 +26,7 @@ function database() {
       (3,'conv_voice',1,'Voice','dashboard_terminal','Voice');
     CREATE TABLE conversation_messages(id INTEGER PRIMARY KEY, conversation_id INTEGER, client_message_id TEXT,
       role TEXT DEFAULT 'assistant', content TEXT, status TEXT DEFAULT 'complete', metadata TEXT, updated_at TEXT);
+    CREATE VIEW conversation_message_reads AS SELECT * FROM conversation_messages;
     CREATE TABLE hermes_runtime_sessions(id INTEGER PRIMARY KEY, user_id INTEGER, conversation_id INTEGER);
     CREATE TABLE hermes_runs(id TEXT PRIMARY KEY, runtime_session_id INTEGER, status TEXT, dispatch_json TEXT, started_at TEXT, heartbeat_at TEXT);
     CREATE TABLE learn_jobs(id TEXT PRIMARY KEY, garden_id TEXT, status TEXT, current_step TEXT, progress_percent INTEGER DEFAULT 0,

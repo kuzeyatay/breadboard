@@ -446,7 +446,13 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             pass
 
         if (getattr(agent, "tool_access", None) or {}).get(function_name) is False:
-            _ts_scope_block = json.dumps({"error": f"{function_name} is disabled for this turn."})
+            # The host may switch the tool on now (a decision layer) instead of refusing.
+            from agent.tool_access_escalation import escalate as _escalate_tool_access
+            _escalation_block = _escalate_tool_access(
+                getattr(agent, "tool_access", None), function_name, function_args, effective_task_id,
+            )
+            if _escalation_block is not None:
+                _ts_scope_block = _escalation_block
         function_args, middleware_trace = _apply_tool_request_middleware_for_agent(
             agent,
             function_name=function_name,
@@ -1127,7 +1133,13 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             pass
 
         if (getattr(agent, "tool_access", None) or {}).get(function_name) is False:
-            _ts_scope_block = json.dumps({"error": f"{function_name} is disabled for this turn."})
+            # The host may switch the tool on now (a decision layer) instead of refusing.
+            from agent.tool_access_escalation import escalate as _escalate_tool_access
+            _escalation_block = _escalate_tool_access(
+                getattr(agent, "tool_access", None), function_name, function_args, effective_task_id,
+            )
+            if _escalation_block is not None:
+                _ts_scope_block = _escalation_block
         function_args, middleware_trace = _apply_tool_request_middleware_for_agent(
             agent,
             function_name=function_name,

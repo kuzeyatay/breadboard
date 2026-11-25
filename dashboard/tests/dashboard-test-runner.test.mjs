@@ -56,6 +56,7 @@ test("dashboard test discovery partitions the exact real-browser lane", () => {
     "composer-layout-browser.test.mjs",
     "browser-terminal-layout-browser.test.mjs",
     "chat-prompt-suggestion-browser.test.mjs",
+    "new-tab-prompt-suggestion-browser.test.mjs",
     "ask-here-suggestion-browser.test.mjs",
     "sentence-completion-browser.test.mjs",
     "recommendations-browser.test.mjs",

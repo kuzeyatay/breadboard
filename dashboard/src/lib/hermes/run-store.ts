@@ -33,6 +33,8 @@ export interface RuntimeArtifactRequirement {
 export interface RuntimeRunDispatch {
   /** Server-resolved approval standing for durable assignments. */
   teamApproval?: boolean;
+  /** Someone can answer a card on this run (false for delivery-channel and scheduled turns). */
+  interactive?: boolean;
   swarmWorker?: { runId: string; taskKey: string; workflowId?: string };
   /** Durable recovery of this request, also available outside explicit Goal mode. */
   taskRecovery?: TaskRecoveryState;

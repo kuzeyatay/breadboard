@@ -117,6 +117,7 @@ import ChatVideoLinkEmbeds from "@/app/components/chat-video-link-embed";
 import { useAssistantIntelligence } from "@/app/components/use-assistant-intelligence";
 import { useChatModelChanges } from "@/app/components/use-chat-model-changes";
 import { ChatModelChangeSeparators } from "@/app/components/chat-model-change-separator";
+import { IntermediateTurn, isLiveConnection } from "@/app/components/hermes/inline-progress-notes";
 import ActivityPanel from "@/app/components/hermes/activity-panel";
 import { isExternalAgentRunMessage } from "@/app/components/hermes/use-agent-session";
 import { applyAutoHumanizeOutcome, useAutoHumanize, type NaturalRewriteActivity } from "@/app/components/humanizer/use-auto-humanize";
@@ -2832,11 +2833,16 @@ const ChatTranscript = memo(function ChatTranscript({
                             </div>
                           ) : null}
                           {!externalRun ? (
+                            <IntermediateTurn
+                              live={i === lastAssistantIndex && !delegatedAgentActive && isLiveConnection(connection)}
+                              notes={msg.progressNotes}
+                              answer={storedAssistantContent}
+                              renderPanel={(hideNotes) => (
                             <ActivityPanel
                               activities={
                                 i === lastAssistantIndex ? activities : []
                               }
-                              progressNotes={thinkingUpdates}
+                              progressNotes={hideNotes ? [] : thinkingUpdates}
                               reasoning={msg.thinking}
                               answerContent={storedAssistantContent}
                               connection={
@@ -2885,6 +2891,8 @@ const ChatTranscript = memo(function ChatTranscript({
                                     ? continuation.stateLabel
                                     : undefined
                               }
+                            />
+                              )}
                             />
                           ) : null}
                           {externalRun ? (
@@ -6252,6 +6260,10 @@ export default function WorkspaceClient({
       await runGardenInlineQuestion({
         sessionId: session.id, clusterSlug, clientMessageId: run.clientMessageId,
         question, selection, attachments, model, reasoningEffort, ...voice,
+        // The same modes as a composer send: a highlight question is a full
+        // turn, so Super Agent and Personalize must reach it too.
+        superAgent: isSuperAgentEnabled(), yoloMode: isSuperAgentEnabled() || isYoloModeEnabled(),
+        adhdMode: isDirectModeEnabled(), personalize: isPersonalizeEnabled(),
         sourceResponse: messages.find((message, index) => messageSelectionSourceId(message, index) === selection.sourceMessageId)?.content,
         selectedDocumentSlugs, signal: run.controller.signal,
         publish: pair => updateChatMessages(session.id, current => {

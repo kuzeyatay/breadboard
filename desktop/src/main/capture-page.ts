@@ -7,7 +7,12 @@ const pendingCaptures = new WeakMap<WebContents, Promise<NativeImage>>();
  * return pixels from before a DOM update. DevTools capture forces that frame
  * without selecting a tab or acquiring Electron's visible capturer. Serialize
  * per page so overlapping callers cannot detach each other's debugger. */
-export async function capturePageWithFreshFrame(contents: WebContents): Promise<NativeImage> {
+export async function capturePageWithFreshFrame(contents: WebContents, options: { beyondViewport?: boolean } = {}): Promise<NativeImage> {
+  // captureBeyondViewport makes Chromium override the page's device metrics for
+  // the capture, which relayouts the page and fires `resize` in it. Callers
+  // capturing a page the person is looking at (and that reacts to resize, like
+  // the dashboard's terminal dock) opt out; the clip is the viewport anyway.
+  const beyondViewport = options.beyondViewport ?? true;
   const previous = pendingCaptures.get(contents);
   const capture = (previous ? previous.catch(() => undefined) : Promise.resolve()).then(async () => {
     if (contents.isDestroyed() || contents.isCrashed()) throw new Error("The page is no longer available for a screenshot.");
@@ -21,7 +26,7 @@ export async function capturePageWithFreshFrame(contents: WebContents): Promise<
           const { cssVisualViewport: viewport } = await inspector.sendCommand("Page.getLayoutMetrics");
           // Explicitly clip to the current viewport. Without a clip Chromium
           // captures the whole document, shrinking long pages beyond legibility.
-          return inspector.sendCommand("Page.captureScreenshot", { format: "png", fromSurface: true, captureBeyondViewport: true,
+          return inspector.sendCommand("Page.captureScreenshot", { format: "png", fromSurface: true, captureBeyondViewport: beyondViewport,
             clip: { x: viewport.pageX, y: viewport.pageY, width: viewport.clientWidth, height: viewport.clientHeight, scale: 1 } });
         })(),
         new Promise<never>((_resolve, reject) => {

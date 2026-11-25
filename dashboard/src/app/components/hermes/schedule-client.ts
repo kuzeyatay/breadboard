@@ -53,7 +53,10 @@ export function notifySchedulesChanged(): void {
 
 export function requestOpenSchedulesPanel(): void {
   if (typeof window === "undefined") return;
-  window.dispatchEvent(new CustomEvent(OPEN_SCHEDULES_PANEL_EVENT));
+  // The terminal claims the event and opens its panel. A surface without that
+  // panel (a garden, Quartz, another page) goes to the Scheduled page instead.
+  const event = new CustomEvent(OPEN_SCHEDULES_PANEL_EVENT, { cancelable: true });
+  if (window.dispatchEvent(event)) window.location.assign("/scheduled");
 }
 
 export function cronFromCadence(input: {

@@ -409,6 +409,16 @@ function backfillLegacyConversations(database: Database.Database): void {
           "SELECT conversation_id AS id FROM chat_sessions WHERE id = ?",
         ).get(runtime.chat_session_id) as { id: number | null } | undefined)?.id ?? null;
       }
+      // A runtime with nothing to migrate is not legacy history: it is what
+      // remains after its conversation was deleted (ON DELETE SET NULL), e.g. a
+      // scheduled objective check that cleaned up its private chat. Creating a
+      // conversation for it resurrected that chat as an empty, untitled-looking
+      // entry on every worker start.
+      if (!conversationId && !database.prepare(
+        "SELECT 1 FROM hermes_messages WHERE runtime_session_id = ? LIMIT 1",
+      ).get(runtime.id)) {
+        continue;
+      }
       if (!conversationId) {
         const title = runtimeTitle(runtime.runtime_metadata);
         database.prepare(`

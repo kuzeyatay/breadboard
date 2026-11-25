@@ -44,6 +44,14 @@ export const SILENT_STREAM_TIMEOUT_MS = 120_000;
 export const RUNTIME_INACTIVITY_TIMEOUT_MS = 180_000;
 
 /**
+ * A run whose prompt hand-off never returned. While the gateway is down,
+ * prompt.submit can hang without failing; the run then stays unsubmitted, the
+ * pump keeps its heartbeat fresh, and nothing else ever ends the turn (a
+ * recovered scheduled briefing sat on "Thinking" for an hour this way).
+ */
+export const UNSUBMITTED_RUN_TIMEOUT_MS = 300_000;
+
+/**
  * The same bound for a turn parked on an approval. Hermes expires an
  * unanswered approval in about five minutes and then resumes the turn with a
  * refusal, so this only ever fires if the runtime forgot the turn while a
@@ -55,6 +63,7 @@ export const PERMISSION_WAIT_TIMEOUT_MS = 900_000;
 export type StreamSupervisorDecision =
   | { kind: "rebind" }
   | { kind: "silent_timeout" }
+  | { kind: "dispatch_timeout" }
   | { kind: "inactivity_timeout" };
 
 export interface RuntimeIdentityFields {
@@ -113,6 +122,8 @@ export function streamSupervisorDecision(input: {
   msSinceLastEvent?: number;
   /** True while a permission request is outstanding, which is silent by design. */
   awaitingPermission?: boolean;
+  /** Age of the durable run, used only while its prompt is still unsubmitted. */
+  runAgeMs?: number;
 }): StreamSupervisorDecision | null {
   if (input.finalized) return null;
 
@@ -125,7 +136,11 @@ export function streamSupervisorDecision(input: {
   if (input.timedOut) return null;
   // An unsubmitted run has its own dispatch deadline; expiring it here
   // would race that and misreport a slow dispatch as a dead runtime.
-  if (!input.submitted) return null;
+  if (!input.submitted) {
+    return (input.runAgeMs ?? 0) >= UNSUBMITTED_RUN_TIMEOUT_MS
+      ? { kind: "dispatch_timeout" }
+      : null;
+  }
 
   if (input.sawRuntimeEvent) {
     // A turn waiting on a person is not a turn that stopped working, so it is

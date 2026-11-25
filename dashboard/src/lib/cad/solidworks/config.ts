@@ -18,6 +18,7 @@
 import { existsSync, readdirSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { toolSearchPath } from "../../../../scripts/host-path.mjs";
 
 function pathExists(candidate: string): boolean {
   // These are runtime configuration/install probes, never bundle assets. The
@@ -147,7 +148,7 @@ function findUv(env: NodeJS.ProcessEnv): string | null {
   for (const candidate of known) {
     if (pathExists(candidate)) return candidate;
   }
-  for (const entry of (env.PATH ?? "").split(path.delimiter)) {
+  for (const entry of toolSearchPath(env)) {
     if (!entry) continue;
     const candidate = path.join(entry, executable);
     if (pathExists(candidate)) return candidate;

@@ -105,6 +105,9 @@ export function composeHermesSystemPrompt(input: {
       ...(decision.allowedTools.includes("terminal_execute_command") ? [
         "For a local project outside the workspace, use terminal_execute_command. Its path and command approval controls apply.",
       ] : []),
+      ...(decision.allowedTools.includes("speech_synthesize") ? [
+        "When you assemble a video yourself (screencast, slide or app walkthrough with ffmpeg), voice it with speech_synthesize, never an OS voice (SAPI/System.Speech, say, espeak, pyttsx3). Keep the frame clean: no slide or step counters such as \"01 / 13\" or \"Demo 1 of 2\", no all-caps eyebrow or title text, no breadcrumb bars over the footage; sentence-case titles only where they help.",
+      ] : []),
     ] : []),
     `Allowed command patterns: ${decision.allowedCommandPatterns.join(", ") || "none"}`,
     `Expires at: ${decision.expiresAt ?? "end of turn"}`,

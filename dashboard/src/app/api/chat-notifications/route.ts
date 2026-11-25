@@ -5,6 +5,7 @@ import { clearNotificationHistory, initializeNotificationHistory, listNotificati
 import { notificationHistoryItem, parseDeliveredNotification } from "@/lib/notification-history";
 import { notificationTimestamp } from "@/lib/notification-center";
 import { dismissQuestionNotifications, listPendingQuestionNotifications, questionNotificationId } from "@/lib/chat-notifications/questions";
+import { approvalNotificationId, dismissApprovalNotifications, listPendingApprovalNotifications } from "@/lib/chat-notifications/approvals";
 import {
   chatNotificationMessageId,
   dismissChatNotifications,
@@ -50,7 +51,7 @@ function notificationTime(record: ChatNotificationRecord): number {
 
 function pendingNotifications(userId: number): ChatNotificationRecord[] {
   return [...listPendingChatNotifications(db, userId), ...listPendingQuestionNotifications(db, userId),
-    ...listPendingLearnNotifications(db, userId)].sort((left, right) => notificationTime(left) - notificationTime(right));
+    ...listPendingApprovalNotifications(db, userId), ...listPendingLearnNotifications(db, userId)].sort((left, right) => notificationTime(left) - notificationTime(right));
 }
 
 /**
@@ -121,6 +122,8 @@ export async function POST(request: Request) {
       .filter((id): id is number => id !== null);
     const questionIds = requestedIds.map(questionNotificationId)
       .filter((id): id is number => id !== null);
+    const approvalIds = requestedIds.map(approvalNotificationId)
+      .filter((id): id is number => id !== null);
     const learnIds = requestedIds
       .map(parseLearnNotificationId)
       .filter((id): id is { jobId: string; phase: LearnNotificationPhase } => id !== null);
@@ -131,7 +134,7 @@ export async function POST(request: Request) {
     const viewed = view && isChatNotificationTarget(view.target) && Array.isArray(view.messageKeys)
       ? { target: view.target, keys: view.messageKeys.slice(0, MAX_DISMISSALS_PER_REQUEST)
         .filter((key): key is string => typeof key === 'string' && key.length > 0 && key.length <= 512) } : null;
-    if (messageIds.length === 0 && questionIds.length === 0 && learnIds.length === 0 && readIds.length === 0 && !seen && !viewed && !clearHistory.length && !readHistory.length) {
+    if (messageIds.length === 0 && questionIds.length === 0 && approvalIds.length === 0 && learnIds.length === 0 && readIds.length === 0 && !seen && !viewed && !clearHistory.length && !readHistory.length) {
       throw new RouteError(400, "Nothing to dismiss.");
     }
 
@@ -157,6 +160,7 @@ export async function POST(request: Request) {
 
     let dismissed = dismissChatNotifications(db, userId, messageIds);
     dismissed += dismissQuestionNotifications(db, userId, questionIds, seen);
+    dismissed += dismissApprovalNotifications(db, userId, approvalIds);
     dismissed += markUnreadChatMessagesSeen(db, userId, readIds, seen);
     dismissed += dismissLearnNotifications(db, userId, learnIds);
     if (seen) {

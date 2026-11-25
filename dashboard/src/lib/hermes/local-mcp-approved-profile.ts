@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
+import { toolSearchPath } from "../../../scripts/host-path.mjs";
 
 export const LOCAL_MCP_PROFILE_REVISION = 1 as const;
 
@@ -220,9 +221,11 @@ function executableCandidates(
 ): string[] {
   if (path.isAbsolute(executable)) return [executable];
   if (/[\\/]/u.test(executable)) return [path.resolve(cwd ?? process.cwd(), executable)];
-  const search = (environment.PATH ?? environment.Path ?? environment.path ?? "")
-    .split(path.delimiter)
-    .filter(Boolean);
+  // The server's own PATH is Runtime V2's closed one; resolve the way the
+  // user's shell would (their registry PATH and common install folders) so an
+  // installed `uvx`/`python`/`git` is not reported as unavailable. The result
+  // is still pinned by absolute path and digest below.
+  const search = toolSearchPath(environment);
   const extensions = process.platform === "win32"
     ? (path.extname(executable)
         ? [""]

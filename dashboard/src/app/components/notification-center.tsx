@@ -19,6 +19,7 @@ import panelStyles from "./utility-panel.module.css";
 // when the center has notices; keep them out of the home startup bundle.
 const NotificationPreview = dynamic(() => import("./notification-preview"));
 const NotificationQuestionReply = dynamic(() => import("./notification-question-reply"));
+const NotificationApprovalReply = dynamic(() => import("./notification-approval-reply"));
 
 export interface NotificationCenterProps {
   notifications: ToastItem[];
@@ -170,6 +171,10 @@ function NotificationCard({ notice, now, onOpen, onDismiss, onRead, onRefresh }:
   return <li ref={cardRef} className={styles.card} data-notification-id={notice.id} data-error={notice.type === "error" || undefined}>
     {notice.target || notice.website ? <button type="button" className={styles.cardContent} onClick={() => onOpen(notice)}>{contents}</button>
       : <div className={styles.cardContent}>{contents}</div>}
+    {formatted && notice.approval && <div className={styles.questionReply}>
+      <NotificationApprovalReply key={`${notice.approval.sessionId}:${notice.approval.requestId}`}
+        approval={notice.approval} onAnswered={() => { onRead(notice.id); void onRefresh(); }} />
+    </div>}
     {formatted && notice.question && notice.clarification && <div className={styles.questionReply}>
       <NotificationQuestionReply key={`${notice.clarification.sessionId}:${notice.clarification.requestId}`}
         clarification={notice.clarification} onAnswered={() => { onRead(notice.id); void onRefresh(); }} />

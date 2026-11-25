@@ -43,13 +43,14 @@ function workflow(
 
 export const UNIFIED_WORKFLOWS: readonly UnifiedWorkflow[] = [
   workflow("code", "Code", "Build, fix, and test software in your connected repository.", [
-    mode("build", "Build and fix", "Build or fix something in your connected project.", ["codex", "opencode"]),
+    mode("build", "Build and fix", "Build or fix something in your connected project.", ["codex", "opencode", "claude-code"]),
     mode("team", "Coordinated coding", "Use a team of coding agents for larger changes.", ["ruflo"]),
     mode("skills", "Create a skill", "Turn source resources into a reusable skill.", ["resource2skill"]),
   ]),
   workflow("research", "Research", "Find sources, investigate questions, and carry out research projects.", [
     mode("web", "Web research", "Gather and compare public sources for a cited answer.", ["deep-research", "agent-reach"]),
     mode("papers", "Find papers", "Find academic papers and available full texts.", ["get-doc"]),
+    mode("write-paper", "Write a paper", "Draft your own research paper in LaTeX from your idea and results, with checked citations.", ["paper-orchestra"]),
     mode("investigate", "Investigate", "Investigate public records and map relationships with sources.", ["openplanter"]),
     mode("science", "Scientific project", "Work across literature, code, experiments and writing.", ["openscience"]),
     mode("project", "Prepared research project", "Run a research project you have already set up.", ["praxist"]),

@@ -71,9 +71,19 @@ export function syncDocumentAssistantHistory(input: {
     let userClientId: string | null = null;
     let changed = false;
     for (const entry of entries) {
-      const imported = db.prepare(`SELECT m.* FROM document_assistant_entries e
-        LEFT JOIN conversation_message_reads m ON m.id = e.message_id WHERE e.artifact_id = ? AND e.entry_id = ?`)
-        .get(artifact.id, entry.id) as ConversationMessageRow | undefined;
+      // Two primary-key lookups instead of LEFT JOIN on the reads view, which
+      // SQLite would materialize over every message (see chat-sessions route).
+      // An entry whose message is gone still counts as imported (a row of nulls).
+      const link = db.prepare(
+        "SELECT message_id FROM document_assistant_entries WHERE artifact_id = ? AND entry_id = ?",
+      ).get(artifact.id, entry.id) as { message_id: number | null } | undefined;
+      const imported = link
+        ? ((link.message_id == null
+            ? undefined
+            : db.prepare("SELECT * FROM conversation_message_reads WHERE id = ?")
+                .get(link.message_id) as ConversationMessageRow | undefined)
+          ?? ({ id: null, client_message_id: null } as unknown as ConversationMessageRow))
+        : undefined;
       if (imported) {
         if (entry.role === "user") userClientId = imported.client_message_id;
         // Save recovery may amend a Word reply. A stale editor must never

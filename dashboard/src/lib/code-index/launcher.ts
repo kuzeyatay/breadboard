@@ -1,5 +1,6 @@
 import { externalRuntimePathExists } from "../external-runtime-filesystem.ts";
 import { externalRuntimePath as path } from "../external-runtime-path.ts";
+import { toolSearchPath } from "../../../scripts/host-path.mjs";
 
 /**
  * Locating the graft CLI (`@nanonets/graft`).
@@ -29,7 +30,7 @@ const PACKAGE_ENTRY = path.join(
 );
 
 function pathEntries(env: NodeJS.ProcessEnv): string[] {
-  const raw = env.PATH ?? env.Path ?? "";
+  const raw = toolSearchPath(env).join(path.delimiter);
   return raw
     .split(path.delimiter)
     .map((entry) => entry.trim())

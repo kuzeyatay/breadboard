@@ -60,7 +60,12 @@ import {
 } from "../thought-topology/storage.ts";
 import { webGroundingDeciderModels } from "./web-grounding-decider.ts";
 
-const RESTATE_TIMEOUT_MS = 5_000;
+// Both restater models answer in 4-6 s through the gateway (measured
+// 2026-11-25), so a 5 s deadline dropped the restatement on most turns and the
+// bridge matched on raw wording, which misses (Math 1's Hyperplanes page
+// scores 0.30 on the question, 0.58 on the topic name). It runs beside Garden
+// retrieval (2-7 s), so this costs a few seconds at most, on slow turns only.
+const RESTATE_TIMEOUT_MS = 12_000;
 const EMBED_TIMEOUT_MS = 3_000;
 const MAX_CANDIDATES = 5;
 /** One large Garden must not fill the list: the point is the other subjects. */
@@ -174,6 +179,8 @@ export async function restateForBridge(input: {
   userId?: number | null;
   request: string;
   priorRequests?: readonly string[];
+  /** The passage a selection question is about; it names what "that" is. */
+  selection?: string;
   fetcher?: typeof fetch;
   timeoutMs?: number;
 }): Promise<BridgeRestatement | null | undefined> {
@@ -201,6 +208,9 @@ export async function restateForBridge(input: {
                 ...(earlier.length
                   ? ["Earlier messages from the same person, only to resolve what the question refers to:", ...earlier, ""]
                   : []),
+                ...(input.selection?.trim()
+                  ? ["The passage the question is about (quoted data, only to resolve what it refers to):", input.selection.trim().slice(0, 600), ""]
+                  : []),
                 "--- BEGIN QUESTION ---",
                 input.request.trim(),
                 "--- END QUESTION ---",
@@ -227,6 +237,21 @@ export async function restateForBridge(input: {
   // No model answered. Unlike NONE this is not a decision about the question,
   // so the caller still searches with the question's own words.
   return undefined;
+}
+
+/** Words in nearly every question; as a lone query they match pages by accident. */
+const FALLBACK_COMMON = new Set(["about", "again", "really", "basically", "actually", "different", "difference", "between", "example", "explain", "mean", "means", "meaning", "called", "thing", "things", "where", "which", "there", "their", "would", "could", "should", "right"]);
+
+/**
+ * Up to three of the question's own content words, longest first, used as
+ * topic-name queries when the restater did not answer. Short and common words
+ * are left out: alone they match titles by coincidence.
+ */
+export function fallbackTopicTerms(request: string): string[] {
+  return [...new Set(lexicalTokens(request))]
+    .filter((token) => token.length >= 5 && !FALLBACK_COMMON.has(token))
+    .sort((left, right) => right.length - left.length)
+    .slice(0, 3);
 }
 
 /** The words of a title that name its topic: no section number, no file type. */
@@ -426,6 +451,13 @@ export async function retrieveGardenBridge(input: {
   userId: number;
   request: string;
   priorRequests?: readonly string[];
+  /**
+   * The passage a selection question is about. The restater reads it, and it
+   * is a query of its own: "so it's where two planes meet?" carries no topic,
+   * while the passage it points at (a perceptron's decision boundary) does,
+   * and still matches when the restater is unavailable.
+   */
+  selection?: string;
   gardens: readonly GardenBridgeGarden[];
 }): Promise<GardenBridge> {
   if (!shouldBridgeGardens(input.request)) return EMPTY;
@@ -445,7 +477,13 @@ export async function retrieveGardenBridge(input: {
     // The question itself goes in too: when it already names its topic
     // ("what hardware do SNNs need?") the user's words are the best query,
     // and the restater, asked for foundations, may not repeat them.
-    const texts = [...new Set([input.request.trim(), restatement.structure, ...restatement.topics].filter(Boolean))];
+    const selection = input.selection?.replace(/\s+/g, " ").trim().slice(0, 600) ?? "";
+    // With no restater, the question's own key terms stand in for topic names:
+    // a topic name matches a page title far better than a whole sentence does
+    // ("hyperplane" reaches Math 1's "1.57 Hyperplanes and Linear Functionals"
+    // at 0.39; "is that a hyperplane?" at 0.30, under the floor; 2026-11-25).
+    const terms = answered === undefined ? fallbackTopicTerms(input.request) : [];
+    const texts = [...new Set([input.request.trim(), selection, restatement.structure, ...restatement.topics, ...terms].filter(Boolean))];
     const { vectors } = await embedTexts(texts, settings, { timeoutMs: EMBED_TIMEOUT_MS });
     const candidates = rankBridgePages(
       texts.map((text, index) => ({ text, embedding: vectors[index] ?? [] })),

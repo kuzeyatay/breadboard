@@ -477,6 +477,9 @@ export function presentHermesSessionDetail(conversation: ConversationRow) {
       ...(typeof metadata.courseCorrectionOffset === "number"
         ? { courseCorrectionOffset: metadata.courseCorrectionOffset }
         : {}),
+      ...(typeof metadata.courseCorrectionNoteIndex === "number"
+        ? { courseCorrectionNoteIndex: metadata.courseCorrectionNoteIndex }
+        : {}),
       ...(modelChangesAfter.length ? { modelChangesAfter } : {}),
       ...(modelChangeAfter ? { modelChangeAfter } : {}),
       ...(responseDurationMs !== undefined ? { responseDurationMs } : {}),

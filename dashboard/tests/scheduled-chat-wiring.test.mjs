@@ -69,10 +69,14 @@ test("the Scheduled panel composes with the same capability palette the chat has
   assert.match(runner, /model: job\.model,[\s\S]{0,80}reasoningEffort: job\.reasoning_effort/);
 });
 
-test("plain-language delayed tasks create a schedule before their confirmation turn", () => {
-  assert.match(terminal, /parseExplicitScheduleRequest\(text\)/);
-  assert.match(terminal, /oneShot: schedule\.oneShot,[\s\S]{0,80}runAt: schedule\.runAt/);
-  assert.match(terminal, /notifySchedulesChanged\(\);[\s\S]{0,300}scheduledChatReceipt: receipt/);
+test("chat scheduling requests reach the agent, which writes the task from the chat context", () => {
+  // A phrase parser cannot resolve "my grade" to the exam the chat is about;
+  // the composer leaves scheduling to the agent's schedule_create tool.
+  assert.doesNotMatch(terminal, /parseExplicitScheduleRequest/);
+  const plugin = fs.readFileSync(new URL("../../hermes-agent/plugins/breadboard/__init__.py", import.meta.url), "utf8");
+  assert.match(plugin, /resolve a vague request[\s\S]{0,40}from the conversation first/);
+  assert.match(plugin, /schedule_delete to remove this schedule so it stops running/);
+  // The Scheduled panel's own form still parses plain language.
   assert.match(scheduledPanel, /oneShot: !advancedOpen && parsed\.oneShot/);
   assert.match(scheduledPanel, /runAt: !advancedOpen \? parsed\.runAt : null/);
 });

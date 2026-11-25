@@ -95,11 +95,9 @@ import UploadsPanel from "./uploads-panel";
 import DocumentsPanel, { gardenDocumentFile, gardenDocumentKey, type GardenDocument } from "./documents-panel";
 import TerminalScheduledPanel from "./terminal-scheduled-panel";
 import {
-  formatRelativeRunTime,
   notifySchedulesChanged,
   OPEN_SCHEDULES_PANEL_EVENT,
 } from "./schedule-client";
-import { parseExplicitScheduleRequest } from "@/lib/schedules/natural-language.ts";
 import {
   parseExplicitHookRequest,
   resolveWorkflowByName,
@@ -1071,10 +1069,15 @@ function RuntimeTerminal({
   const [productPanel, setProductPanel] = useState<ProductPanelSelection | null>(
     null,
   );
+  // Bumped by every explicit "open schedules" request so a panel that is
+  // already selected but collapsed remounts expanded instead of doing nothing.
+  const [panelOpenRequest, setPanelOpenRequest] = useState(0);
   useEffect(() => {
-    const openScheduled = () => {
+    const openScheduled = (event: Event) => {
+      event.preventDefault();
       setProductPanel(null);
       setSidePanel("scheduled");
+      setPanelOpenRequest((count) => count + 1);
     };
     window.addEventListener(OPEN_SCHEDULES_PANEL_EVENT, openScheduled);
     return () => {
@@ -1881,8 +1884,19 @@ function RuntimeTerminal({
 
   useEffect(() => {
     if (drawerPresentation) return;
-    const onResize = () =>
-      setHeight((current) => settleHeight(clampHeight(current)));
+    // Resizes can be transient (a page screenshot briefly re-emulates the
+    // viewport), so a resize may refit the dock but never shut an open one, and
+    // a dock that filled the old viewport fills the new one.
+    let lastMax = maxHeight();
+    const onResize = () => {
+      const previousMax = lastMax;
+      lastMax = maxHeight();
+      setHeight((current) => {
+        if (current < minOpenHeight()) return settleHeight(clampHeight(current));
+        if (current >= previousMax - 1) return maxHeight();
+        return Math.max(minOpenHeight(), clampHeight(current));
+      });
+    };
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, [drawerPresentation]);
@@ -6756,68 +6770,9 @@ const launchCareerOpsRun = useCallback(
         }
         return;
       }
-      // Plain-language time instructions create the schedule before their
-      // confirmation turn is persisted. Keep this conservative and attachment-free:
-      // the parser only returns explicit recurring language or a relative delay
-      // paired with an action ("start this task in an hour and a half").
-      const schedule = textOverride === undefined && chatAttachments.length === 0
-        ? parseExplicitScheduleRequest(text)
-        : null;
-      if (schedule) {
-        setInput("");
-        setAttachmentStatus("");
-        let scheduleCreated = false;
-        try {
-          const response = await fetch("/api/schedules", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              title: schedule.title,
-              prompt: schedule.prompt,
-              cron: schedule.cron,
-              oneShot: schedule.oneShot,
-              runAt: schedule.runAt,
-              surface: "dashboard_terminal",
-              model,
-              reasoningEffort,
-            }),
-          });
-          const payload = (await response.json().catch(() => ({}))) as {
-            error?: string;
-            schedule?: ScheduledChatJob;
-          };
-          if (!response.ok) {
-            throw new Error(payload.error ?? "This task could not be scheduled.");
-          }
-          scheduleCreated = true;
-          const receipt = normalizeScheduledChatReceipt(payload.schedule);
-          if (!receipt) {
-            throw new Error("The schedule was created without a valid receipt.");
-          }
-          notifySchedulesChanged();
-          setAttachmentStatus(
-            schedule.runAt
-              ? `Scheduled ${formatRelativeRunTime(schedule.runAt)}.`
-              : "Scheduled.",
-          );
-          await session.send(text, {
-            model,
-            reasoningEffort,
-            ...voice,
-            scheduledChatReceipt: receipt,
-          });
-        } catch (cause) {
-          if (!scheduleCreated) setInput(text);
-          setAttachmentStatus(
-            scheduleCreated
-              ? "Scheduled, but the confirmation could not be added to this chat."
-              : cause instanceof Error
-              ? cause.message
-              : "This task could not be scheduled.",
-          );
-        }
-        return;
-      }
+      // Scheduling requests ("check every 5 minutes if my grade is out…") go
+      // to the agent: only it can turn a vague request into a self-contained
+      // task from the chat context, through schedule_create.
       // Refuse an impossible combination before anything is dispatched. The
       // branches below are a priority cascade, so without this a second runtime
       // agent or a stacked skill would be silently swallowed into the winner's
@@ -9471,7 +9426,11 @@ if (careerOpsAgent) {
         onConfirm={agentLaunchQueue.confirm} onDismiss={agentLaunchQueue.dismiss}
       /> : null} /> : null}
     <div hidden={voicePresentation} style={voicePresentation ? undefined : { display: 'contents' }} inert={voicePresentation || undefined}>
-    <WorkspaceSideChat messages={messages}>
+    <WorkspaceSideChat messages={messages}
+      // Side chats belong to the terminal: they hide while it is shut (or still
+      // gliding open) and come back, intact, when it opens again.
+      hidden={!drawerPresentation && (!isOpen || glide === "opening")}
+      onReveal={() => { if (!drawerPresentation && !isOpen) toggleDock(true); }}>
     <section
       ref={dockRef}
       // Positioned against the viewport, so page padding cannot move it: the
@@ -10175,6 +10134,7 @@ onClearCareerOps={() => {
               </SidePanelDock>
             ) : sidePanel ? (
               <SidePanelDock
+                key={`${sidePanel}:${panelOpenRequest}`}
                 label={
                   sidePanel === "artifacts"
                     ? "Artifacts"

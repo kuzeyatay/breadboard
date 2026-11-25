@@ -46,6 +46,7 @@ import {
 } from "@/lib/hermes/artifact-editor-types";
 import ArtifactDocumentStudio from "./artifact-document-studio";
 import ArtifactGenOfficeEditor from "./artifact-genoffice-editor";
+import ArtifactSlidesEditor from "./artifact-slides-editor";
 import ArtifactVvvebEditor from "./artifact-vvveb-editor";
 import { dispatchArtifactAiEdit } from "./artifact-ai-edit";
 import { subscribeToArtifactUpdates } from "@/lib/hermes/artifact-update-channel";
@@ -836,6 +837,22 @@ export default function ArtifactViewer({
   const usesGenOfficeFallbackPreview = Boolean(
     usesGenOfficeEditor && artifact?.downloadAvailable && !artifact.previewAvailable,
   );
+  // A .pptx edits in GenOffice Slides, the editor Spaces opens for decks, not
+  // in the generic block list every other Office file falls back to.
+  const usesSlidesEditor = Boolean(
+    artifact &&
+      artifact.status === "ready" &&
+      artifact.filename.toLowerCase().endsWith(".pptx") &&
+      artifact.downloadAvailable,
+  );
+  // A .pptx with no stored HTML snapshot is drawn slide by slide on the
+  // server from the file itself, so it never lands on "no inline preview".
+  const usesPptxRenderedPreview = Boolean(
+    artifact &&
+      artifact.filename.toLowerCase().endsWith(".pptx") &&
+      artifact.downloadAvailable &&
+      !artifact.previewAvailable,
+  );
   const pdfEditorHref = artifact ? artifactPdfHref(artifact) : null;
   const markdownEditorHref = artifact ? artifactMarkdownEditorHref(artifact) : null;
   // A produced file remembers where it came from; on the desktop that place
@@ -1125,6 +1142,15 @@ export default function ArtifactViewer({
         </p>
       );
     }
+    if (editingDocument && usesSlidesEditor) {
+      return (
+        <ArtifactSlidesEditor
+          key={artifact.id}
+          artifact={artifact}
+          onSaved={(saved) => onUpdated?.(saved)}
+        />
+      );
+    }
     if (editingDocument && editorMode && editorMode !== "pdf") {
       if (usesVvvebEditor) {
         return (
@@ -1177,6 +1203,23 @@ export default function ArtifactViewer({
     // folders and archives therefore legitimately have previewAvailable=false.
     if (artifact.kind === "folder" || artifact.renderer === "archive-file") {
       return <ArtifactEntriesView key={`${artifact.id}:${artifact.version}`} artifact={artifact} explorerAvailable={explorerAvailable} />;
+    }
+    if (usesPptxRenderedPreview && artifact.status === "ready") {
+      const renderedUrl = `${previewUrl}&render=pptx`;
+      return (
+        <ArtifactPreviewSurface key={renderedUrl}>{(ready, failed) => (
+        <iframe
+          title={`${artifact.title} preview`}
+          sandbox="allow-scripts"
+          allow=""
+          referrerPolicy="no-referrer"
+          src={renderedUrl}
+          onLoad={ready}
+          onError={failed}
+          className="h-full min-h-[32rem] w-full border-0 bg-[var(--paper-strong)]"
+        />
+        )}</ArtifactPreviewSurface>
+      );
     }
     if (!artifact.previewAvailable) {
       if (artifact.status === "draft") {
@@ -1435,9 +1478,10 @@ export default function ArtifactViewer({
   const panelSurface =
     "flex min-h-0 flex-col overflow-hidden border-l border-[var(--line)] bg-[var(--paper-surface)] text-[var(--ink)]";
   const panelClass = expanded
-    ? // Expanded, the panel stops being a dock beside the app and becomes the
-      // window: same header, same body, the whole viewport.
-      `bb-artifact-dock bb-artifact-dock-floating bb-artifact-dock-expanded fixed inset-0 z-[80] w-full ${panelSurface}`
+    ? // Expanded, the panel stops being a dock beside the app and becomes a
+      // popup over it — the lightbox an image opens in: same header and
+      // controls, an X in the top-right corner, the app dimmed behind it.
+      `bb-artifact-dock bb-artifact-dock-expanded relative h-full w-full max-w-[120rem] ${panelSurface}`
     : dockHost
       ? // In a surface's own lane the split is the lane's business: the
         // panel simply fills it.
@@ -1527,14 +1571,14 @@ export default function ArtifactViewer({
             >
               Edit
             </button>
-          ) : editorMode ? (
+          ) : editorMode || usesSlidesEditor ? (
             <button
               type="button"
               className={actionButton}
               onClick={() => {
                 const next = !editingDocument;
                 setEditingDocument(next);
-                if (next && (usesGenOfficeEditor || usesVvvebEditor)) setExpanded(true);
+                if (next && (usesGenOfficeEditor || usesVvvebEditor || usesSlidesEditor)) setExpanded(true);
               }}
               aria-pressed={editingDocument}
             >
@@ -1574,42 +1618,37 @@ export default function ArtifactViewer({
               </svg>
             </a>
           ) : null}
-          <button
-            type="button"
-            onClick={() => setExpanded((current) => !current)}
-            aria-label={expanded ? "Collapse artifact" : "Expand artifact"}
-            aria-pressed={expanded}
-            title={expanded ? "Collapse (Esc)" : "Expand"}
-            className="neu-button-icon shrink-0 rounded-lg px-2 py-1.5 text-sm text-[var(--ink-muted)] hover:bg-[var(--paper-strong)]"
-          >
-            <svg
-              viewBox="0 0 16 16"
-              width="14"
-              height="14"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.6"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
+          {expanded ? null : (
+            <button
+              type="button"
+              onClick={() => setExpanded(true)}
+              aria-label="Expand artifact"
+              title="Expand"
+              className="neu-button-icon shrink-0 rounded-lg px-2 py-1.5 text-sm text-[var(--ink-muted)] hover:bg-[var(--paper-strong)]"
             >
-              {expanded ? (
-                <>
-                  <path d="M9.5 6.5h4M9.5 6.5v-4M9.5 6.5 14 2" />
-                  <path d="M6.5 9.5h-4M6.5 9.5v4M6.5 9.5 2 14" />
-                </>
-              ) : (
-                <>
-                  <path d="M10 2h4v4M14 2l-4.5 4.5" />
-                  <path d="M6 14H2v-4M2 14l4.5-4.5" />
-                </>
-              )}
-            </svg>
-          </button>
+              <svg
+                viewBox="0 0 16 16"
+                width="14"
+                height="14"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M10 2h4v4M14 2l-4.5 4.5" />
+                <path d="M6 14H2v-4M2 14l4.5-4.5" />
+              </svg>
+            </button>
+          )}
+          {/* In the popup the X closes the popup, as it does over an image;
+              the artifact stays open in its dock underneath. */}
           <button
             type="button"
-            onClick={onClose}
-            aria-label="Close artifact"
+            onClick={expanded ? () => setExpanded(false) : onClose}
+            aria-label={expanded ? "Close enlarged view" : "Close artifact"}
+            title={expanded ? "Close (Esc)" : undefined}
             className="neu-button-icon shrink-0 rounded-lg px-2 py-1.5 text-sm text-[var(--ink-muted)] hover:bg-[var(--paper-strong)]"
           >
             ✕
@@ -1624,7 +1663,8 @@ export default function ArtifactViewer({
           className={`bb-neu-recessed min-h-0 flex-1 ${
             usesDocumentViewer ||
             usesGenOfficeFallbackPreview ||
-            (editingDocument && (usesVvvebEditor || usesGenOfficeEditor))
+            (usesPptxRenderedPreview && !editingDocument) ||
+            (editingDocument && (usesVvvebEditor || usesGenOfficeEditor || usesSlidesEditor))
               ? "overflow-hidden p-0"
               : artifact.kind === "document" && !editingDocument
                 ? "overflow-auto p-0"
@@ -1661,7 +1701,20 @@ export default function ArtifactViewer({
   if (expanded && typeof document !== "undefined") {
     return (
       <>
-        {createPortal(panel, document.body)}
+        {createPortal(
+          <div
+            className="bb-artifact-popup-backdrop bb-viewer-overlay fixed z-[80] flex items-center justify-center bg-black/75 p-3 backdrop-blur-sm sm:p-6"
+            aria-modal="true"
+            onMouseDown={(event) => {
+              // A press on the dimmed backdrop closes the popup, the way it
+              // closes an image preview; one inside the panel never does.
+              if (event.target === event.currentTarget) setExpanded(false);
+            }}
+          >
+            {panel}
+          </div>,
+          document.body,
+        )}
         {markdownEditorModal}
       </>
     );

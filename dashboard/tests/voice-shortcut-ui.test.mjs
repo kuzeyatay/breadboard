@@ -35,17 +35,21 @@ test('Talk context menu opens full voice tabs and compact windows without dismis
       </div>;}
       createRoot(document.getElementById('root')).render(location.pathname==='/voice'?<VoicePage/>:<Menu/>);
     ` },
-    bundle: true, write: false, format: 'iife', platform: 'browser',
+    // An outfile gives the CSS modules the shared components import somewhere to go.
+    bundle: true, write: false, outfile: 'voice-menu-fixture.js', format: 'iife', platform: 'browser',
     define: { 'process.env.NODE_ENV': '"production"' },
+    banner: { js: 'var process = globalThis.process || { env: {} };' },
     plugins: [{ name: 'voice-menu-services', setup(build) {
       const stubs = {
         'music-recognition-button': 'export default function(){return null}',
         'voice-assistant-runtime': 'export default function(){return null}',
-        'use-agent-session': `const session={sessionId:'voice-test',messages:[],loadingSession:false,runState:'idle',send(){}};
+        // Stubs re-export the real module and override only what this test fakes.
+        'use-agent-session': `export * from './src/app/components/hermes/use-agent-session.ts';
+          const session={sessionId:'voice-test',messages:[],loadingSession:false,runState:'idle',agentLaunchRequests:[],send(){}};
           export const useAgentSession=()=>session;export const isActiveAgentRunState=()=>false;`,
         'use-assistant-intelligence': 'export const useAssistantIntelligence=()=>({})',
-        'chat-notification-inbox': 'export function registerChatNotificationTarget(){return()=>{}}',
-        'prepare-client': 'export async function prepareLocalSpeech(){}export const speechErrorMessage=(e,f)=>e?.message||f;',
+        'chat-notification-inbox': "export * from './src/lib/chat-notification-inbox.ts'; export function registerChatNotificationTarget(){return()=>{}}",
+        'prepare-client': "export * from './src/lib/speech/prepare-client.ts'; export async function prepareLocalSpeech(){}export const speechErrorMessage=(e,f)=>e?.message||f;",
         'subscription-live': 'export const subscriptionSelected=async()=>true;export async function connectSubscriptionVoice(){}',
         'voice-response': 'export default function(){return null}',
       };
@@ -53,14 +57,14 @@ test('Talk context menu opens full voice tabs and compact windows without dismis
         const key = args.path.split('/').at(-1);
         return key in stubs ? { path: key, namespace: 'fixture' } : null;
       });
-      build.onLoad({ filter: /.*/, namespace: 'fixture' }, args => ({ contents: stubs[args.path], loader: 'js' }));
+      build.onLoad({ filter: /.*/, namespace: 'fixture' }, args => ({ contents: stubs[args.path], loader: 'js', resolveDir: root }));
     } }],
   });
   const styles = fs.readFileSync(path.join(root, 'src/app/globals.css'), 'utf8')
     .replace('@source "../**/*.{js,mjs,cjs,ts,tsx,jsx,mdx}";', '@source "./components/speech-dictation-button.tsx"; @source "./components/link-context-menu.tsx"; @source "./components/voice-conversation-overlay.tsx";');
   const css = (await postcss([tailwind({ base: root })]).process(styles, { from: path.join(root, 'src/app/globals.css') })).css;
   const server = http.createServer((req, res) => {
-    if (req.url === '/app.js') { res.setHeader('Content-Type', 'text/javascript'); res.end(bundle.outputFiles[0].text); }
+    if (req.url === '/app.js') { res.setHeader('Content-Type', 'text/javascript; charset=utf-8'); res.end(bundle.outputFiles.find(file => file.path.endsWith('.js')).text); }
     else if (req.url === '/style.css') { res.setHeader('Content-Type', 'text/css'); res.end(css); }
     else { res.setHeader('Content-Type', 'text/html'); res.end('<!doctype html><html data-theme="light"><head><link rel="stylesheet" href="/style.css"></head><body><main id="root"></main><script src="/app.js"></script></body></html>'); }
   });
@@ -189,7 +193,7 @@ test('Voice opens from its optional navbar seat and searchable new-tab entry, wi
   const server=http.createServer((req,res)=>{
     if(req.url.startsWith('/api/new-tab/search?q=')){res.setHeader('Content-Type','application/json');res.end(JSON.stringify({results:searchPlaces(new URL(req.url,'http://fixture').searchParams.get('q')),limited:[],unavailable:[]}));return;}
     if(req.url.startsWith('/api/')){res.setHeader('Content-Type','application/json');res.end('{}');return;}
-    if(req.url==='/app.js'){res.setHeader('Content-Type','text/javascript');res.end(bundle.outputFiles.find(file=>file.path.endsWith('.js')).text);return;}
+    if(req.url==='/app.js'){res.setHeader('Content-Type','text/javascript; charset=utf-8');res.end(bundle.outputFiles.find(file=>file.path.endsWith('.js')).text);return;}
     if(req.url==='/style.css'){res.setHeader('Content-Type','text/css');res.end(css);return;}
     if(req.url==='/logo.png'){res.setHeader('Content-Type','image/png');res.end(fs.readFileSync(path.join(root,'public/logo.png')));return;}
     res.setHeader('Content-Type','text/html');res.end('<!doctype html><html data-theme="light"><head><link rel="stylesheet" href="/style.css"></head><body style="margin:0;background:var(--paper-bg)"><main id="root" style="height:100vh;display:flex;flex-direction:column"></main><script src="/app.js"></script></body></html>');

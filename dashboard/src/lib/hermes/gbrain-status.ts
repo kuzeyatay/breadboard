@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import type { RuntimeMcpStatus as HermesMcpStatus } from "../agent-runtime/contracts.ts";
 import { repositoryRoot as breadboardRepositoryRoot } from "../runtime-paths.ts";
+import { toolSearchPath } from "../../../scripts/host-path.mjs";
 
 export interface GBrainCapabilityState {
   provider: "gbrain";
@@ -36,7 +37,7 @@ function gbrainConfigPath(): string {
 }
 
 function commandInstalled(): boolean {
-  const pathEntries = (process.env.PATH ?? "").split(path.delimiter);
+  const pathEntries = toolSearchPath(process.env);
   const names = process.platform === "win32" ? ["gbrain.exe", "gbrain.cmd", "gbrain.bat"] : ["gbrain"];
   return pathEntries.some((entry) => names.some((name) => fs.existsSync(path.join(entry, name))));
 }

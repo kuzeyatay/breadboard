@@ -20,7 +20,10 @@ import {
   useState,
 } from 'react';
 import dynamic from 'next/dynamic';
-import AttachmentPreviewDialog from '@/app/components/attachment-preview-dialog';
+import AttachmentPreviewDialog, {
+  documentPreviewSource,
+  storedFilePreviewSource,
+} from '@/app/components/attachment-preview-dialog';
 import ComposerAddMenu, { type ComposerAddMenuHandle } from '@/app/components/composer-add-menu';
 import SettingsDialog, { type SettingsTab } from '@/app/components/settings-dialog';
 import { OPEN_SETTINGS_EVENT } from '@/lib/model-connection';
@@ -1895,14 +1898,16 @@ export default function AssistantComposer({
                       {attachment.name}
                     </AttachmentPreviewDialog>
                   ) : attachment.type === 'document' && attachment.blobId ? (
-                    // The document is kept whole now, so the chip links to the
-                    // stored original — and `detail` says what was found inside
-                    // it, which is the one moment the person can check that the
-                    // figures and tables were noticed before they press send.
-                    <a
-                      href={`/api/chat-attachments/documents/${attachment.blobId}`}
-                      target="_blank"
-                      rel="noreferrer"
+                    // The document is kept whole now, so the chip opens it in
+                    // the preview popup — and the title says what was found
+                    // inside it, which is the one moment the person can check
+                    // that the figures and tables were noticed before they send.
+                    <AttachmentPreviewDialog
+                      source={documentPreviewSource({
+                        name: attachment.name,
+                        blobId: attachment.blobId,
+                        format: attachment.format,
+                      })}
                       className="truncate underline decoration-dotted underline-offset-2"
                       title={
                         [
@@ -1923,7 +1928,15 @@ export default function AssistantComposer({
                       }
                     >
                       {attachment.name}
-                    </a>
+                    </AttachmentPreviewDialog>
+                  ) : attachment.type === 'text' && attachment.blobId ? (
+                    <AttachmentPreviewDialog
+                      source={storedFilePreviewSource({ name: attachment.name, blobId: attachment.blobId })}
+                      className="truncate underline decoration-dotted underline-offset-2"
+                      title={`Open ${attachment.name}`}
+                    >
+                      {attachment.name}
+                    </AttachmentPreviewDialog>
                   ) : (
                     <span className="truncate">{attachment.name}</span>
                   )}

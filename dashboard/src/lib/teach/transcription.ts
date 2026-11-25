@@ -23,6 +23,7 @@ import { repositoryRoot } from "../runtime-paths.ts";
 import { ensureDirectory, teachRoot } from "./artifacts.ts";
 import { teachLog, teachWarn } from "./redaction.ts";
 import type { DemonstrationTranscript, TranscriptSegment } from "./types.ts";
+import { toolSearchPath } from "../../../scripts/host-path.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -229,7 +230,8 @@ async function runWhisper(
           ...(process.env.WINDIR ? { WINDIR: process.env.WINDIR } : {}),
           ...(process.env.TEMP ? { TEMP: process.env.TEMP } : {}),
           ...(process.env.TMP ? { TMP: process.env.TMP } : {}),
-          ...(process.env.PATH ? { PATH: process.env.PATH } : {}),
+          // The user's real PATH after the bundled one, so ffmpeg and CUDA tools resolve.
+          PATH: toolSearchPath(process.env).join(path.delimiter),
           // Keep model downloads inside Breadboard's data root rather than the
           // user's home cache, so retention and disk accounting can see them.
           HF_HOME: modelCacheDirectory(),

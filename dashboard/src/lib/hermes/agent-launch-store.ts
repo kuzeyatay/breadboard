@@ -28,8 +28,12 @@ type ServerStartedAgentRun = Extract<
   { kind: "max_research" }
 >;
 
-/** Requests kept per run. A turn that asks for more than this is looping. */
-const MAX_REQUESTS_PER_RUN = MAX_PARALLEL_AGENT_LAUNCHES;
+/**
+ * Requests kept per run, only so a runaway turn cannot grow memory without
+ * bound. It is not a staffing limit: how many agents actually run is decided
+ * by Runtime V2's memory admission, and a loop is caught by its repeats.
+ */
+const MAX_REQUESTS_PER_RUN = Math.max(MAX_PARALLEL_AGENT_LAUNCHES, 256);
 /** Runs kept in memory at once, oldest evicted first. */
 const MAX_TRACKED_RUNS = 64;
 
@@ -186,6 +190,16 @@ export function externalAgentCallsForRun(
 /** How many launches this run has already asked for. */
 export function countAgentLaunchRequests(runId: string): number {
   return (store.byRun.get(runId) ?? []).length;
+}
+
+/**
+ * The same agent with the same brief, already asked for in this run: the
+ * signature of a model loop, unlike a turn that staffs many distinct jobs.
+ */
+export function agentLaunchRepeats(runId: string, agentId: string, brief: string): boolean {
+  const normalized = brief.replace(/\s+/g, " ").trim().toLowerCase();
+  return (store.byRun.get(runId) ?? []).some((request) =>
+    request.agentId === agentId && request.brief.replace(/\s+/g, " ").trim().toLowerCase() === normalized);
 }
 
 /** Atomically reserve capacity while a server-started worker is being created. */

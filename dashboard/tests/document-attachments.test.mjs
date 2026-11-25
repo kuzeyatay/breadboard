@@ -619,7 +619,14 @@ test("every surface that names an attachment uses the shared linked renderer", (
     path.join(dashboard, "src/app/components/chat-message-attachments.tsx"),
     "utf8",
   );
-  assert.match(renderer, /chatAttachmentHref\(/);
+  // Documents open in the in-chat popup, which builds its links from
+  // chatAttachmentHref so the full-page reader stays one right-click away.
+  assert.match(renderer, /documentPreviewSource\(/);
+  const dialog = fs.readFileSync(
+    path.join(dashboard, "src/app/components/attachment-preview-dialog.tsx"),
+    "utf8",
+  );
+  assert.match(dialog, /chatAttachmentHref\(/);
 
   const gardenAssistant = fs.readFileSync(
     path.join(dashboard, "src/app/garden/garden-assistant.tsx"),

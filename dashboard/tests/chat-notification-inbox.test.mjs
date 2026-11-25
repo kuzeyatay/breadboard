@@ -245,6 +245,7 @@ function notificationDatabase() {
       metadata TEXT,
       updated_at TEXT NOT NULL
     );
+    CREATE VIEW conversation_message_reads AS SELECT * FROM conversation_messages;
     INSERT INTO users (id) VALUES (1), (2);
     INSERT INTO clusters (id, slug) VALUES (5, 'breadboard-dev');
     INSERT INTO conversations

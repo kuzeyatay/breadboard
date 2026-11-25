@@ -152,3 +152,48 @@ export async function saveArtifactOfficeBytes(
     removeTemporaryWorkspace(workspace);
   }
 }
+
+/**
+ * Save the PPTX written by the GenOffice Slides editor (the same editor
+ * Spaces uses) as the artifact's next version. No HTML snapshot is stored;
+ * the artifact viewer renders .pptx slides itself when one is missing.
+ */
+export async function saveArtifactPresentationBytes(
+  artifact: ArtifactRow,
+  expectedVersion: number,
+  bytes: Uint8Array,
+  options: ArtifactOfficeSaveOptions = {},
+): Promise<ArtifactRow> {
+  validateExpectedVersion(artifact, expectedVersion);
+  if (path.extname(artifact.filename).toLowerCase() !== ".pptx") {
+    throw new ArtifactStoreError(
+      422,
+      "artifact_editor_pptx_unsupported",
+      "This artifact is not an editable PowerPoint presentation.",
+    );
+  }
+  if (bytes.byteLength <= 0 || bytes.byteLength > MAX_OFFICE_EDITOR_BYTES) {
+    throw new ArtifactStoreError(413, "artifact_editor_pptx_size", "The edited presentation is empty or too large.");
+  }
+  if (bytes[0] !== 0x50 || bytes[1] !== 0x4b) {
+    throw new ArtifactStoreError(400, "artifact_editor_pptx_invalid", "The Slides editor returned an invalid presentation.");
+  }
+  const workspace = temporaryWorkspace();
+  try {
+    const staged = path.join(workspace, path.basename(artifact.filename));
+    fs.writeFileSync(staged, bytes);
+    return await importArtifactVersion({
+      artifact,
+      authorizedRoot: workspace,
+      filePath: staged,
+      previewFilePath: null,
+      runId: artifact.originating_run_id,
+      assistantMessageId: null,
+      metadata: { lastEditedBy: "human", reviewWorkflow: "genoffice-slides" },
+      database: options.database,
+      storageRoot: options.storageRoot,
+    });
+  } finally {
+    removeTemporaryWorkspace(workspace);
+  }
+}
