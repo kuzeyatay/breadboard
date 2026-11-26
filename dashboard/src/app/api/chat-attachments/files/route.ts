@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { shareFreshUpload } from "@/lib/storage/service.ts";
 import { requireUserId } from "@/lib/server-auth";
 import { ApiError, apiErrorResponse } from "@/lib/hermes/route-helpers.ts";
 import {
@@ -44,6 +45,8 @@ export async function POST(request: Request) {
     }
     if (!request.body) throw new ApiError(400, "file_body_required", "No file was received.");
     const stored = await writeStoredFileBlob({ userId, format, body: request.body });
+    // An identical earlier upload: share its bytes instead of keeping a second copy.
+    if (stored.sha256) await shareFreshUpload(stored.path, stored.sha256);
     sweepUnreferencedStoredFileBlobs(userId);
     // An image opened from a new tab: kept for its viewer under the Settings cleanup switch.
     if (request.headers.get(STORE_ONLY_HEADER) === "true") {

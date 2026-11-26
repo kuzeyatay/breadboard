@@ -41,6 +41,8 @@ export class VideoBlobError extends Error {
 }
 
 export interface StoredVideoBlob {
+  /** SHA-256 of the bytes as written, so an identical upload can share them at once. */
+  sha256?: string;
   blobId: string;
   format: VideoAttachmentFormat;
   byteSize: number;
@@ -114,6 +116,7 @@ export async function writeVideoBlob(input: {
   const temporaryPath = `${finalPath}.part`;
 
   let written = 0;
+  const digest = crypto.createHash("sha256");
   const cap = new TransformStream<Uint8Array, Uint8Array>({
     transform(chunk, controller) {
       written += chunk.byteLength;
@@ -123,6 +126,7 @@ export async function writeVideoBlob(input: {
         );
         return;
       }
+      digest.update(chunk);
       controller.enqueue(chunk);
     },
   });
@@ -144,7 +148,7 @@ export async function writeVideoBlob(input: {
     throw new VideoBlobError(400, "video_upload_interrupted", "The video upload was interrupted.");
   }
 
-  return { blobId, format: input.format, byteSize: written, path: finalPath };
+  return { blobId, format: input.format, byteSize: written, path: finalPath, sha256: digest.digest("hex") };
 }
 
 /**

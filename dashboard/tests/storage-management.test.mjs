@@ -351,3 +351,18 @@ test("an identical upload shares the first copy's bytes at once, and each copy s
     assert.deepEqual(fs.readFileSync(second),content);assert.deepEqual(fs.readFileSync(third),content);
   } finally {db.close();assert.ok(path.resolve(root).startsWith(path.resolve(os.tmpdir())+path.sep));fs.rmSync(root,{recursive:true,force:true});}
 });
+
+test("audio, video and file uploads report the hash of exactly the bytes written, so identical uploads can share them", async () => {
+  const root = fs.mkdtempSync(path.join(path.resolve(os.tmpdir()), "bb-upload-hash-"));
+  try {
+    const bytes = crypto.randomBytes(300_000), expected = crypto.createHash("sha256").update(bytes).digest("hex");
+    const body = () => new ReadableStream({ start(controller) { for (let i = 0; i < bytes.length; i += 65_536) controller.enqueue(bytes.subarray(i, i + 65_536)); controller.close(); } });
+    for (const [file, fn, format] of [["audio-blob-store", "writeAudioBlob", "mp3"], ["video-blob-store", "writeVideoBlob", "mp4"], ["stored-file-blob-store", "writeStoredFileBlob", "bin"]]) {
+      const result = await build({ entryPoints: [path.resolve(import.meta.dirname, `../src/lib/conversations/${file}.ts`)], bundle: true, platform: "node", format: "cjs", packages: "external", write: false });
+      const module = { exports: {} }; new Function("require", "module", "exports", result.outputFiles[0].text)(createRequire(import.meta.url), module, module.exports);
+      const stored = await module.exports[fn]({ userId: 1, format, body: body(), root });
+      assert.equal(stored.sha256, expected, file);
+      assert.equal(crypto.createHash("sha256").update(fs.readFileSync(stored.path)).digest("hex"), expected, `${file} kept the bytes it hashed`);
+    }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

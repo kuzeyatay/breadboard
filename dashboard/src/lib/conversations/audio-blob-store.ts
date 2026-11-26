@@ -37,6 +37,8 @@ export class AudioBlobError extends Error {
 }
 
 export interface StoredAudioBlob {
+  /** SHA-256 of the bytes as written, so an identical upload can share them at once. */
+  sha256?: string;
   blobId: string;
   format: AudioAttachmentFormat;
   byteSize: number;
@@ -110,6 +112,7 @@ export async function writeAudioBlob(input: {
   const temporaryPath = `${finalPath}.part`;
 
   let written = 0;
+  const digest = crypto.createHash("sha256");
   const cap = new TransformStream<Uint8Array, Uint8Array>({
     transform(chunk, controller) {
       written += chunk.byteLength;
@@ -119,6 +122,7 @@ export async function writeAudioBlob(input: {
         );
         return;
       }
+      digest.update(chunk);
       controller.enqueue(chunk);
     },
   });
@@ -140,7 +144,7 @@ export async function writeAudioBlob(input: {
     throw new AudioBlobError(400, "audio_upload_interrupted", "The audio upload was interrupted.");
   }
 
-  return { blobId, format: input.format, byteSize: written, path: finalPath };
+  return { blobId, format: input.format, byteSize: written, path: finalPath, sha256: digest.digest("hex") };
 }
 
 /**

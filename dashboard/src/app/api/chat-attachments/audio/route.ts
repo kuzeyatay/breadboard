@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { shareFreshUpload } from "@/lib/storage/service.ts";
 import { requireUserId } from "@/lib/server-auth";
 import { ApiError, apiErrorResponse } from "@/lib/hermes/route-helpers.ts";
 import {
@@ -57,6 +58,10 @@ export async function POST(request: Request) {
     }
 
     const stored = await writeAudioBlob({ userId, format, body: request.body });
+
+    // An identical earlier upload: share its bytes instead of keeping a second copy.
+
+    if (stored.sha256) await shareFreshUpload(stored.path, stored.sha256);
 
     try {
       sweepUnreferencedAudioBlobs(userId);
