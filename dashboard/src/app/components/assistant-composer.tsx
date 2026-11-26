@@ -146,7 +146,7 @@ import {
 } from '@/lib/chat-attachments';
 import { composerSegments } from '@/lib/composer-links';
 import { modelAttachmentHref } from '@/lib/model-attachments';
-import { chatVideoPlaybackHref } from '@/lib/video-attachments';
+import { chatVideoPlaybackHref, isPlayableVideoFormat } from '@/lib/video-attachments';
 import ModelCubeIcon from '@/app/components/model-cube-icon';
 import SignInRequiredCard from '@/app/components/sign-in-required-card';
 
@@ -1712,10 +1712,10 @@ export default function AssistantComposer({
                       type="button"
                       onClick={() => onRemoveAttachment(index)}
                       disabled={Boolean(uploadQueued)}
-                      className="absolute right-1.5 top-1.5 flex h-7 w-7 items-center justify-center rounded-full border border-[var(--line)] bg-[var(--paper-raised)] text-[var(--ink)] shadow-[var(--neu-soft-shadow)] transition hover:bg-[var(--paper-strong)] focus-visible:outline-2 focus-visible:outline-[var(--botanical)]"
+                      className="absolute right-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded-full border border-[var(--line)] bg-[var(--paper-raised)] text-[var(--ink)] opacity-0 shadow-[var(--neu-soft-shadow)] transition hover:bg-[var(--paper-strong)] focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-[var(--botanical)] group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100"
                       aria-label={`Remove ${attachment.name}`}
                     >
-                      <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.2}>
+                      <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.2}>
                         <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
                       </svg>
                     </button>
@@ -1763,6 +1763,27 @@ export default function AssistantComposer({
                   onRemove={onRemoveAttachment ? () => onRemoveAttachment(index) : undefined}
                   removeDisabled={Boolean(uploadQueued)}
                 />
+              ) : attachment.type === 'video' ? (
+                // A video gets the same tile as a document, and plays in the
+                // same popup player a sent one opens in.
+                <ComposerDocumentCard
+                  key={`${attachment.name}-${index}`}
+                  name={attachment.name}
+                  kind="video"
+                  source={
+                    attachment.blobId
+                      ? {
+                          kind: 'video',
+                          name: attachment.name,
+                          href: chatVideoPlaybackHref(attachment.blobId, attachment.format),
+                          playable: isPlayableVideoFormat(attachment.format),
+                        }
+                      : null
+                  }
+                  title={`Play ${attachment.name}`}
+                  onRemove={onRemoveAttachment ? () => onRemoveAttachment(index) : undefined}
+                  removeDisabled={Boolean(uploadQueued)}
+                />
               ) : (
                 <div
                   key={`${attachment.name}-${index}`}
@@ -1787,8 +1808,6 @@ export default function AssistantComposer({
                         <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 7.5h10.5l.75 12H6l.75-12ZM9 9V6a3 3 0 0 1 6 0v3" />
                       ) : attachment.type === 'image' ? (
                         <path strokeLinecap="round" strokeLinejoin="round" d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909M3.75 4.5h16.5v15H3.75z" />
-                      ) : attachment.type === 'video' ? (
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h10.5v10.5H3.75zM14.25 10.5 20.25 7.5v9l-6-3z" />
                       ) : attachment.type === 'audio' ? (
                         <path strokeLinecap="round" strokeLinejoin="round" d="M9 18V5.25l10.5-1.5V16.5M9 18a2.25 2.25 0 1 1-4.5 0A2.25 2.25 0 0 1 9 18Zm10.5-1.5a2.25 2.25 0 1 1-4.5 0 2.25 2.25 0 0 1 4.5 0Z" />
                       ) : (
@@ -1796,9 +1815,8 @@ export default function AssistantComposer({
                       )}
                     </svg>
                   )}
-                  {/* Neither a 3D file nor a video has a thumbnail, so the chip
-                      links to it: the user can open what was stored before
-                      deciding to send. */}
+                  {/* A 3D file has no thumbnail, so the chip links to it: the
+                      user can open what was stored before deciding to send. */}
                   {attachment.type === 'model' && attachment.blobId ? (
                     <a
                       href={modelAttachmentHref(attachment.blobId, { download: true })}
@@ -1814,18 +1832,6 @@ export default function AssistantComposer({
                         kind: 'audio',
                         name: attachment.name,
                         href: `/api/chat-attachments/audio/${attachment.blobId}`,
-                      }}
-                      className="truncate underline decoration-dotted underline-offset-2"
-                      title={`Play ${attachment.name}`}
-                    >
-                      {attachment.name}
-                    </AttachmentPreviewDialog>
-                  ) : attachment.type === 'video' && attachment.blobId ? (
-                    <AttachmentPreviewDialog
-                      source={{
-                        kind: 'video',
-                        name: attachment.name,
-                        href: chatVideoPlaybackHref(attachment.blobId, attachment.format),
                       }}
                       className="truncate underline decoration-dotted underline-offset-2"
                       title={`Play ${attachment.name}`}

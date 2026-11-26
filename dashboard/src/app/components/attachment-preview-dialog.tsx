@@ -22,14 +22,16 @@ import AttachmentSpreadsheetView, {
 } from "@/app/components/attachment-spreadsheet-view";
 import type { XlsxViewSheet } from "@/lib/document-structure/xlsx";
 import { chatAttachmentHref } from "@/lib/chat-attachments";
+import { openBrowserInDesktop } from "@/lib/desktop-browser-tabs";
 import type { DocumentAttachmentFormat } from "@/lib/document-attachments";
 
 export interface AttachmentPreviewSource {
   /**
    * `document` is a stored Office file (Word, Excel, PowerPoint, OpenDocument);
-   * `file` is a stored ordinary file (text, CSV, code, SVG, HTML, archives).
+   * `file` is a stored ordinary file (text, CSV, code, SVG, HTML, archives);
+   * `web` is a page the chat was asked about: a site or a garden page.
    */
-  kind: "pdf" | "audio" | "video" | "document" | "file";
+  kind: "pdf" | "audio" | "video" | "document" | "file" | "web";
   name: string;
   /**
    * What the popup shows: the PDF reader, the media stream, or for `document`
@@ -51,6 +53,7 @@ interface Props {
   children: ReactNode;
   className?: string;
   title?: string;
+  testId?: string;
 }
 
 /** The popup for one stored document, by blob id. */
@@ -97,7 +100,7 @@ function PreviewContextMenu({
 }) {
   const pageHref = source.kind === "document" ? source.pageHref : source.href;
   if (!pageHref) return <>{children}</>;
-  const label = source.kind === "pdf" ? "PDF" : source.kind === "document" ? "document" : "video";
+  const label = source.kind === "pdf" ? "PDF" : source.kind === "document" ? "document" : source.kind === "web" ? "page" : "video";
   return (
     <ContextMenuSurface
       label={`${label} actions for ${source.name}`}
@@ -366,6 +369,7 @@ export default function AttachmentPreviewDialog({
   children,
   className,
   title,
+  testId,
 }: Props) {
   const sourceIdentity = `${source.kind}:${source.href}:${source.name}`;
   const [dialogState, setDialogState] = useState(() => ({
@@ -388,6 +392,7 @@ export default function AttachmentPreviewDialog({
       <button
         type="button"
         className={className}
+        data-testid={testId}
         title={title ?? `Open ${source.name}`}
         aria-label={`Open ${source.name} preview`}
         onPointerDown={(event) => {
@@ -420,10 +425,12 @@ export default function AttachmentPreviewDialog({
     </DialogPrimitive.Trigger>
   );
 
-  const large = source.kind === "pdf" || source.kind === "document" || source.kind === "file";
+  const large = source.kind === "pdf" || source.kind === "document" || source.kind === "file" || source.kind === "web";
   const description =
     source.kind === "pdf"
       ? "PDF attachment preview"
+      : source.kind === "web"
+        ? "Page preview"
       : source.kind === "document" || source.kind === "file"
         ? "Attachment preview"
         : `${source.kind} attachment player`;
@@ -453,6 +460,21 @@ export default function AttachmentPreviewDialog({
             <DialogPrimitive.Description className="sr-only">
               {description}
             </DialogPrimitive.Description>
+            {source.kind === "web" && /^https?:/i.test(source.href) ? (
+              <button
+                type="button"
+                onClick={() => {
+                  // The full browser, for a site that will not draw in a frame.
+                  void openBrowserInDesktop({ url: source.href }).then((opened) => {
+                    if (!opened) window.open(source.href, "_blank", "noopener,noreferrer");
+                  });
+                  handleOpenChange(false);
+                }}
+                className="shrink-0 rounded-lg px-2.5 py-1 text-xs text-[var(--ink-muted)] transition hover:bg-[var(--paper-strong)] hover:text-[var(--ink-heading)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--botanical)]"
+              >
+                Open in browser
+              </button>
+            ) : null}
             {source.downloadHref ? (
               <a
                 href={source.downloadHref}
@@ -492,6 +514,16 @@ export default function AttachmentPreviewDialog({
               <iframe
                 src={source.href}
                 title={`${source.name} PDF preview`}
+                className="h-full w-full border-0 bg-white"
+              />
+            ) : source.kind === "web" ? (
+              <iframe
+                src={source.href}
+                title={`${source.name} preview`}
+                // A site from the open web runs in its own sandbox; a garden
+                // page is Breadboard's own preview route.
+                sandbox={/^https?:/i.test(source.href) ? "allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox" : undefined}
+                referrerPolicy="no-referrer"
                 className="h-full w-full border-0 bg-white"
               />
             ) : source.kind === "document" ? (

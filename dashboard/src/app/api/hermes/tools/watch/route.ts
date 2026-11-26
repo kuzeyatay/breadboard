@@ -20,6 +20,7 @@ import {
   WatchServiceError,
 } from "@/lib/hermes/watch-service.ts";
 import { readHermesConfig } from "@/lib/hermes/config.ts";
+import { stageWatchSource } from "@/lib/hermes/watch-source-staging.ts";
 import { directoryForWorkspaceKey } from "@/lib/hermes/workspace.ts";
 
 export const dynamic = "force-dynamic";
@@ -83,13 +84,27 @@ export async function POST(request: Request) {
         detail: typeof args.detail === "string" ? args.detail : "balanced",
       },
     });
+    const workspaceRoot =
+      session.active_directory ??
+      directoryForWorkspaceKey(readHermesConfig(), session.workspace_key);
+    // A video the user can already reach (an approved folder, or their own
+    // upload's stored copy) is brought into the workspace instead of refused.
+    const stagedArgs =
+      typeof args.source === "string"
+        ? {
+            ...args,
+            source: await stageWatchSource({
+              userId: session.user_id,
+              source: args.source,
+              workspaceRoot,
+            }),
+          }
+        : args;
     const result = await runWatch({
       userId: session.user_id,
       conversationId: conversation.public_id,
-      args,
-      workspaceRoot:
-        session.active_directory ??
-        directoryForWorkspaceKey(readHermesConfig(), session.workspace_key),
+      args: stagedArgs,
+      workspaceRoot,
       signal: request.signal,
     });
     recordAuditEvent({

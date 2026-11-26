@@ -7,7 +7,13 @@ import AttachmentPreviewDialog, {
   storedFilePreviewSource,
   type AttachmentPreviewSource,
 } from "@/app/components/attachment-preview-dialog";
-import { MessageDocumentCard } from "@/app/components/document-attachment-card";
+import {
+  MessageDocumentCard,
+  attachmentFileKind,
+  attachmentFileKindLabel,
+  type AttachmentFileKind,
+} from "@/app/components/document-attachment-card";
+import { openBrowserInDesktop } from "@/lib/desktop-browser-tabs";
 import ModelAttachmentViewer from "@/app/components/model-attachment-viewer";
 import { ChatVideoAttachmentCard } from "@/app/components/chat-video-link-embed";
 import {
@@ -73,6 +79,74 @@ function attachmentPropsEqual(previous: Props, next: Props): boolean {
   return true;
 }
 
+/**
+ * What a viewed page actually was. A browser tab or garden page can be a PDF
+ * or a video, so the address (or, for older turns, the title) decides the
+ * mark; a garden page keeps the garden leaf whatever it holds.
+ */
+function webPageCard(page: { title: string; url?: string }): { kind: AttachmentFileKind; subtitle: string } {
+  let host = "";
+  let path = "";
+  let garden = false;
+  if (page.url) {
+    try {
+      const url = new URL(page.url, "http://app.invalid");
+      garden = url.host === "app.invalid" && url.pathname.startsWith("/garden/");
+      host = url.host === "app.invalid" ? "" : url.hostname.replace(/^www\./, "");
+      path = garden ? url.searchParams.get("note") ?? "" : decodeURIComponent(url.pathname);
+    } catch {
+      // A malformed address still has a title to go by.
+    }
+  }
+  const fileKind = [path, page.title]
+    .map((name) => attachmentFileKind(name))
+    .find((kind) => kind !== "file") ?? "file";
+  const fileLabel = fileKind === "file" ? "" : attachmentFileKindLabel(fileKind);
+  if (garden) {
+    return { kind: "garden", subtitle: fileLabel ? `Garden · ${fileLabel}` : "Garden page" };
+  }
+  const kind = fileKind === "pdf" || fileKind === "video" ? fileKind : "web";
+  const label = kind === "web" ? "" : attachmentFileKindLabel(kind);
+  return {
+    kind,
+    subtitle: [label, host].filter(Boolean).join(" · ") || "Web page",
+  };
+}
+
+/** A site opens in a browser tab of its own, or a new window outside the app. */
+function openSiteInNewTab(url: string) {
+  void openBrowserInDesktop({ url }).then((opened) => {
+    if (!opened) window.open(url, "_blank", "noopener,noreferrer");
+  });
+}
+
+/**
+ * The popup a page reference opens. A PDF turn already carries the PDF it was
+ * asked about (hidden as reader context), so its card opens that stored copy
+ * at the page that was in view. A web or garden page opens at its address.
+ */
+function pageReferenceSource(
+  attachments: readonly ChatMessageAttachment[] | undefined,
+  pdfPage: { title: string; pageNumber: number } | undefined,
+  webPage: { title: string; url?: string } | undefined,
+): AttachmentPreviewSource | null {
+  if (pdfPage) {
+    const pdf = attachments?.find(
+      (attachment): attachment is Extract<ChatMessageAttachment, { type: "document" }> =>
+        attachment.context === "pdf" && attachment.type === "document" && attachment.format === "pdf",
+    );
+    if (!pdf) return null;
+    const source = documentPreviewSource(pdf);
+    return {
+      ...source,
+      name: `${pdfPage.title} — page ${pdfPage.pageNumber}`,
+      href: `${source.href}#page=${pdfPage.pageNumber}`,
+    };
+  }
+  if (webPage?.url) return { kind: "web", name: webPage.title, href: webPage.url };
+  return null;
+}
+
 function isPastedScreenshotName(name: string): boolean {
   return /^pasted-screenshot-\d+\.(?:png|jpe?g|webp|gif)$/i.test(name.trim());
 }
@@ -90,6 +164,10 @@ function ChatMessageAttachments({
   const [openImageIndex, setOpenImageIndex] = useState<number | null>(null);
   const pdfPage = allAttachments?.find(attachment => attachment.context === "pdf" && attachment.pdfPage)?.pdfPage;
   const webPage = allAttachments?.find(attachment => attachment.context === "web" && attachment.webPage)?.webPage;
+  const pageSource = useMemo(
+    () => pageReferenceSource(allAttachments, pdfPage, webPage),
+    [allAttachments, pdfPage, webPage],
+  );
   const images = useMemo(
     () => attachments.filter(
       (attachment): attachment is Extract<ChatMessageAttachment, { type: "image" }> =>
@@ -225,24 +303,30 @@ function ChatMessageAttachments({
     <>
       <div className="flex min-w-0 max-w-full flex-col items-end gap-1.5">
         {pdfPage ? (
-          <span
-            className={FILE_CHIP_CLASS}
-            title={`${pdfPage.title} — Page ${pdfPage.pageNumber} at send time`}
-            data-testid="pdf-page-attachment"
-          >
-            <PaperclipIcon />
-            <span className="shrink-0">Viewing page {pdfPage.pageNumber}</span>
-            <span aria-hidden>·</span>
-            <span className="truncate">{pdfPage.title}</span>
-          </span>
+          <MessageDocumentCard
+            name={pdfPage.title}
+            kind="pdf"
+            subtitle={`PDF · Page ${pdfPage.pageNumber}`}
+            source={pageSource}
+            title={pageSource ? `Open ${pdfPage.title} at page ${pdfPage.pageNumber}` : `${pdfPage.title} — page ${pdfPage.pageNumber} at send time`}
+            testId="pdf-page-attachment"
+          />
         ) : null}
-        {webPage ? (
-          <span className={FILE_CHIP_CLASS} title={`${webPage.title} at send time`} data-testid="web-page-attachment">
-            <PaperclipIcon />
-            <span className="shrink-0">Viewing</span>
-            <span className="truncate">{webPage.title}</span>
-          </span>
-        ) : null}
+        {webPage ? (() => {
+          const card = webPageCard(webPage);
+          const site = webPage.url && /^https?:/i.test(webPage.url) ? webPage.url : null;
+          return (
+            <MessageDocumentCard
+              name={webPage.title}
+              kind={card.kind}
+              subtitle={card.subtitle}
+              source={site ? null : pageSource}
+              onOpen={site ? () => openSiteInNewTab(site) : undefined}
+              title={site || pageSource ? `Open ${webPage.title}` : `${webPage.title} at send time`}
+              testId="web-page-attachment"
+            />
+          );
+        })() : null}
         {images.length ? (
           <div
             className={`grid min-w-0 max-w-[min(42rem,72vw,100%)] gap-2 ${

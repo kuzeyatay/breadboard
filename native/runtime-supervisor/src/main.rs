@@ -550,10 +550,6 @@ const OPENMONTAGE_WORKER_ENVIRONMENT_NAMES: &[&str] = &[
     "GOOGLE_APPLICATION_CREDENTIALS",
     "GOOGLE_CLOUD_PROJECT",
     "GOOGLE_CLOUD_LOCATION",
-    // Google Drive, read by the dashboard; must match runtime-core service_environment.rs.
-    "GOOGLE_DRIVE_CLIENT_ID",
-    "GOOGLE_DRIVE_CLIENT_SECRET",
-    "GOOGLE_DRIVE_API_KEY",
     "ELEVENLABS_API_KEY",
     "OPENAI_API_KEY",
     "XAI_API_KEY",

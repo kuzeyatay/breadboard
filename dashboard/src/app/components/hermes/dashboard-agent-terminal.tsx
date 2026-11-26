@@ -137,6 +137,7 @@ import {
 import {
   TERMINAL_ATTACHMENT_ACCEPT,
   attachmentOnlyMessageText,
+  webPageUrl,
   chatMessageAttachments,
   extractChatAttachments,
   reusableChatAttachments,
@@ -7422,6 +7423,9 @@ if (careerOpsAgent) {
       );
       // Capture the page now, before the reader scrolls or navigates away.
       const sentPage = browserPage && !voice ? browserPage.title : null;
+      // Where the page card reopens it; private browsing keeps no address.
+      const sentPageUrl = sentPage && !privateBrowser ? webPageUrl(viewingWebsiteUrl) : undefined;
+      const sentWebPage = sentPage ? { title: sentPage, ...(sentPageUrl ? { url: sentPageUrl } : {}) } : null;
       const pageView = sentPage ? captureWorkspaceView() : null;
       // The website this turn was asked on, for the history's "This website".
       const sentSite = browserAssistantPresentation && !voice && !privateBrowser && viewingWebsiteUrl
@@ -7445,8 +7449,8 @@ if (careerOpsAgent) {
           prepareAttachments: async () => {
             const view = await pageView;
             const page: ChatAttachment = view
-              ? { ...view, context: "web", name: "Current page.jpg", webPage: { title: sentPage } }
-              : { type: "text", context: "web", name: "Current page", webPage: { title: sentPage },
+              ? { ...view, context: "web", name: "Current page.jpg", webPage: sentWebPage! }
+              : { type: "text", context: "web", name: "Current page", webPage: sentWebPage!,
                   text: "The page image could not be captured. Use the page text supplied with this turn." };
             return [page, ...pendingAttachments];
           },

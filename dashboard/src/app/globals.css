@@ -56,6 +56,8 @@
      the disc and everything inside it stay round to keep the ring on the
      disc's edge. */
   .metal-fx-root,
+  .metal-fx-root::before,
+  .metal-fx-root::after,
   .metal-fx-root *,
   .metal-fx-root *::before,
   .metal-fx-root *::after {
@@ -13327,6 +13329,15 @@ html[data-voice-stage='open'] .clap-indicator { display: none; }
 
    Both selectors on purpose: `.metal-fx-root[data-theme='light']` ties a
    single-class override on specificity and is injected later. */
+/* metal-fx keeps its host at opacity 0 / visibility hidden (inline) until the
+   first GPU frame lands. A paused, disabled or context-lost ring may never
+   deliver that frame, which left the composer with no send button at all.
+   The button is always shown; before the ring paints it is the plain disc.
+   `inherit`, not `visible`, so a hidden popup still hides its button. */
+.metal-fx-root.bb-metal-send {
+  visibility: inherit !important;
+  opacity: 1 !important;
+}
 .metal-fx-root.bb-metal-send,
 .metal-fx-root.bb-metal-send[data-theme] {
   background: var(--paper-raised);

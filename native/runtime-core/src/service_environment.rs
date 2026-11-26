@@ -3367,9 +3367,6 @@ impl TrustedWorkerEnvironmentSet {
             "GOOGLE_APPLICATION_CREDENTIALS",
             "GOOGLE_CLOUD_PROJECT",
             "GOOGLE_CLOUD_LOCATION",
-            "GOOGLE_DRIVE_CLIENT_ID",
-            "GOOGLE_DRIVE_CLIENT_SECRET",
-            "GOOGLE_DRIVE_API_KEY",
             "ELEVENLABS_API_KEY",
             "OPENAI_API_KEY",
             "XAI_API_KEY",
@@ -5034,9 +5031,6 @@ fn service_only_product_environment_name(name: &str) -> bool {
             | "GOOGLE_APPLICATION_CREDENTIALS"
             | "GOOGLE_CLOUD_PROJECT"
             | "GOOGLE_CLOUD_LOCATION"
-            | "GOOGLE_DRIVE_CLIENT_ID"
-            | "GOOGLE_DRIVE_CLIENT_SECRET"
-            | "GOOGLE_DRIVE_API_KEY"
             | "ELEVENLABS_API_KEY"
             | "OPENAI_API_KEY"
             | "XAI_API_KEY"
@@ -8871,6 +8865,8 @@ mod tests {
                 vec![
                     ("COMPOSIO_API_KEY", OsString::from("composio-test-key")),
                     ("BREADBOARD_MEMORY_DIAGNOSTIC_TOKEN", OsString::from(MEMORY_EVIDENCE_TOKEN)),
+                    ("GOOGLE_DRIVE_CLIENT_ID", OsString::from("drive-client.apps.googleusercontent.com")),
+                    ("GOOGLE_DRIVE_CLIENT_SECRET", OsString::from("drive-test-secret")),
                 ],
             ).unwrap();
             let services = TrustedServiceEnvironmentSet::load(
@@ -8880,6 +8876,10 @@ mod tests {
                 mode, &services, &paths, &os_environment,
             );
             assert_eq!(values(&services.dashboard)["COMPOSIO_API_KEY"], "composio-test-key");
+            // Organization file sharing reads these in the dashboard; a service-only
+            // listing once stripped them and every organization said Drive was not set up.
+            assert_eq!(values(&services.dashboard)["GOOGLE_DRIVE_CLIENT_ID"], "drive-client.apps.googleusercontent.com");
+            assert_eq!(values(&services.dashboard)["GOOGLE_DRIVE_CLIENT_SECRET"], "drive-test-secret");
 
             // These names are rejected by the supervisor outside the dashboard.
             // Exercise the actual derived environments, including optional keys.
@@ -8890,6 +8890,8 @@ mod tests {
             ] {
                 for name in [
                     "COMPOSIO_API_KEY",
+                    "GOOGLE_DRIVE_CLIENT_ID",
+                    "GOOGLE_DRIVE_CLIENT_SECRET",
                     "BREADBOARD_MEMORY_DIAGNOSTIC_TOKEN",
                     "BREADBOARD_PACKAGED_SERVICE_EVIDENCE",
                     "BREADBOARD_PACKAGED_SERVICE_EVIDENCE_ENDPOINTS",

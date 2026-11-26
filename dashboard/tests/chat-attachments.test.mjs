@@ -39,6 +39,27 @@ test('automatic PDF evidence stays available across storage and retry without re
   assert.equal(reused.find(a => a.name === picked.name).context, undefined);
 });
 
+test('a saved PDF turn whose screenshot bytes were dropped never shows the screenshot name as a file', () => {
+  // The transcript loader strips the PDF view image; only its name survives.
+  const retained = [
+    { type: 'file', name: 'PDF reading context.txt', context: 'pdf', pdfPage: { title: 'Welch Labs', pageNumber: 34 } },
+    { type: 'document', name: 'welch.pdf', blobId: `doc_${'c'.repeat(32)}`, format: 'pdf', context: 'pdf' },
+  ];
+  const names = ['PDF reading context.txt', 'welch.pdf', 'Current PDF view — pages 34.png', 'Current PDF view — pages 33, 34.png', 'notes.png'];
+  assert.deepEqual(visibleChatMessageAttachments(retained, names).attachmentNames, ['notes.png']);
+});
+
+test('page references keep a reopenable address and reject anything else', () => {
+  const parse = (url) => parseChatAttachments([
+    { type: 'text', name: 'Current page', text: 'x', context: 'web', webPage: { title: 'Docs', url } },
+  ])[0].webPage;
+  assert.deepEqual(parse('https://example.com/a?b=1'), { title: 'Docs', url: 'https://example.com/a?b=1' });
+  assert.deepEqual(parse('/garden/physics/preview?note=lms'), { title: 'Docs', url: '/garden/physics/preview?note=lms' });
+  for (const bad of ['javascript:alert(1)', '//evil.example', 'file:///C:/x', 42]) {
+    assert.deepEqual(parse(bad), { title: 'Docs' });
+  }
+});
+
 test('older PDF context bundles are hidden while user attachments retain their previews', () => {
   const attachments = [
     { type: 'file', name: 'PDF reading context.txt' },

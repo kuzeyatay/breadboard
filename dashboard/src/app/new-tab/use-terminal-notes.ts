@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { DEFAULT_NOTE_ID, validNoteId, validNoteSummary, validTerminalNote, type TerminalNote, type TerminalNoteSummary } from "@/lib/terminal-note";
+import { DEFAULT_NOTE_ID, validNoteSummary, validTerminalNote, type TerminalNote, type TerminalNoteSummary } from "@/lib/terminal-note";
 
 export function useTerminalNotes(ownerKey: string) {
   const key = `breadboard:terminal-notes:v1:${ownerKey.trim().toLowerCase()}`;
@@ -14,8 +14,7 @@ export function useTerminalNotes(ownerKey: string) {
   const select = useCallback((id: string | null) => {
     active.current = id;
     setSelectedId(id);
-    try { if (id) sessionStorage.setItem(key + ":selected", id); else sessionStorage.removeItem(key + ":selected"); } catch { /* Selection still works. */ }
-  }, [key]);
+  }, []);
   const refresh = useCallback(async (): Promise<TerminalNoteSummary[] | null> => {
     const sequence = ++request.current;
     try {
@@ -24,9 +23,11 @@ export function useTerminalNotes(ownerKey: string) {
       if (!response.ok || !Array.isArray(data.notes) || !data.notes.every(validNoteSummary)) throw new Error("Couldn’t load your notes. Try again.");
       if (!live.current || sequence !== request.current) return null;
       setNotes(data.notes);
+      // A fresh terminal opens on the most recently edited note (the list is
+      // sorted newest-first), not on whichever note was created first.
       if (!initialized.current) {
         initialized.current = true;
-        if (!data.notes.some((note: TerminalNoteSummary) => note.id === active.current)) select(data.notes[0]?.id ?? null);
+        select(data.notes[0]?.id ?? null);
       }
       setLoaded(true);
       return data.notes;
@@ -38,10 +39,6 @@ export function useTerminalNotes(ownerKey: string) {
   };
   useEffect(() => {
     live.current = true;
-    try {
-      const id = sessionStorage.getItem(key + ":selected");
-      if (validNoteId(id)) select(id);
-    } catch { /* Default selection is available. */ }
     void refresh();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const sync = () => { clearTimeout(timer); timer = setTimeout(() => { void refresh(); }, 50); };

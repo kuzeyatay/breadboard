@@ -54,6 +54,7 @@ import { chatRowKey, estimateChatRowHeight } from '@/app/components/chat/chat-ro
 import ChatJumpToBottom from '@/app/components/chat-jump-to-bottom';
 import ChatMessageRail, { type ChatMessageRailItem } from '@/app/components/chat-message-rail';
 import ChatMessageAttachments from '@/app/components/chat-message-attachments';
+import { gardenPagePreviewHref } from '@/lib/garden-page-preview';
 import ChatVideoLinkEmbeds from '@/app/components/chat-video-link-embed';
 import { QuotedChatSelection, SelectableAssistantMarkdown, SelectionComposerContext, type ChatTextSelectionCandidate, type FloatingAnchorRect } from '@/app/components/chat-text-selection-ui';
 import { useTextSelectionController } from '@/app/components/use-text-selection-controller';
@@ -1880,7 +1881,13 @@ export default function GardenAssistant({
       // The open page, shown like the PDF assistant's page chip. Its text
       // already reaches the model as the active page context.
       attachments: [
-        ...(activeMarkdown?.title ? [{ type: 'file' as const, name: 'Current page', context: 'web' as const, webPage: { title: activeMarkdown.title } }] : []),
+        ...(activeMarkdown?.title ? [{ type: 'file' as const, name: 'Current page', context: 'web' as const, webPage: {
+          title: activeMarkdown.title,
+          // The card reopens this Quartz page in a popup from any chat surface.
+          ...((activeMarkdown.cluster || activeClusterSlug) && activeMarkdown.slug
+            ? { url: gardenPagePreviewHref(activeMarkdown.cluster || activeClusterSlug, activeMarkdown.slug) }
+            : {}),
+        } }] : []),
         ...chatMessageAttachments(pendingAttachments),
       ],
       ...(selectedText ? { selectedText } : {}),

@@ -76,8 +76,12 @@ interface ChatAttachmentScope {
   context?: 'pdf' | 'workspace' | 'document-page' | 'web';
   /** The page open when Send was pressed, displayed with the saved message. */
   pdfPage?: { title: string; pageNumber: number };
-  /** The web or garden page open when Send was pressed, displayed like pdfPage. */
-  webPage?: { title: string };
+  /**
+   * The web or garden page open when Send was pressed, displayed like pdfPage.
+   * `url` reopens it: an http(s) address for a site, or an app path such as a
+   * garden page preview. Private browsing leaves it out.
+   */
+  webPage?: { title: string; url?: string };
   /** The artifact row that placed this file in the current composer, if any. */
   sourceArtifactId?: string;
 }
@@ -248,8 +252,10 @@ export function unavailableWorkspaceView(): ChatAttachment {
 export function attachmentContextMetadata(attachment: { context?: unknown; type?: unknown; pdfPage?: unknown; webPage?: unknown }): Pick<ChatAttachmentScope, 'context' | 'pdfPage' | 'webPage'> {
   if (attachment.context === 'pdf') return { context: 'pdf', ...pdfPageAttachmentMetadata(attachment.pdfPage) };
   if (attachment.context === 'web' && (attachment.type === 'image' || attachment.type === 'text' || attachment.type === 'file')) {
-    const title = (attachment.webPage as { title?: unknown } | undefined)?.title;
-    return { context: 'web', ...(typeof title === 'string' && title.trim() ? { webPage: { title: title.trim().slice(0, 500) } } : {}) };
+    const page = attachment.webPage as { title?: unknown; url?: unknown } | undefined;
+    const title = page?.title;
+    const url = webPageUrl(page?.url);
+    return { context: 'web', ...(typeof title === 'string' && title.trim() ? { webPage: { title: title.trim().slice(0, 500), ...(url ? { url } : {}) } } : {}) };
   }
   if (attachment.context === 'workspace' && (attachment.type === 'image' || attachment.type === 'text' || attachment.type === 'file')) {
     return { context: 'workspace' };
@@ -258,6 +264,28 @@ export function attachmentContextMetadata(attachment: { context?: unknown; type?
     return { context: attachment.context };
   }
   return {};
+}
+
+/**
+ * A page address worth keeping: an http(s) site, or an app path (one leading
+ * slash, never a protocol-relative `//host`).
+ */
+export function webPageUrl(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const url = value.trim();
+  if (!url || url.length > 4_000) return undefined;
+  if (url.startsWith('/') && !url.startsWith('//') && !url.startsWith('/\\')) return url;
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.toString() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The page screenshot a PDF Assistant turn sends; never a user's own file. */
+function isPdfViewCaptureName(name: string): boolean {
+  return /^Current PDF view(?: — pages [\d, ]+)?\.png$/.test(name);
 }
 
 /** Keep automatic reader evidence out of previews and filename fallbacks. */
@@ -281,7 +309,9 @@ export function visibleChatMessageAttachments(
   return {
     attachments: visible,
     attachmentNames: attachmentNames.filter(name => {
-      if (!hiddenNames.has(name)) return true;
+      // Saved transcripts drop the PDF view's bytes but keep its name; the
+      // name alone must not come back as a file the user attached.
+      if (!hiddenNames.has(name) && !isPdfViewCaptureName(name)) return true;
       const remaining = visibleNameCounts.get(name) ?? 0;
       if (!remaining) return false;
       visibleNameCounts.set(name, remaining - 1);

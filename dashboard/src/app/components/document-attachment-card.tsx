@@ -17,6 +17,9 @@ export type AttachmentFileKind =
   | "presentation"
   | "text"
   | "code"
+  | "web"
+  | "garden"
+  | "video"
   | "file";
 
 const KIND_LABEL: Record<AttachmentFileKind, string> = {
@@ -26,6 +29,9 @@ const KIND_LABEL: Record<AttachmentFileKind, string> = {
   presentation: "Presentation",
   text: "Text",
   code: "Code",
+  web: "Web page",
+  garden: "Garden page",
+  video: "Video",
   file: "File",
 };
 
@@ -33,6 +39,7 @@ const SPREADSHEET = new Set(["xlsx", "xls", "xlsm", "ods", "csv", "tsv", "number
 const DOCUMENT = new Set(["docx", "doc", "odt", "rtf", "pages"]);
 const PRESENTATION = new Set(["pptx", "ppt", "odp", "key"]);
 const TEXT = new Set(["txt", "md", "markdown", "log"]);
+const VIDEO = new Set(["mp4", "m4v", "webm", "mov", "mkv", "avi"]);
 const CODE = new Set([
   "js", "jsx", "mjs", "cjs", "ts", "tsx", "json", "xml", "html", "htm", "svg",
   "py", "rb", "go", "rs", "java", "c", "h", "cpp", "cs", "css", "scss", "yml",
@@ -51,6 +58,7 @@ export function attachmentFileKind(name: string, format?: string): AttachmentFil
   if (DOCUMENT.has(ext)) return "document";
   if (PRESENTATION.has(ext)) return "presentation";
   if (TEXT.has(ext)) return "text";
+  if (VIDEO.has(ext)) return "video";
   if (CODE.has(ext)) return "code";
   // A format the caller did not know may still be told by the name.
   if (format) return attachmentFileKind(name);
@@ -100,6 +108,32 @@ export function FileKindIcon({
         <path d="M8 4h8.5A2.5 2.5 0 0 1 19 6.5v11a2.5 2.5 0 0 1-2.5 2.5H8" />
         <rect x="4" y="8" width="9" height="8" rx="2" />
         <path d="M6.5 10.5l1 3 1-2 1 2 1-3" strokeWidth={1.4} />
+      </svg>
+    );
+  }
+  if (kind === "garden") {
+    // The leaf the tab strip shows for a garden.
+    return (
+      <svg aria-hidden className={`${className} shrink-0 text-[#30a46c]`} viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth={1.1} strokeLinejoin="round" strokeLinecap="round">
+        <path d="M7 12.5V6.5" />
+        <path d="M7 7.5C7 4 9 2 12.3 1.8 12.2 5.2 10.3 7.3 7 7.5z" />
+        <path d="M7 9.8C7 7.6 5.6 6.2 3 6.1c.1 2.5 1.5 3.8 4 3.7z" />
+      </svg>
+    );
+  }
+  if (kind === "video") {
+    return (
+      <svg aria-hidden className={`${className} shrink-0 text-[#8e4ec6]`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinejoin="round" strokeLinecap="round">
+        <rect x="3.5" y="5.5" width="17" height="13" rx="3" />
+        <path d="m10.5 9.5 4 2.5-4 2.5v-5Z" fill="currentColor" />
+      </svg>
+    );
+  }
+  if (kind === "web") {
+    return (
+      <svg aria-hidden className={`${className} shrink-0 text-[#0090ff]`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinejoin="round" strokeLinecap="round">
+        <circle cx="12" cy="12" r="8.5" />
+        <path d="M3.5 12h17M12 3.5c2.3 2.4 3.4 5.2 3.4 8.5s-1.1 6.1-3.4 8.5c-2.3-2.4-3.4-5.2-3.4-8.5s1.1-6.1 3.4-8.5Z" />
       </svg>
     );
   }
@@ -386,6 +420,17 @@ function ThumbnailBody({ thumbnail, kind }: { thumbnail: Thumbnail | null; kind:
       </div>
     );
   }
+  if (kind === "video") {
+    // No frame to show before it plays: a player face, so it reads as a video.
+    return (
+      <div className="grid h-full w-full place-items-center bg-[#16161a]" aria-hidden>
+        <svg className="h-11 w-14 text-white/90" viewBox="0 0 56 44" fill="none">
+          <rect x="1.5" y="1.5" width="53" height="41" rx="8" stroke="currentColor" strokeWidth="2.4" />
+          <path d="M23 14.5v15l12.5-7.5L23 14.5Z" fill="currentColor" />
+        </svg>
+      </div>
+    );
+  }
   return (
     <div className="grid h-full w-full place-items-center bg-[#f6f6f4]" aria-hidden>
       <FileKindIcon kind={kind} className="h-9 w-9 opacity-80" />
@@ -406,6 +451,7 @@ const CARD_FOCUS =
 export function ComposerDocumentCard({
   name,
   format,
+  kind: kindOverride,
   source,
   title,
   onRemove,
@@ -413,13 +459,15 @@ export function ComposerDocumentCard({
 }: {
   name: string;
   format?: string;
+  /** The mark to show when the name and format do not tell it (a video). */
+  kind?: AttachmentFileKind;
   /** The stored file to preview; null while it has no stored bytes. */
   source: AttachmentPreviewSource | null;
   title?: string;
   onRemove?: () => void;
   removeDisabled?: boolean;
 }) {
-  const kind = attachmentFileKind(name, format);
+  const kind = kindOverride ?? attachmentFileKind(name, format);
   const thumbnail = useThumbnail(source);
   const body = (
     <>
@@ -475,31 +523,55 @@ const MESSAGE_CARD_CLASS =
 export function MessageDocumentCard({
   name,
   format,
+  kind: kindOverride,
+  subtitle,
   source,
   title,
   trailing,
+  testId = "message-document-card",
+  onOpen,
 }: {
   name: string;
   format?: string;
+  /** The mark to show when the name has no telling extension (a page reference). */
+  kind?: AttachmentFileKind;
+  /** Replaces the file-kind label beneath the name. */
+  subtitle?: string;
   /** Opens the preview popup; null for a name with nothing stored to open. */
   source: AttachmentPreviewSource | null;
   title?: string;
   trailing?: ReactNode;
+  testId?: string;
+  /** Opens somewhere other than the popup, such as a new tab. Wins over `source`. */
+  onOpen?: () => void;
 }) {
-  const kind = attachmentFileKind(name, format);
+  const kind = kindOverride ?? attachmentFileKind(name, format);
   const content = (
     <>
       <FileKindIcon kind={kind} className="h-6 w-6" />
       <span className="flex min-w-0 flex-1 flex-col">
         <span className="truncate text-sm font-semibold text-[var(--ink-heading)]">{name}</span>
-        <span className="truncate text-xs text-[var(--ink-muted)]">{attachmentFileKindLabel(kind)}</span>
+        <span className="truncate text-xs text-[var(--ink-muted)]">{subtitle ?? attachmentFileKindLabel(kind)}</span>
       </span>
       {trailing}
     </>
   );
+  if (onOpen) {
+    return (
+      <button
+        type="button"
+        onClick={onOpen}
+        className={`${MESSAGE_CARD_CLASS} cursor-pointer transition hover:border-[var(--ink-muted)] hover:bg-[var(--paper-raised)] ${CARD_FOCUS}`}
+        title={title ?? `Open ${name}`}
+        data-testid={testId}
+      >
+        {content}
+      </button>
+    );
+  }
   if (!source) {
     return (
-      <div className={MESSAGE_CARD_CLASS} title={title ?? name} data-testid="message-document-card">
+      <div className={MESSAGE_CARD_CLASS} title={title ?? name} data-testid={testId}>
         {content}
       </div>
     );
@@ -509,6 +581,7 @@ export function MessageDocumentCard({
       source={source}
       className={`${MESSAGE_CARD_CLASS} cursor-pointer transition hover:border-[var(--ink-muted)] hover:bg-[var(--paper-raised)] ${CARD_FOCUS}`}
       title={title ?? `Open ${name}`}
+      testId={testId}
     >
       {content}
     </AttachmentPreviewDialog>

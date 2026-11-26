@@ -120,7 +120,7 @@ test("PDF messages retain the page and pixels from Send through preparation, que
   holdDecision=true;
   await send('Explain this circuit');
   await expect(chips).toHaveCount(1);
-  await expect(chips.first()).toContainText('Viewing page 1');
+  await expect(chips.first()).toContainText('PDF · Page 1');
   await expect.poll(()=>decisions.length).toBe(1);
   await page.getByRole('button',{name:'Next PDF page'}).click();
   await expect(page.locator('[title="Lecture 2.1: Filters — Page 2 of 3"]')).toBeVisible();
@@ -132,7 +132,7 @@ test("PDF messages retain the page and pixels from Send through preparation, que
   assert.match(turn.attachments.find(a=>a.type==='text').text,/Text of page 1/);
   const pixel=await page.evaluate(async dataUrl=>{const image=new Image();image.src=dataUrl;await image.decode();const canvas=document.createElement('canvas');canvas.width=canvas.height=1;const ctx=canvas.getContext('2d');ctx.drawImage(image,0,0);return [...ctx.getImageData(0,0,1,1).data]},turn.attachments.find(a=>a.type==='image').dataUrl);
   assert.deepEqual(pixel,[255,0,0,255],'screenshot remains on red page 1 after scrolling to blue page 2');
-  await expect(chips.first()).toContainText('Viewing page 1');
+  await expect(chips.first()).toContainText('PDF · Page 1');
 
   // While one answer is running, queue a question on page 2 then navigate.
   await page.waitForFunction(()=>localStorage.getItem('qa:pdf-messages'));
@@ -147,7 +147,7 @@ test("PDF messages retain the page and pixels from Send through preparation, que
   const queued=await page.evaluate(()=>window.qaSends[2]);
   assert.match(queued.attachments.find(a=>a.type==='text').text,/"currentPage":2/);
   await expect(chips).toHaveCount(3);
-  await expect(chips.last()).toContainText('Viewing page 2');
+  await expect(chips.last()).toContainText('PDF · Page 2');
 
   // Text-only decisions keep the page chip even if no screenshot can be taken.
   captureView=false;
@@ -159,7 +159,7 @@ test("PDF messages retain the page and pixels from Send through preparation, que
   await page.waitForFunction(()=>JSON.parse(localStorage.getItem('qa:pdf-messages')).length===8);
   await load();
   await expect(chips).toHaveCount(4);
-  for(const [index,pageNumber] of [1,2,2,3].entries())await expect(chips.nth(index)).toContainText('Viewing page '+pageNumber);
+  for(const [index,pageNumber] of [1,2,2,3].entries())await expect(chips.nth(index)).toContainText('PDF · Page '+pageNumber);
   await expect(page.getByText('PDF reading context.txt',{exact:true})).toHaveCount(0);
   assert.deepEqual(errors,[]);
   if(process.env.PDF_ATTACHMENT_SCREENSHOT)await page.screenshot({path:process.env.PDF_ATTACHMENT_SCREENSHOT});

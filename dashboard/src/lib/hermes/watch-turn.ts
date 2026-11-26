@@ -85,7 +85,7 @@ export function recentVideoAttachment(
  * across volumes there is no link to make, so the bytes are copied once and
  * reused on later turns by name.
  */
-function linkIntoWorkspace(input: {
+export function linkIntoWorkspace(input: {
   sourcePath: string;
   workspaceRoot: string;
   fileName: string;
@@ -230,6 +230,7 @@ export function renderWatchVideoContext(videos: readonly PreparedVideo[]): strin
     ...lines,
     "Answer questions about what a video contains by calling watch_run with the exact source path above — " +
       "never from its filename, and never by claiming you cannot see videos. " +
+      "To compare with another video on the user's computer, pass its full path as the source: a video in a folder the user approved is brought into the workspace for you, so do not copy it there yourself. " +
       "The report and the frame analysis it returns are the evidence; distinguish what was said from what was shown, and cite timestamps.",
     // Reading a video is this skill's job; producing a changed one is not, and
     // the Video Use editor normally takes that turn before it ever reaches a
