@@ -17,7 +17,7 @@ import { DIRECT_PROVIDER_PROMPT } from "../src/lib/system-prompts/defaults.ts";
 const source = (relativePath) =>
   fs.readFileSync(new URL(relativePath, import.meta.url), "utf8");
 
-const composer = source("../src/app/components/assistant-composer.tsx");
+const composer = (source("../src/app/components/assistant-intelligence-menu.tsx") + source("../src/app/components/assistant-composer.tsx"));
 const agentSession = source(
   "../src/app/components/hermes/use-agent-session.ts",
 );
@@ -49,7 +49,7 @@ test("the Intelligence menu runs YOLO, then Agent, then Super agent", () => {
   // that is now started by asking for it.
   assert.equal(composer.indexOf("Goal mode"), -1);
 
-  const block = composer.slice(agent - 600, superAgent + 900);
+  const block = composer.slice(composer.lastIndexOf("<button", agent), superAgent + 900);
   assert.match(block, /aria-checked=\{agentMode\}/);
   assert.match(block, /onClick=\{\(\) => setAgentMode\(!agentMode\)\}/);
   assert.match(block, /aria-checked=\{superAgent\}/);

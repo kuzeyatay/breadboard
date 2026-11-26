@@ -1,12 +1,22 @@
 //! Retention belongs to the runtime owner, never to a dashboard SQL connection.
 use crate::{JobStore, RuntimePaths, StoreError};
+use flate2::{read::DeflateDecoder, write::DeflateEncoder, Compression};
 use rusqlite::{params, OptionalExtension, TransactionBehavior};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use std::io::{Read, Write};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const DAY: i64 = 86_400_000;
+const NOOP_FOLDER_SETTLE_MS: i64 = 3_600_000;
+/// Only foreground work defers retention. The scheduler starts a background
+/// tick every few seconds, so counting those made `busy` the normal answer:
+/// on a real install the cursor fell 56 days behind while ~9,000 jobs a day
+/// accumulated. Candidates are `succeeded` rows only and an in-flight
+/// occurrence of the same schedule is still protected by `unsettled` below,
+/// so a running tick can never be the job being cleaned.
+const FOREGROUND_ACTIVE: &str = "SELECT EXISTS(SELECT 1 FROM runtime_jobs WHERE state IN ('queued','admitted','starting','running','checkpointing','cancelling') AND owner_principal<>'internal:runtime-scheduler')";
 pub(crate) const SCHEMA: &str = r#"
 CREATE TABLE runtime_storage_watermarks (
   owner_principal TEXT NOT NULL, schedule_id TEXT NOT NULL, through_due_at INTEGER NOT NULL,
@@ -26,6 +36,71 @@ INSERT INTO runtime_storage_cursor VALUES(1,0,''),(2,0,'');
 PRAGMA user_version=14;
 "#;
 
+/// Settled history is kept forever, but 97% of it (measured on a real 900k-job
+/// store) is liveness pings: `heartbeat` and `progress`, ~1.8 GB for 71k jobs a
+/// person started. Thirty days after a job settles its pings are packed into one
+/// deflated row (about 23x smaller) and replay reads them back transparently:
+/// the same events, sequences and payload bytes. Nothing is dropped.
+pub(crate) const SCHEMA_V15: &str = r#"
+CREATE TABLE runtime_job_event_archive (
+  job_id TEXT PRIMARY KEY REFERENCES runtime_jobs(job_id) ON DELETE CASCADE,
+  first_sequence INTEGER NOT NULL, last_sequence INTEGER NOT NULL, event_count INTEGER NOT NULL,
+  raw_bytes INTEGER NOT NULL, data BLOB NOT NULL, archived_at INTEGER NOT NULL
+);
+CREATE TABLE runtime_storage_archive_cursor (id INTEGER PRIMARY KEY CHECK(id=1), row_id INTEGER NOT NULL);
+INSERT INTO runtime_storage_archive_cursor VALUES(1,0);
+PRAGMA user_version=15;
+"#;
+const ARCHIVE_AFTER_MS: i64 = 30 * DAY;
+const ARCHIVE_MIN_EVENTS: usize = 16;
+/// Replay never inflates more than this; a larger job simply stays unpacked.
+const ARCHIVE_MAX_RAW_BYTES: usize = 64 * 1024 * 1024;
+/// Rowids scanned per slice, so finding candidates stays bounded.
+const ARCHIVE_WINDOW: i64 = 2_048;
+const SETTLED: &str = "state IN ('succeeded','failed','cancelled','resource_exhausted')";
+
+/// One archived event, exactly as its row stored it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct ArchivedEvent {
+    pub sequence: i64,
+    pub attempt: i64,
+    pub worker_instance_id: Option<String>,
+    pub worker_sequence: Option<i64>,
+    pub event_type: String,
+    pub payload_json: String,
+    pub created_at: i64,
+}
+
+pub(crate) fn unpack_archived_events(data: &[u8], raw_bytes: i64) -> Result<Vec<ArchivedEvent>, StoreError> {
+    let corrupt = || StoreError::CorruptState("archived job events could not be read".into());
+    let length = usize::try_from(raw_bytes)
+        .ok()
+        .filter(|length| *length <= ARCHIVE_MAX_RAW_BYTES)
+        .ok_or_else(corrupt)?;
+    let mut bytes = Vec::with_capacity(length);
+    DeflateDecoder::new(data)
+        .take(length as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| corrupt())?;
+    if bytes.len() != length {
+        return Err(corrupt());
+    }
+    serde_json::from_slice(&bytes).map_err(|_| corrupt())
+}
+
+fn pack_archived_events(events: &[ArchivedEvent]) -> Option<(Vec<u8>, i64)> {
+    let raw = serde_json::to_vec(events).ok()?;
+    if raw.len() > ARCHIVE_MAX_RAW_BYTES {
+        return None;
+    }
+    let mut encoder = DeflateEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(&raw).ok()?;
+    let data = encoder.finish().ok()?;
+    let raw_bytes = i64::try_from(raw.len()).ok()?;
+    // Never trade rows for a blob that does not read back identically.
+    (unpack_archived_events(&data, raw_bytes).ok()?.as_slice() == events).then_some((data, raw_bytes))
+}
+
 #[derive(Default, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StorageMaintenanceReport {
@@ -35,6 +110,7 @@ pub struct StorageMaintenanceReport {
     pub directories_removed: usize,
     pub protected: usize,
     pub diagnostic_events_pruned: usize,
+    pub events_archived: usize,
 }
 
 fn occurrence(key: &str) -> Option<(&str, i64)> {
@@ -157,9 +233,108 @@ impl JobStore {
         let started = Instant::now();
         let mut report = StorageMaintenanceReport::default();
         let mut connection = self.connection.lock().expect("job store mutex poisoned");
-        report.busy = connection.query_row("SELECT EXISTS(SELECT 1 FROM runtime_jobs WHERE state IN ('queued','admitted','starting','running','checkpointing','cancelling'))", [], |row| row.get(0))?;
+        report.busy = connection.query_row(FOREGROUND_ACTIVE, [], |row| row.get(0))?;
         if report.busy {
             return Ok(report);
+        }
+        // The archive goes first with a fixed share of the slice, so neither a
+        // retention backlog nor a slow disk can starve it (or it the pruner).
+        {
+            let from: i64 = connection.query_row(
+                "SELECT row_id FROM runtime_storage_archive_cursor WHERE id=1",
+                [],
+                |r| r.get(0),
+            )?;
+            let jobs: Vec<(i64, String)> = connection
+                .prepare(&format!(
+                    "SELECT rowid,job_id FROM runtime_jobs
+                    WHERE rowid>?1 AND rowid<=?1+?2 AND {SETTLED} AND updated_at<?3
+                      AND NOT (state='succeeded' AND owner_principal='internal:runtime-scheduler')
+                      AND NOT EXISTS(SELECT 1 FROM runtime_job_event_archive a WHERE a.job_id=runtime_jobs.job_id)
+                    ORDER BY rowid"
+                ))?
+                .query_map(params![from, ARCHIVE_WINDOW, now - ARCHIVE_AFTER_MS], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })?
+                .collect::<Result<_, _>>()?;
+            let mut reached = from + ARCHIVE_WINDOW;
+            for (row_id, job) in jobs {
+                if started.elapsed() > Duration::from_millis(50) {
+                    reached = row_id - 1;
+                    break;
+                }
+                let events: Vec<ArchivedEvent> = connection
+                    .prepare(
+                        "SELECT sequence,attempt,worker_instance_id,worker_sequence,event_type,payload_json,created_at
+                        FROM runtime_job_events WHERE job_id=?1 AND event_type IN ('heartbeat','progress')
+                          AND typeof(payload_json)='text' ORDER BY sequence",
+                    )?
+                    .query_map([&job], |r| {
+                        Ok(ArchivedEvent {
+                            sequence: r.get(0)?,
+                            attempt: r.get(1)?,
+                            worker_instance_id: r.get(2)?,
+                            worker_sequence: r.get(3)?,
+                            event_type: r.get(4)?,
+                            payload_json: r.get(5)?,
+                            created_at: r.get(6)?,
+                        })
+                    })?
+                    .collect::<Result<_, _>>()?;
+                if events.len() < ARCHIVE_MIN_EVENTS {
+                    continue;
+                }
+                let Some((data, raw_bytes)) = pack_archived_events(&events) else {
+                    continue;
+                };
+                let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+                let settled: bool = tx.query_row(
+                    &format!(
+                        "SELECT EXISTS(SELECT 1 FROM runtime_jobs WHERE job_id=?1 AND {SETTLED} AND updated_at<?2)
+                        AND NOT EXISTS(SELECT 1 FROM runtime_schedules WHERE inflight_job_id=?1 OR reconcile_job_id=?1)"
+                    ),
+                    params![job, now - ARCHIVE_AFTER_MS],
+                    |r| r.get(0),
+                )?;
+                if !settled {
+                    continue;
+                }
+                tx.execute(
+                    "INSERT INTO runtime_job_event_archive(job_id,first_sequence,last_sequence,event_count,raw_bytes,data,archived_at)
+                    VALUES(?1,?2,?3,?4,?5,?6,?7)",
+                    params![
+                        job,
+                        events[0].sequence,
+                        events[events.len() - 1].sequence,
+                        events.len() as i64,
+                        raw_bytes,
+                        data,
+                        now
+                    ],
+                )?;
+                let mut removed = 0;
+                {
+                    let mut delete = tx.prepare(
+                        "DELETE FROM runtime_job_events WHERE sequence=?1 AND job_id=?2
+                        AND event_type IN ('heartbeat','progress') AND payload_json=?3",
+                    )?;
+                    for event in &events {
+                        removed += delete.execute(params![event.sequence, job, event.payload_json])?;
+                    }
+                }
+                // Exactly the packed rows, or nothing: a row changed since it was read.
+                if removed != events.len() {
+                    continue;
+                }
+                tx.commit()?;
+                report.events_archived += removed;
+            }
+            let last: i64 =
+                connection.query_row("SELECT COALESCE(MAX(rowid),0) FROM runtime_jobs", [], |r| r.get(0))?;
+            connection.execute(
+                "UPDATE runtime_storage_archive_cursor SET row_id=?1 WHERE id=1",
+                [if reached >= last { 0 } else { reached }],
+            )?;
         }
         let cursor: (i64, String) = connection.query_row(
             "SELECT finished_at,job_id FROM runtime_storage_cursor WHERE id=1",
@@ -188,18 +363,24 @@ impl JobStore {
                 [],
             )?;
         }
+        // The cursor is saved once per slice, not per candidate: each commit is a
+        // full fsync, and on a slow disk those per-candidate commits were most of
+        // the slice. After a crash the slice is simply re-inspected; every step
+        // below is idempotent (INSERT OR IGNORE, digest-checked cleanup, a
+        // state-guarded delete).
+        let mut reached: Option<(i64, String)> = None;
         for (job, owner, key, updated, finished, job_type) in candidates {
             if started.elapsed() > Duration::from_millis(150) {
                 break;
             }
             // Recheck after every filesystem yield; a new foreground job ends this slice.
-            if connection.query_row("SELECT EXISTS(SELECT 1 FROM runtime_jobs WHERE state IN ('queued','admitted','starting','running','checkpointing','cancelling'))", [], |r|r.get::<_,bool>(0))? { report.busy=true; break; }
+            if connection.query_row(FOREGROUND_ACTIVE, [], |r|r.get::<_,bool>(0))? { report.busy=true; break; }
             report.inspected += 1;
-            connection.execute(
-                "UPDATE runtime_storage_cursor SET finished_at=?1,job_id=?2 WHERE id=1",
-                params![updated, job],
-            )?;
-            if finished >= now - DAY {
+            reached = Some((updated, job.clone()));
+            // A verified no-op's folder holds nothing but its own receipt. Waiting
+            // a day meant ~9,000 folders (and their files) always existed first;
+            // an hour bounds that to a few hundred. History rows still keep 7 days.
+            if finished >= now - NOOP_FOLDER_SETTLE_MS {
                 continue;
             }
             if status_probe(&job_type, &key) {
@@ -322,9 +503,13 @@ impl JobStore {
             // An uncertain or interrupted occurrence is never settled by anyone, so
             // without the age bound one such row from September stopped every later
             // occurrence of its schedule from being pruned. The row itself is kept.
-            let unsettled: bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM runtime_jobs WHERE owner_principal=?1
-                AND (state IN ('queued','admitted','starting','running','checkpointing','cancelling')
-                    OR (state IN ('uncertain','interrupted') AND updated_at>=?4))
+            // Driven by the state index: unsettled rows are a few hundred, while the
+            // owner index walked every scheduler job (~0.6 s per candidate on a real
+            // 900k-job store, so the pruner retired about one job per slice).
+            let unsettled: bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM runtime_jobs
+                WHERE state IN ('queued','admitted','starting','running','checkpointing','cancelling','uncertain','interrupted')
+                AND +owner_principal=?1
+                AND (state NOT IN ('uncertain','interrupted') OR updated_at>=?4)
                 AND substr(idempotency_key,1,length(?2))=?2 AND CAST(substr(idempotency_key,length(?2)+1) AS INTEGER)<=?3)",params![owner,prefix,due,now-7*DAY],|r|r.get(0))?;
             let referenced: bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM runtime_schedules WHERE inflight_job_id=?1 OR reconcile_job_id=?1)",[&job],|r|r.get(0))?;
             if unsettled || referenced {
@@ -344,6 +529,12 @@ impl JobStore {
             )?;
             tx.commit()?;
             report.jobs_pruned += 1;
+        }
+        if let Some((updated, job)) = reached {
+            connection.execute(
+                "UPDATE runtime_storage_cursor SET finished_at=?1,job_id=?2 WHERE id=1",
+                params![updated, job],
+            )?;
         }
         // Failure outcomes and recovery records stay durable. Only heartbeat and
         // progress diagnostics of settled scheduler failures expire after 30 days.
@@ -568,7 +759,165 @@ mod tests {
             "running",
             serde_json::json!({}),
         );
+        // A scheduler tick is always in flight on a real install; it must not
+        // starve retention, and it is never itself a candidate.
+        assert!(!store.storage_maintenance(&paths).unwrap().busy);
+        assert!(paths.data_root().join("runtime/jobs/active").exists());
+        store
+            .connection
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE runtime_jobs SET owner_principal='user:1' WHERE job_id='active'",
+                [],
+            )
+            .unwrap();
         assert!(store.storage_maintenance(&paths).unwrap().busy);
+    }
+
+    /// Replays retention against a snapshot of a real install:
+    /// `BREADBOARD_RETENTION_PROOF_DB=<copy> cargo test -p breadboard-runtime-core --lib retention_proof -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn retention_proof_against_a_real_snapshot() {
+        let Ok(database) = std::env::var("BREADBOARD_RETENTION_PROOF_DB") else { return; };
+        let store = JobStore::open_for_test(&database).unwrap();
+        let parent = std::path::Path::new(&database).parent().unwrap();
+        let paths = RuntimePaths::new(parent, parent, parent).unwrap();
+        let count = |store: &JobStore, sql: &str| -> i64 {
+            store.connection.lock().unwrap().query_row(sql, [], |r| r.get(0)).unwrap()
+        };
+        let before_jobs = count(&store, "SELECT count(*) FROM runtime_jobs");
+        let before_events = count(&store, "SELECT count(*) FROM runtime_job_events");
+        let old_gate_busy = count(&store, "SELECT EXISTS(SELECT 1 FROM runtime_jobs WHERE state IN ('queued','admitted','starting','running','checkpointing','cancelling'))");
+        // Original ping rows of the largest eligible jobs, to prove the archive is lossless.
+        let sample: Vec<(String, Vec<ArchivedEvent>)> = {
+            let db = store.connection.lock().unwrap();
+            let cutoff = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64 - ARCHIVE_AFTER_MS;
+            let jobs: Vec<String> = db.prepare(&format!("SELECT j.job_id FROM runtime_jobs j JOIN runtime_job_events e ON e.job_id=j.job_id
+                WHERE j.{SETTLED} AND j.updated_at<?1 AND j.owner_principal<>'internal:runtime-scheduler' AND e.event_type IN ('heartbeat','progress')
+                GROUP BY j.job_id ORDER BY count(*) DESC LIMIT 20")).unwrap()
+                .query_map([cutoff], |r| r.get(0)).unwrap().collect::<Result<_, _>>().unwrap();
+            jobs.into_iter().map(|job| {
+                let rows = db.prepare("SELECT sequence,attempt,worker_instance_id,worker_sequence,event_type,payload_json,created_at FROM runtime_job_events
+                    WHERE job_id=?1 AND event_type IN ('heartbeat','progress') AND typeof(payload_json)='text' ORDER BY sequence").unwrap()
+                    .query_map([&job], |r| Ok(ArchivedEvent { sequence: r.get(0)?, attempt: r.get(1)?, worker_instance_id: r.get(2)?,
+                        worker_sequence: r.get(3)?, event_type: r.get(4)?, payload_json: r.get(5)?, created_at: r.get(6)? })).unwrap()
+                    .collect::<Result<_, _>>().unwrap();
+                (job, rows)
+            }).collect()
+        };
+        let started = Instant::now();
+        let limit = Duration::from_secs(
+            std::env::var("BREADBOARD_RETENTION_PROOF_SECONDS").ok().and_then(|v| v.parse().ok()).unwrap_or(480),
+        );
+        let (mut calls, mut pruned, mut idle, mut archived) = (0usize, 0usize, 0usize, 0usize);
+        while started.elapsed() < limit && idle < 3 {
+            let report = store.storage_maintenance(&paths).unwrap();
+            assert!(!report.busy, "only scheduler ticks are active in this snapshot");
+            calls += 1;
+            pruned += report.jobs_pruned;
+            archived += report.events_archived;
+            idle = if report.jobs_pruned + report.directories_removed + report.inspected + report.events_archived == 0 { idle + 1 } else { 0 };
+        }
+        let elapsed = started.elapsed().as_secs_f64();
+        let after_jobs = count(&store, "SELECT count(*) FROM runtime_jobs");
+        let after_events = count(&store, "SELECT count(*) FROM runtime_job_events");
+        let pages = count(&store, "PRAGMA page_count");
+        let free = count(&store, "PRAGMA freelist_count");
+        let (archives, packed, raw) = store.connection.lock().unwrap().query_row(
+            "SELECT count(*),COALESCE(sum(length(data)),0),COALESCE(sum(raw_bytes),0) FROM runtime_job_event_archive", [],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))).unwrap();
+        let mut verified = 0;
+        for (job, rows) in &sample {
+            let packed_row: Option<(i64, Vec<u8>)> = store.connection.lock().unwrap().query_row(
+                "SELECT raw_bytes,data FROM runtime_job_event_archive WHERE job_id=?1", [job], |r| Ok((r.get(0)?, r.get(1)?))).optional().unwrap();
+            if let Some((raw_bytes, data)) = packed_row {
+                assert_eq!(&unpack_archived_events(&data, raw_bytes).unwrap(), rows, "archive of {job} must equal its original rows");
+                verified += 1;
+            }
+        }
+        println!("archive: {archived} events packed into {archives} rows, {:.1} MB -> {:.1} MB; {verified}/{} sampled jobs verified byte-identical",
+            raw as f64 / 1048576.0, packed as f64 / 1048576.0, sample.len());
+        let page_size = count(&store, "PRAGMA page_size");
+        println!(
+            "old gate busy={old_gate_busy}; {calls} slices in {elapsed:.0}s ({:.1} ms of work each); \
+             jobs {before_jobs} -> {after_jobs} (pruned {pruned}); events {before_events} -> {after_events}; \
+             file {:.2} GB with {:.2} GB already free for incremental vacuum",
+            elapsed * 1000.0 / calls as f64,
+            (pages * page_size) as f64 / 1e9 / 1.073_741_824,
+            (free * page_size) as f64 / 1e9 / 1.073_741_824,
+        );
+    }
+
+    #[test]
+    fn verified_noop_folders_go_within_hours_while_history_rows_keep_a_week() {
+        let (_directory, store, paths) = fixture();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        for (id, due, age) in [("two-hours", 1, 2 * 3_600_000), ("ten-minutes", 2, 600_000)] {
+            insert_job(
+                &store,
+                &paths,
+                id,
+                due,
+                "succeeded",
+                serde_json::json!({"operation":"scheduled-chats","dispatched":0}),
+            );
+            store
+                .connection
+                .lock()
+                .unwrap()
+                .execute(
+                    "UPDATE runtime_jobs SET finished_at=?1,updated_at=?1 WHERE job_id=?2",
+                    params![now - age, id],
+                )
+                .unwrap();
+        }
+        for _ in 0..4 {
+            store.storage_maintenance(&paths).unwrap();
+        }
+        let jobs = paths.data_root().join("runtime/jobs");
+        assert!(!jobs.join("two-hours").exists());
+        assert!(jobs.join("ten-minutes/result.json").exists());
+        let rows: i64 = store
+            .connection
+            .lock()
+            .unwrap()
+            .query_row("SELECT count(*) FROM runtime_jobs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 2, "history rows are kept for the full week");
+    }
+
+    #[test]
+    fn scheduler_ticks_in_flight_do_not_stall_the_backlog() {
+        let (_directory, store, paths) = fixture();
+        for due in 1..=40 {
+            insert_job(
+                &store,
+                &paths,
+                &format!("job-{due}"),
+                due,
+                "succeeded",
+                serde_json::json!({"operation":"scheduled-chats","dispatched":0}),
+            );
+        }
+        // A later occurrence is running, as one always is.
+        insert_job(&store, &paths, "tick", 10_000_000, "running", serde_json::json!({}));
+        for _ in 0..100 {
+            store.storage_maintenance(&paths).unwrap();
+        }
+        let remaining: i64 = store
+            .connection
+            .lock()
+            .unwrap()
+            .query_row("SELECT count(*) FROM runtime_jobs WHERE state='succeeded'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(remaining, 0);
+        assert!(paths.data_root().join("runtime/jobs/tick").exists());
+        assert!(!paths.data_root().join("runtime/jobs/job-1").exists());
     }
     #[test]
     fn old_failure_progress_expires_without_removing_failure_or_recovery_evidence() {

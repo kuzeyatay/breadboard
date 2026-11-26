@@ -4,7 +4,7 @@ import { signIn } from 'next-auth/react';
 import { useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
 import { authReturnPath, completeSignIn } from '@/lib/auth-client';
-import { Avatar, PasswordField } from './password-field';
+import { PasswordField } from './password-field';
 
 function returnPath() {
   return authReturnPath(new URLSearchParams(window.location.search).get('callbackUrl'), window.location.origin);
@@ -47,7 +47,6 @@ export default function LoginForm({ name, auto }: { name: string; auto: boolean 
   return (
     <div className="min-h-screen bg-[var(--paper-surface)] flex items-center justify-center px-4">
       <div className="neu-surface-raised w-full max-w-sm rounded-2xl border border-gray-800 bg-gray-900 p-6 sm:p-7">
-        <Avatar name={name} />
         <h1 className="text-2xl font-semibold text-white text-center mb-8 tracking-tight">{name}</h1>
         <form onSubmit={handleSubmit} className="space-y-4">
           <PasswordField id="password" label="Password or PIN" autoComplete="current-password" autoFocus />

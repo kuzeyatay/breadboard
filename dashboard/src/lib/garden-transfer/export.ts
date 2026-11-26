@@ -41,6 +41,7 @@ import type {
 } from "./format.ts";
 import { addJsonEntry, createBudget, packDirectory } from "./archive.ts";
 import type { PackBudget } from "./archive.ts";
+import { packUploads } from "./uploads.ts";
 
 interface ClusterRow {
   id: number;
@@ -136,17 +137,20 @@ function packGarden(
   folder: string,
   prefix: string,
   budget: PackBudget,
+  sharedOnly = false,
 ): GardenManifest {
   const directory = gardenDirectoryFor(row.slug);
   const content = fs.existsSync(directory)
     ? packDirectory(zip, directory, prefix, budget, gardenExportSkipReason)
     : { files: 0, bytes: 0, skipped: [] };
+  packUploads(zip,prefix.slice(0,-GARDEN_CONTENT_PREFIX.length),{gardenId:row.slug,clusterId:row.id,userId:row.user_id,ownerId:row.user_id},sharedOnly,content,budget);
   return gardenManifest(row, folder, content);
 }
 
 export function exportGardenArchive(
   userId: number,
   slug: string,
+  sharedUploadsOnly = false,
 ): TransferDownload {
   const row = ownedGarden(userId, slug);
   const zip = new StreamingArchive();
@@ -158,6 +162,7 @@ export function exportGardenArchive(
     normalizeFolderPath(row.folder),
     GARDEN_CONTENT_PREFIX,
     budget,
+    sharedUploadsOnly,
   );
   addJsonEntry(zip, GARDEN_MANIFEST_ENTRY, manifest);
   addJsonEntry(zip, ENVELOPE_ENTRY, envelope("garden"));

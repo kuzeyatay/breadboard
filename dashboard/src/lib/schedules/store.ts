@@ -14,6 +14,7 @@ import {
   type AssistantReasoningEffort,
 } from "../assistant-reasoning.ts";
 import { ensureScheduledChatSchema } from "./schema.ts";
+import { scheduledBotId } from "./bot.ts";
 import {
   CronError,
   describeCronExpression,
@@ -54,6 +55,7 @@ export class ScheduleError extends Error {
 }
 
 export interface ScheduledChatJobRow {
+  bot_id?: string | null;
   id: number;
   user_id: number;
   title: string;
@@ -322,8 +324,8 @@ export class ScheduledChatJobStore {
         `INSERT INTO scheduled_chat_jobs
            (user_id, title, prompt, cron_expression, surface, garden_slug, prompt_slug,
             model, reasoning_effort, conversation_policy, delivery_channel, delivery_mode,
-            one_shot, enabled, next_run_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            one_shot, enabled, next_run_at, bot_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         userId,
@@ -341,6 +343,7 @@ export class ScheduledChatJobStore {
         oneShot ? 1 : 0,
         input.enabled === false ? 0 : 1,
         nextRunAt,
+        delivery.mode ? null : scheduledBotId(this.db,userId,prompt),
       );
     return this.require(userId, Number(result.lastInsertRowid));
   }
@@ -409,7 +412,7 @@ export class ScheduledChatJobStore {
     this.db
       .prepare(
         `UPDATE scheduled_chat_jobs
-         SET title = ?, prompt = ?, cron_expression = ?, surface = ?, garden_slug = ?,
+         SET title = ?, prompt = ?, bot_id = ?, cron_expression = ?, surface = ?, garden_slug = ?,
              model = ?, reasoning_effort = ?, conversation_policy = ?, delivery_channel = ?, delivery_mode = ?,
              one_shot = ?, enabled = ?, next_run_at = ?, updated_at = datetime('now')
          WHERE id = ? AND user_id = ?`,
@@ -417,6 +420,7 @@ export class ScheduledChatJobStore {
       .run(
         title,
         prompt,
+        delivery.mode ? null : scheduledBotId(this.db, userId, prompt, existing),
         cron,
         surface,
         gardenSlug,

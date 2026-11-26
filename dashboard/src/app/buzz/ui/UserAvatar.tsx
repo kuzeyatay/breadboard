@@ -7,6 +7,7 @@ import { cn } from "@/app/buzz/lib/cn";
 import { getInitials } from "@/app/buzz/lib/initials";
 import { rewriteRelayUrl } from "@/app/buzz/lib/mediaUrl";
 import { Avatar, AvatarFallback, AvatarImage } from "@/app/buzz/ui/avatar";
+import { DEFAULT_AVATAR_SRC } from "@/app/components/default-avatar";
 
 type UserAvatarSize = "xs" | "sm" | "md";
 
@@ -16,28 +17,11 @@ const sizeClasses: Record<UserAvatarSize, string> = {
   md: "h-9 w-9 text-xs",
 };
 
-const fallbackColorClasses = [
-  "bg-blue-500 text-white",
-  "bg-emerald-500 text-white",
-  "bg-amber-400 text-amber-950",
-  "bg-rose-500 text-white",
-  "bg-cyan-400 text-cyan-950",
-  "bg-violet-500 text-white",
-  "bg-orange-500 text-white",
-] as const;
-
-function fallbackColorClass(displayName: string) {
-  const hash = Array.from(displayName.trim().toLowerCase()).reduce(
-    (value, character) => (value * 31 + (character.codePointAt(0) ?? 0)) >>> 0,
-    0,
-  );
-  return fallbackColorClasses[hash % fallbackColorClasses.length];
-}
-
 type UserAvatarProps = {
   avatarUrl: string | null;
   displayName: string;
   size?: UserAvatarSize;
+  /** Kept for callers; every placeholder is now the same Crumbs face. */
   accent?: boolean;
   className?: string;
   fallbackDelayMs?: number;
@@ -48,7 +32,6 @@ export function UserAvatar({
   avatarUrl,
   displayName,
   size = "md",
-  accent = false,
   className,
   fallbackDelayMs,
   testId,
@@ -81,18 +64,14 @@ export function UserAvatar({
           src={src}
         />
       ) : null}
+      {/* No photo: the Crumbs default face, the same one every other surface shows. */}
       <AvatarFallback
-        className={cn(
-          "font-semibold",
-          accent
-            ? "bg-primary text-primary-foreground"
-            : fallbackColorClass(displayName),
-        )}
+        aria-label={initials ? `${displayName} avatar` : undefined}
+        className="bg-cover bg-center"
+        style={{ backgroundImage: `url("${DEFAULT_AVATAR_SRC}")` }}
         data-testid={testId ? `${testId}-fallback` : undefined}
         delayMs={fallbackDelayMs}
-      >
-        {initials}
-      </AvatarFallback>
+      />
     </Avatar>
   );
 }

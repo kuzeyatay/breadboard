@@ -7,24 +7,28 @@ import { addLocalMcpBrokerConnection, callLocalMcpBrokerTool, disconnectLocalMcp
 import { addProxyMcpConnection } from "../agent-runtime/mcp-proxy.ts";
 import { ApiError } from "./route-core.ts";
 import { discardLocalMcpProbe, isApprovedLocalMcpProfileReference, loadApprovedLocalMcpProfile, LocalMcpProfileError, prepareApprovedLocalMcpLaunch, sealApprovedLocalMcpProfile, type LegacyApprovedLocalMcpDefinition } from "./local-mcp-approved-profile.ts";
-import { createVerifiedMcpConnection, mcpSlug, runtimeMcpConfig, type McpConnectionRecord } from "./mcp-connections.ts";
+import { createVerifiedMcpConnection, getMcpConnectionBySlug, mcpSlug, runtimeMcpConfig, type McpConnectionRecord } from "./mcp-connections.ts";
 import { MCP_AUTHOR_EXAMPLE } from "./mcp-installer-context.ts";
 import { runtimeProcessPath } from "../../../scripts/runtime-v2-paths.mjs";
 
 const STRING = { type: "string" };
 const FIELD_TYPES = ["string", "number", "integer", "boolean", "array", "object"];
+const exampleSchema = { type: "object", required: ["tool", "args", "expected"], properties: { tool: STRING, args: { type: "object" }, expected: {} } };
 export const AUTHOR_MCP_TOOL = {
   name: "author",
-  description: "Code and register a persistent local MCP server. Each tool is a synchronous JavaScript function body with args and private JSON state. Return a JSON value. Submit one real example and its expected result. The example runs with disposable state before publication.",
+  description: "Code or update a persistent local MCP server. Provide a test and ordered follow-up checks covering every tool. Checks share disposable state and use example HTTP responses. Call the installed server for live API results.",
   inputSchema: { type: "object", required: ["name", "tools", "test"], properties: {
-    name: STRING, tools: { type: "array", items: { type: "object", required: ["name", "description", "parameters", "readOnly", "code"], properties: {
+    name: STRING, updateFrom: {type:"string", description:"Revision returned by read_authored when updating an existing server."},
+    tools: { type: "array", items: { type: "object", required: ["name", "description", "parameters", "readOnly", "code"], properties: {
       name: STRING, description: STRING, readOnly: { type: "boolean" },
       parameters: { type: "array", items: { type: "object", required: ["name", "type"], properties: {
         name: STRING, type: { type: "string", enum: FIELD_TYPES }, required: { type: "boolean" }, description: STRING,
       } } },
-      code: { type: "string", description: "JavaScript body, e.g. return args.values.reduce((a,b) => a+b, 0). Mutate state only in writable tools. No host imports, filesystem or network." },
+      http: { type:"object", required:["url","example"], description:"Call a public HTTPS JSON endpoint. A path segment can be a declared argument such as /items/{id}. query lists argument names to send as query parameters. body names a JSON argument. example supplies a sample API response during installation.", properties:{
+        url:STRING, method:{enum:["GET","POST","PUT","PATCH","DELETE"]}, query:{type:"array",items:STRING}, body:STRING, example:{} } },
+      code: { type: "string", description: "JavaScript body with args, state and response (parsed JSON from the declared HTTP API). Mutate state only in writable tools." },
     } } },
-    test: { type: "object", required: ["tool", "args", "expected"], properties: { tool: STRING, args: { type: "object" }, expected: {} } },
+    test: exampleSchema, then: {type:"array",items:exampleSchema, description:"Ordered follow-up checks sharing the disposable test state. Verify reads after writes."},
   } },
 };
 
@@ -43,6 +47,27 @@ function identifier(value: unknown, used: Set<string>): string {
   return value;
 }
 
+function httpRequest(value: unknown, fields: Set<string>, readOnly: boolean) {
+  if (!record(value) || !Object.hasOwn(value, "example")) invalid("Supply an HTTP endpoint and an example JSON response.");
+  const url = typeof value.url === "string" && URL.canParse(value.url) ? new URL(value.url) : null;
+  if (!url || url.protocol !== "https:" || url.username || url.password || url.hash || url.href.length > 2048)
+    invalid("Choose a fixed public HTTPS endpoint without embedded credentials or a fragment.");
+  if (/[{}]/.test(url.hostname)) invalid("Use a fixed API hostname.");
+  for (const segment of url.pathname.split("/")) {
+    if (!/%7b|%7d/i.test(segment)) continue;
+    const parameter = /^%7B([a-zA-Z][a-zA-Z0-9_]*)%7D$/i.exec(segment)?.[1];
+    if (!parameter || !fields.has(parameter)) invalid("Use a declared argument for each complete {parameter} path segment.");
+  }
+  const method = value.method ?? "GET";
+  if (typeof method !== "string" || !["GET", "POST", "PUT", "PATCH", "DELETE"].includes(method) || (method !== "GET" && readOnly))
+    invalid("Use a supported HTTP method and declare tools that write to an API writable.");
+  const query = value.query ?? [];
+  if (!Array.isArray(query) || query.some(key => typeof key !== "string" || !fields.has(key))) invalid("Choose declared tool arguments for the query parameters.");
+  const body = value.body;
+  if (body !== undefined && (method === "GET" || typeof body !== "string" || !fields.has(body))) invalid("A JSON request body must name a declared argument on a write method.");
+  return { url: url.href, method, query, ...(body === undefined ? {} : { body }), example: value.example };
+}
+
 function definition(args: Record<string, unknown>) {
   const name = field(args.name, 80, "a server name");
   if (!Array.isArray(args.tools) || !args.tools.length || args.tools.length > 16) invalid("Provide 1–16 tools.");
@@ -59,11 +84,19 @@ function definition(args: Record<string, unknown>) {
       properties[key] = { type: String(param.type), ...(param.description ? { description: field(param.description, 500, "a parameter description") } : {}) };
       if (param.required === true) required.push(key);
     }
-    return { name: toolName, description: field(raw.description, 1000, "a tool description"), readOnly: raw.readOnly,
+    const http = raw.http === undefined ? undefined : httpRequest(raw.http, fields, raw.readOnly);
+    return { name: toolName, description: field(raw.description, 1000, "a tool description"), readOnly: raw.readOnly, ...(http ? { http } : {}),
       inputSchema: { type: "object", properties, required, additionalProperties: false }, code: field(raw.code, 24_000, "JavaScript code") };
   });
-  if (!record(args.test) || !names.has(String(args.test.tool)) || !record(args.test.args) || !Object.hasOwn(args.test, "expected")) invalid("Provide a test with a declared tool, args and expected JSON result.");
-  return { name, tools, test: { tool: String(args.test.tool), args: args.test.args, expected: args.test.expected } };
+  const following = args.then ?? [];
+  if (!Array.isArray(following) || following.length > 31) invalid("Provide at most 31 follow-up checks.");
+  const tests = [args.test, ...following].map(check => {
+    if (!record(check) || !names.has(String(check.tool)) || !record(check.args) || !Object.hasOwn(check, "expected")) invalid("Provide a test with a declared tool, args and expected JSON result.");
+    return {tool:String(check.tool), args:check.args, expected:check.expected};
+  });
+  const missing = tools.filter(tool => !tests.some(test => test.tool === tool.name)).map(tool=>tool.name);
+  if (missing.length) invalid("Add a check in then for each untested tool: " + missing.join(", "));
+  return {name,tools,tests};
 }
 
 function serverDirectory(userId: number, slug: string, digest: string) {
@@ -80,8 +113,8 @@ function serverLaunch(directory: string, digest: string): LegacyApprovedLocalMcp
     cwd, environmentNames: [], timeout: 15_000 };
 }
 
-// Only this host confines writes to private JSON state. A user-configured
-// connection may have the same prefix or tool annotations and run other code.
+// Only this host enforces authored tools' state and declared HTTP contracts.
+// Other connections can use the same prefix or supply similar annotations.
 export function usesAuthoredMcpHost(connection: McpConnectionRecord): boolean {
   if (!connection.slug.startsWith("custom-") || !isApprovedLocalMcpProfileReference(connection.config)) return false;
   const profile = loadApprovedLocalMcpProfile(connection.userId, connection.slug, connection.config);
@@ -92,14 +125,38 @@ export function usesAuthoredMcpHost(connection: McpConnectionRecord): boolean {
     profile.environmentNames.length === 0 && profile.cwd === fs.realpathSync.native(launch.cwd!);
 }
 
+export function readAuthoredMcp(userId: number, slug: string, connection = getMcpConnectionBySlug(userId, slug)) {
+  if (!connection?.enabled || !isApprovedLocalMcpProfileReference(connection.config) || !usesAuthoredMcpHost(connection))
+    throw new ApiError(404, "authored_mcp_missing", "Choose an installed server authored by Bread.");
+  const profile = loadApprovedLocalMcpProfile(userId, slug, connection.config);
+  const revision = profile.arguments[2]!;
+  const bytes = fs.readFileSync(path.join(serverDirectory(userId,slug,revision), "server.json"));
+  if (createHash("sha256").update(bytes).digest("hex") !== revision) throw new ApiError(409,"mcp_definition_changed","The saved definition has changed on disk.");
+  const stored = JSON.parse(bytes.toString("utf8")) as {name:string;tools:ReturnType<typeof definition>["tools"]};
+  return {name:stored.name,revision,tools:stored.tools.map(({inputSchema,...tool})=>({...tool,
+    parameters:Object.entries(inputSchema.properties).map(([name, field])=>({name,...field,required:inputSchema.required.includes(name)}))}))};
+}
+
 export async function authorMcpServer(userId: number, args: Record<string, unknown>, approved: boolean, signal?: AbortSignal) {
-  const { name, tools, test } = definition(args);
+  const { name, tools, tests } = definition(args);
   const slug = mcpSlug("custom-" + name);
   if (!slug.startsWith("custom-") || !/[a-z0-9]/.test(slug.slice(7))) invalid("Include a letter or digit in the server name.");
   const bytes = JSON.stringify({ name, tools });
   const digest = createHash("sha256").update(bytes).digest("hex");
+  let previousProfile: string | undefined;
+  let previousRevision: string | undefined;
+  const existing = getMcpConnectionBySlug(userId, slug);
+  if (existing) {
+    if (!existing.enabled || !usesAuthoredMcpHost(existing)) throw new ApiError(409, "mcp_name_in_use", "Another connection is using this name.");
+    const current = readAuthoredMcp(userId, slug, existing);
+    if (current.revision !== digest && current.revision !== args.updateFrom)
+      throw new ApiError(409, "mcp_revision_changed", "Use read_authored and apply your edits to the current revision.");
+    previousRevision = current.revision;
+    if (isApprovedLocalMcpProfileReference(existing.config)) previousProfile = existing.config.profileDigest;
+  } else if (args.updateFrom !== undefined) throw new ApiError(409, "mcp_revision_changed", "The server to update is no longer installed.");
+  const endpoints = tools.flatMap(t => t.http ? [t.http.method + " " + t.http.url] : []);
   if (!approved) throw new ApiError(428, "connected_app_permission_required",
-    `Add “${name}” to your MCP connections? Tools: ${tools.map(t => t.name).join(", ")}. The JavaScript runs locally with private server storage. Revision ${digest.slice(0, 12)}.`);
+    `${previousProfile ? "Update" : "Install"} “${name}”? Tools: ${tools.map(t => t.name).join(", ")}. ${endpoints.length ? "API endpoints: " + endpoints.join(", ") + ". " : ""}Revision ${digest.slice(0, 12)}.`);
   const parent = path.join(dashboardDataDir(), "authored-mcp", String(userId));
   fs.mkdirSync(parent, { recursive: true, mode: 0o700 });
   const staging = fs.mkdtempSync(path.join(parent, "pending-"));
@@ -125,11 +182,13 @@ export async function authorMcpServer(userId: number, args: Record<string, unkno
         invalid("The test server could not start or list all declared tools. Check each JavaScript body.");
       }
       stage = "run the example";
-      prepareApprovedLocalMcpLaunch(userId, probe, reference);
-      const result = await callLocalMcpBrokerTool({ userId, slug: probe, config, tool: test.tool, args: test.args, signal });
-      const part = record(result) && Array.isArray(result.content) ? result.content[0] : undefined;
-      if (!record(result) || result.isError || typeof part?.text !== "string") invalid(`The example failed: ${String(part?.text ?? "no result").slice(0, 400)}`);
-      if (!isDeepStrictEqual(JSON.parse(part.text), test.expected)) invalid(`The example returned ${part.text.slice(0, 400)}. Check the implementation and expected result.`);
+      for (const test of tests) {
+        prepareApprovedLocalMcpLaunch(userId, probe, reference);
+        const result = await callLocalMcpBrokerTool({ userId, slug: probe, config, tool: test.tool, args: test.args, signal });
+        const part = record(result) && Array.isArray(result.content) ? result.content[0] : undefined;
+        if (!record(result) || result.isError || typeof part?.text !== "string") invalid(`The example for ${test.tool} failed: ${String(part?.text ?? "no result").slice(0, 400)}`);
+        if (!isDeepStrictEqual(JSON.parse(part.text), test.expected)) invalid(`The example for ${test.tool} returned ${part.text.slice(0, 400)}. Check the implementation and expected result.`);
+      }
     } finally {
       await disconnectLocalMcpBrokerConnection({ userId, slug: probe }).catch(() => {});
       discardLocalMcpProbe(userId, probe);
@@ -150,9 +209,24 @@ export async function authorMcpServer(userId: number, args: Record<string, unkno
     fs.rmSync(pending, { force: true });
     fs.rmdirSync(staging);
   }
-  const saved = createVerifiedMcpConnection(userId, slug, name, launch);
+  signal?.throwIfAborted();
+  // Point every revision at the original SQLite file, including a legacy
+  // server that still has it open. Linking a complete immutable definition
+  // avoids moving a live database or copying stale writes.
+  const origin = path.join(directory, "..", "state-origin.json");
+  if (!fs.existsSync(origin)) {
+    let original = previousRevision ?? digest;
+    if (!existing && !fs.existsSync(path.join(directory,"state.sqlite"))) {
+      const old = fs.readdirSync(path.dirname(directory)).filter(item=>/^[0-9a-f]{64}$/.test(item) && fs.existsSync(path.join(directory,"..",item,"state.sqlite")));
+      if (old.length > 1) throw new ApiError(409,"mcp_legacy_state_ambiguous","Reinstall the original revision to select its saved data.");
+      original = old[0] ?? original;
+    }
+    try { fs.linkSync(path.join(serverDirectory(userId,slug,original),"server.json"),origin); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+  }
+  const saved = createVerifiedMcpConnection(userId, slug, name, launch, previousProfile);
   const status = await addProxyMcpConnection(userId, slug, runtimeMcpConfig(saved));
   if (status[slug]?.status !== "connected") throw new ApiError(503, "mcp_not_connected", "The verified server was saved, but could not reconnect. Check its connection in Settings.");
-  return { installed: true, connection: slug, tools: tools.map(t => t.name), verified: test,
+  return { installed: true, connection: slug, revision:digest, tools: tools.map(t => t.name), verified: tests[0], checks:tests.length,
     usage: `Use mcp_call with connection=${slug} to do the user's actual task now. Later chats discover this saved connection.` };
 }

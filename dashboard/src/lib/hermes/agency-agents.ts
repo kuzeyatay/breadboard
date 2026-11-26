@@ -671,7 +671,7 @@ export function renderAgencyAgentPersona(agent: AgencyAgentDefinition, userId?: 
 export const CHIEF_OF_STAFF_SLUG = "chief-of-staff";
 
 /** The persona tag an orchestrator prepends to a delegated task's text. */
-export const DELEGATION_PERSONA_TAG = /^\s*\[persona:\s*([a-z0-9][a-z0-9-]*)\]\s*/i;
+export const DELEGATION_PERSONA_TAG = /^\s*\[persona:\s*(bot-[\p{L}\p{N}][\p{L}\p{M}\p{N}-]*|[a-z0-9][a-z0-9-]*)\]\s*/iu;
 
 function truncateDescription(text: string, max = 90): string {
   const clean = text.replace(/\s+/g, " ").trim();

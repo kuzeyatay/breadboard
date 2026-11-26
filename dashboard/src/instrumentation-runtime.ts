@@ -28,6 +28,12 @@ void Promise.all([import("./lib/db.ts"), import("./lib/knowledge.ts")]).then(asy
   for (const { slug } of recent) await scanClusterKnowledgeCooperatively(contentPath, slug, { migrateSources: false }).catch(() => undefined);
 }).catch(() => { /* Best effort: the first scan simply reads a cold disk. */ });
 
+// Organization messages arrive while Breadboard is open, not only while the
+// Organization page is: each account signed in to Crumbs keeps a live
+// connection to the organization store.
+void import("./lib/crumbs/service.ts").then(({ startOrganizationListeners }) => startOrganizationListeners())
+  .catch(() => { /* The Organization page still relays on its own refresh. */ });
+
 // One-time handoff of durable physical jobs to their native supervisor owner.
 // No printer timer or process is owned by Next or a mounted renderer.
 void import("./lib/bambu/server.ts").then(async ({ bambuService }) => {

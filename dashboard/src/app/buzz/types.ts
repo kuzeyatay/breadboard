@@ -3,6 +3,8 @@
 // These mirror the store's types rather than re-exporting them, because the
 // client must not import anything that reaches the database.
 
+import type { BotAvatarConfig } from "@/lib/bots/types";
+
 export type BuzzRoomKind = "channel" | "dm";
 export type BuzzRoomVisibility = "public" | "private";
 export type BuzzMemberKind = "human" | "agent";
@@ -18,6 +20,8 @@ export type BuzzMessageStatus =
 export interface BuzzCommunity {
   id: number;
   name: string;
+  /** The organization's picture as a data URL; without one the rail shows its initials. */
+  image?: string | null;
   role: string;
   people: Array<{ userId: number; username: string }>;
   /** Gardens shared with this organization, opened from the room rail. */
@@ -65,6 +69,8 @@ export interface BuzzMember {
   joinedAt: string;
   /** Profile photo, from the member's linked account. */
   avatarUrl?: string | null;
+  /** A bot's drawn face (shape, colour, expression); bots have no photo. */
+  botAvatar?: BotAvatarConfig | null;
 }
 
 export interface BuzzReaction {

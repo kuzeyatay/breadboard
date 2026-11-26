@@ -37,7 +37,13 @@ import AgentRuntimePanel from "./agent-runtime-panel";
 import VoiceTerminalSurface, { type VoiceTerminalSurfaceOptions } from "./voice-terminal-surface";
 import { voiceRequestOptions, type VoiceRequestOptions } from "@/lib/speech/voice-request";
 import StarredMessagesPanel from "./starred-messages-panel";
-import AssistantPanelHeader, { AssistantEmptyState } from "../chat/assistant-panel-header";
+import AssistantPanelHeader, { AssistantEmptyState, type AssistantHistoryItem } from "../chat/assistant-panel-header";
+import {
+  browserAssistantSiteKey,
+  readBrowserAssistantChatSites,
+  recordBrowserAssistantChatSite,
+  type BrowserAssistantChatSite,
+} from "@/lib/browser-assistant-chat-sites";
 import { CODE_ORIGIN_LABEL } from "@/lib/conversations/origin-label.ts";
 import WorkspaceSideChat from "./workspace-side-chat";
 import ArchivedChatsPanel from "./archived-chats-panel";
@@ -387,7 +393,7 @@ interface Props {
    * the dashboard's bottom dock. It is still the real Terminal — history,
    * drafts and active runs are shared — only its spatial presentation changes.
    */
-  presentation?: "dock" | "drawer" | "voice";
+  presentation?: "dock" | "drawer" | "voice" | "embedded";
   /** The voice companion shares the same launch queue, worker observers and hand-backs. */
   voiceSurface?: VoiceTerminalSurfaceOptions;
   /** The browser drawer has enough horizontal room to show chats beside the transcript. */
@@ -399,6 +405,10 @@ interface Props {
   webSelection?: { requestId: string; reference: ChatTextSelectionReference; conversationId?: string } | null;
   /** The website currently displayed beside the browser Terminal. */
   viewingWebsite?: string | null;
+  /** Address of that website; groups the assistant's history into this website and other websites. */
+  viewingWebsiteUrl?: string | null;
+  /** The browser drawer's own close action, shown in the assistant header. */
+  onClose?: () => void;
   /** New chats start in this Garden workspace, overriding the saved choice (Bread in VS Code). */
   initialWorkspace?: TerminalWorkspace | null;
   privateBrowser?: boolean;
@@ -456,6 +466,8 @@ function sameHistoryList(
 const HEIGHT_KEY = "breadboard:knowledge-terminal-height";
 const OPEN_STATE_KEY = "breadboard:knowledge-terminal-open";
 const ACTIVE_CHAT_KEY = "breadboard:terminal:active-chat";
+/** Origin label the sessions route gives chats started in the browser drawer. */
+const BROWSER_ORIGIN_LABEL = "Browser";
 const ACTIVE_CHAT_SNAPSHOT_KEY = "breadboard:terminal:active-chat-snapshot";
 const ACTIVE_CHAT_SNAPSHOT_MAX_CHARS = 1_500_000;
 
@@ -465,8 +477,18 @@ interface ActiveTerminalChatSnapshot {
   messages: AgentMessage[];
 }
 
+/**
+ * The browser assistant keeps its own "last open chat" slot: sharing the
+ * Terminal's put whatever Terminal chat was open last into the browser.
+ */
+function activeChatStorageKeys(ownerKey: string): { chat: string; snapshot: string } {
+  return ownerKey.startsWith("browser:")
+    ? { chat: `${ACTIVE_CHAT_KEY}:browser`, snapshot: `${ACTIVE_CHAT_SNAPSHOT_KEY}:browser` }
+    : { chat: ACTIVE_CHAT_KEY, snapshot: ACTIVE_CHAT_SNAPSHOT_KEY };
+}
+
 function readActiveTerminalChatId(ownerKey: string): string | null {
-  const stored = window.sessionStorage.getItem(ACTIVE_CHAT_KEY)?.trim();
+  const stored = window.sessionStorage.getItem(activeChatStorageKeys(ownerKey).chat)?.trim();
   if (!stored) return null;
   try {
     const parsed = JSON.parse(stored) as {
@@ -491,7 +513,7 @@ function readActiveTerminalChatSnapshot(
 ): AgentMessage[] {
   try {
     const parsed = JSON.parse(
-      window.sessionStorage.getItem(ACTIVE_CHAT_SNAPSHOT_KEY) ?? "null",
+      window.sessionStorage.getItem(activeChatStorageKeys(ownerKey).snapshot) ?? "null",
     ) as ActiveTerminalChatSnapshot | null;
     return parsed?.ownerKey === ownerKey &&
       parsed.sessionId === sessionId &&
@@ -511,20 +533,21 @@ function writeActiveTerminalChatSnapshot(
   // This is a paint-through cache, not another source of truth. Bound it to
   // the recent transcript so a tool-heavy chat cannot exhaust sessionStorage;
   // the authoritative server read replaces it immediately after a reload.
+  const snapshotKey = activeChatStorageKeys(ownerKey).snapshot;
   let recent = messages.slice(-40);
   while (recent.length > 0) {
     const encoded = JSON.stringify({ ownerKey, sessionId, messages: recent });
     if (encoded.length <= ACTIVE_CHAT_SNAPSHOT_MAX_CHARS) {
       try {
-        window.sessionStorage.setItem(ACTIVE_CHAT_SNAPSHOT_KEY, encoded);
+        window.sessionStorage.setItem(snapshotKey, encoded);
       } catch {
-        window.sessionStorage.removeItem(ACTIVE_CHAT_SNAPSHOT_KEY);
+        window.sessionStorage.removeItem(snapshotKey);
       }
       return;
     }
     recent = recent.slice(Math.max(1, Math.floor(recent.length / 2)));
   }
-  window.sessionStorage.removeItem(ACTIVE_CHAT_SNAPSHOT_KEY);
+  window.sessionStorage.removeItem(snapshotKey);
 }
 /**
  * Shown when a Recents refresh does not land. Named so the next successful
@@ -731,6 +754,8 @@ export default function DashboardAgentTerminal({
   webSelection = null,
   privateBrowser = false,
   viewingWebsite = null,
+  viewingWebsiteUrl = null,
+  onClose,
   initialWorkspace = null,
 }: Props) {
   const [health, setHealth] = useState<HealthState>({
@@ -832,6 +857,8 @@ export default function DashboardAgentTerminal({
         webSelection={webSelection}
         privateBrowser={privateBrowser}
         viewingWebsite={viewingWebsite}
+        viewingWebsiteUrl={viewingWebsiteUrl}
+        onClose={onClose}
         initialWorkspace={initialWorkspace}
         runtimeUnavailable={health.status === "unavailable"}
         onRefreshRuntime={refreshRuntimeHealth}
@@ -863,6 +890,8 @@ export default function DashboardAgentTerminal({
         webSelection={webSelection}
         privateBrowser={privateBrowser}
         viewingWebsite={viewingWebsite}
+        viewingWebsiteUrl={viewingWebsiteUrl}
+        onClose={onClose}
         initialWorkspace={initialWorkspace}
         runtimeUnavailable={health.status === "unavailable" || health.status === "disabled"}
         onRefreshRuntime={refreshRuntimeHealth}
@@ -886,6 +915,8 @@ export default function DashboardAgentTerminal({
         webSelection={webSelection}
         privateBrowser={privateBrowser}
         viewingWebsite={viewingWebsite}
+        viewingWebsiteUrl={viewingWebsiteUrl}
+        onClose={onClose}
         initialWorkspace={initialWorkspace}
         runtimeUnavailable
         onRefreshRuntime={refreshRuntimeHealth}
@@ -925,6 +956,8 @@ function RuntimeTerminal({
   webSelection = null,
   privateBrowser = false,
   viewingWebsite = null,
+  viewingWebsiteUrl = null,
+  onClose,
   initialWorkspace = null,
   runtimeUnavailable = false,
   onRefreshRuntime,
@@ -949,6 +982,22 @@ function RuntimeTerminal({
   const drawerPresentation = presentation !== "dock";
   // Bread inside VS Code: the assistant layout (one header line, history popover, starred beside the chat), no rail.
   const codePresentation = restoreOwnerKey === "code";
+  // A Garden workspace opening one of its Explore/PDF Assistant chats in place:
+  // the real Terminal for that conversation, without a bar or rail of its own
+  // (the garden's rail is the rail) and without touching the dock's restore state.
+  const embeddedPresentation = presentation === "embedded";
+  // The browser drawer: the same assistant layout as the garden's Quartz
+  // Assistant (one header line, history popover grouped by website), no rail.
+  const browserAssistantPresentation = presentation === "drawer" && !codePresentation;
+  const viewingSite = useMemo(() => browserAssistantSiteKey(viewingWebsiteUrl), [viewingWebsiteUrl]);
+  const [chatSites, setChatSites] = useState<Record<string, BrowserAssistantChatSite>>({});
+  useEffect(() => {
+    if (!browserAssistantPresentation) return;
+    const load = () => setChatSites(readBrowserAssistantChatSites());
+    load();
+    window.addEventListener("storage", load);
+    return () => window.removeEventListener("storage", load);
+  }, [browserAssistantPresentation]);
   const voiceStopRef = useRef<(() => void | Promise<void>) | null>(null);
   // Retain the selected voice pair through the full worker hand-off. Typed-chat
   // preferences stay independent, including gaps between parent and worker runs.
@@ -1464,7 +1513,7 @@ function RuntimeTerminal({
   // What a blank chat says, and the four openers under it. Both are drawn from
   // pools that step forward on the hour and narrow to what the reader has been
   // doing, so this is the only thing the empty state needs from up here.
-  const chatGreeting = useChatGreeting({ scope, temporary: temporaryChat || privateBrowser, browser: drawerPresentation, pageTitle:viewingWebsite, enabled: !voicePresentation, ...(codePresentation ? { garden: newChatWorkspace } : {}) });
+  const chatGreeting = useChatGreeting({ scope, temporary: temporaryChat || privateBrowser, browser: drawerPresentation && !embeddedPresentation, pageTitle:viewingWebsite, enabled: !voicePresentation, ...(codePresentation ? { garden: newChatWorkspace } : {}) });
   // The chat to come back to when the reader leaves temporary mode, so the
   // toggle behaves like a detour rather than a reset.
   const chatBeforeTemporary = useRef<string | null>(null);
@@ -1528,6 +1577,7 @@ function RuntimeTerminal({
       onConversationEngaged();
     }
   }, [onConversationEngaged, session.messages.length, session.sessionId]);
+  const activeChatOwnerKey = browserAssistantPresentation ? `browser:${restoreOwnerKey}` : restoreOwnerKey;
   const openTerminalSession = session.openSession;
   // A fresh app window intentionally starts on New chat, but a renderer reload
   // is not a new visit. Keep the selected conversation in sessionStorage so a
@@ -1535,17 +1585,17 @@ function RuntimeTerminal({
   // and any live run instead of replacing them with the blank state. New chat
   // clears this pointer below, and closing the window clears it naturally.
   useEffect(() => {
-    if (voicePresentation || activeChatRestoreStartedRef.current) return;
+    if (voicePresentation || embeddedPresentation || activeChatRestoreStartedRef.current) return;
     activeChatRestoreStartedRef.current = true;
-    const savedSessionId = readActiveTerminalChatId(restoreOwnerKey);
+    const savedSessionId = readActiveTerminalChatId(activeChatOwnerKey);
     activeChatPersistenceReadyRef.current = true;
     if (savedSessionId?.startsWith("conv_")) {
       void openTerminalSession(
         savedSessionId,
-        readActiveTerminalChatSnapshot(restoreOwnerKey, savedSessionId),
+        readActiveTerminalChatSnapshot(activeChatOwnerKey, savedSessionId),
       );
     }
-  }, [openTerminalSession, restoreOwnerKey, voicePresentation]);
+  }, [embeddedPresentation, openTerminalSession, activeChatOwnerKey, voicePresentation]);
 
   useEffect(() => {
     const requested = initialChatId?.trim() ?? "";
@@ -1595,24 +1645,24 @@ function RuntimeTerminal({
       return;
     }
     if (temporaryChat || !session.sessionId) {
-      window.sessionStorage.removeItem(ACTIVE_CHAT_KEY);
-      window.sessionStorage.removeItem(ACTIVE_CHAT_SNAPSHOT_KEY);
+      window.sessionStorage.removeItem(activeChatStorageKeys(activeChatOwnerKey).chat);
+      window.sessionStorage.removeItem(activeChatStorageKeys(activeChatOwnerKey).snapshot);
       return;
     }
     window.sessionStorage.setItem(
-      ACTIVE_CHAT_KEY,
-      JSON.stringify({ ownerKey: restoreOwnerKey, sessionId: session.sessionId }),
+      activeChatStorageKeys(activeChatOwnerKey).chat,
+      JSON.stringify({ ownerKey: activeChatOwnerKey, sessionId: session.sessionId }),
     );
-  }, [restoreOwnerKey, session.loadingSession, session.sessionId, temporaryChat]);
+  }, [activeChatOwnerKey, session.loadingSession, session.sessionId, temporaryChat]);
 
   useEffect(() => {
-    if (temporaryChat || !session.sessionId) return;
+    if (temporaryChat || embeddedPresentation || !session.sessionId) return;
     recordLastOpenedChat(
       window.localStorage,
       "dashboard_terminal",
       session.sessionId,
     );
-  }, [session.sessionId, temporaryChat]);
+  }, [embeddedPresentation, session.sessionId, temporaryChat]);
 
   useEffect(() => {
     if (
@@ -1626,7 +1676,7 @@ function RuntimeTerminal({
     }
     const persist = () => {
       writeActiveTerminalChatSnapshot(
-        restoreOwnerKey,
+        activeChatOwnerKey,
         session.sessionId!,
         messages,
       );
@@ -1643,7 +1693,7 @@ function RuntimeTerminal({
     session.loadingSession,
     messages,
     session.sessionId,
-    restoreOwnerKey,
+    activeChatOwnerKey,
     temporaryChat,
   ]);
   useLayoutEffect(() => {
@@ -1654,19 +1704,19 @@ function RuntimeTerminal({
       session.sessionId &&
       messages.length > 0
         ? {
-            ownerKey: restoreOwnerKey,
+            ownerKey: activeChatOwnerKey,
             sessionId: session.sessionId,
             messages,
           }
         : null;
-  }, [restoreOwnerKey, session.loadingSession, messages, session.sessionId, temporaryChat]);
+  }, [activeChatOwnerKey, session.loadingSession, messages, session.sessionId, temporaryChat]);
   useEffect(
     () => () => {
       // Client-side route changes unmount the terminal without firing
       // `pagehide`. Persist the last committed rows synchronously, especially
       // for the first 150 ms after Send when the debounce has not landed.
       const snapshot = activeChatSnapshotRef.current;
-      if (snapshot?.ownerKey === restoreOwnerKey) {
+      if (snapshot?.ownerKey === activeChatOwnerKey) {
         writeActiveTerminalChatSnapshot(
           snapshot.ownerKey,
           snapshot.sessionId,
@@ -1674,7 +1724,7 @@ function RuntimeTerminal({
         );
       }
     },
-    [restoreOwnerKey],
+    [activeChatOwnerKey],
   );
   // A half-written message survives a reload, and stays with the chat it was
   // written in. A temporary chat is excluded: it keeps no record anywhere else,
@@ -7373,6 +7423,10 @@ if (careerOpsAgent) {
       // Capture the page now, before the reader scrolls or navigates away.
       const sentPage = browserPage && !voice ? browserPage.title : null;
       const pageView = sentPage ? captureWorkspaceView() : null;
+      // The website this turn was asked on, for the history's "This website".
+      const sentSite = browserAssistantPresentation && !voice && !privateBrowser && viewingWebsiteUrl
+        ? { url: viewingWebsiteUrl, title: viewingWebsite ?? "" }
+        : null;
       const draftSessionId = session.sessionId;
       const draftSubmission = submittedDraftSequence.current + 1;
       submittedDraftSequence.current = draftSubmission;
@@ -7405,6 +7459,9 @@ if (careerOpsAgent) {
               : current,
           );
           if (temporaryChat) return;
+          if (sentSite) {
+            setChatSites(recordBrowserAssistantChatSite(persistedSessionId, sentSite.url, sentSite.title));
+          }
           // React may batch the new session id with this acknowledgement. Clear
           // both possible keys explicitly so the sent text cannot be restored
           // into either the unstarted composer or its newly-created chat.
@@ -7421,6 +7478,10 @@ if (careerOpsAgent) {
     },
     [
       browserPage,
+      browserAssistantPresentation,
+      privateBrowser,
+      viewingWebsite,
+      viewingWebsiteUrl,
       activeRuntimeAgentId,
       browserAgent,
       agentBrowserAgent,
@@ -8920,6 +8981,31 @@ if (careerOpsAgent) {
     const body = response.ok ? await response.json() as { results?: Array<{ id: string; title: string; updatedAt: string }> } : {};
     return (body.results ?? []).map((hit) => ({ id: hit.id, title: hit.title, updatedAt: hit.updatedAt }));
   }, [sidebarChats]);
+  // Browser assistant history: only chats started in the browser. Those asked
+  // on the open website come first, then the ones asked on other websites
+  // (each tagged with its site), as the Quartz Assistant lists "This page"
+  // above the garden's other chats. Terminal chats stay in the Terminal.
+  const browserChats = useMemo(
+    () => sidebarChats.filter((chat) => chat.titlePrefix === BROWSER_ORIGIN_LABEL || Boolean(chatSites[chat.id])),
+    [sidebarChats, chatSites],
+  );
+  const browserSiteItems = useMemo(
+    () => browserChats
+      .filter((chat) => !viewingSite || chatSites[chat.id]?.site === viewingSite)
+      .map((chat) => ({ id: chat.id, title: chat.title, updatedAt: chat.updatedAt, active: chat.active })),
+    [browserChats, chatSites, viewingSite],
+  );
+  const searchOtherWebsiteChats = useCallback(async (query: string): Promise<AssistantHistoryItem[]> => {
+    const needle = query.toLowerCase();
+    return browserChats
+      .filter((chat) => chatSites[chat.id]?.site !== viewingSite)
+      .map((chat) => {
+        const site = chatSites[chat.id]?.site;
+        return { id: chat.id, title: site ? `${site}: ${chat.title}` : chat.title, updatedAt: chat.updatedAt, active: chat.active };
+      })
+      .filter((item) => !needle || item.title.toLowerCase().includes(needle))
+      .slice(0, needle ? 40 : 20);
+  }, [browserChats, chatSites, viewingSite]);
   const railChats: TerminalSidebarChat[] = useMemo(
     () =>
       pendingChatId !== null
@@ -9413,6 +9499,34 @@ if (careerOpsAgent) {
     ? "terminal-boot-conceal"
     : "terminal-boot-reveal";
 
+  /* A message bubble drawn as a broken line: the shape of a chat, without the
+     part that lasts. While the mode is on it carries a tick, so "this is on"
+     is legible without comparing shades. */
+  const temporaryChatIcon = (className: string) => (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.7}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path
+        strokeDasharray="3.6 3"
+        d="M20.25 12a8.25 8.25 0 01-11.9 7.4L4 20.5l1.16-4.2A8.25 8.25 0 1120.25 12z"
+      />
+      {temporaryChat ? <path strokeWidth={2} d="M8.6 12.1l2.4 2.4 4.6-5" /> : null}
+    </svg>
+  );
+  const temporaryChatTitle = currentChatActive
+    ? "Temporary chat can be changed after the current response finishes"
+    : temporaryChat
+      ? "Temporary chat is on — click to leave it. This chat is not in your history and is not used or saved as memory."
+      : "Temporary chats stay out of your history and don’t use or save memory.";
+  const temporaryChatLabel = temporaryChat ? "Turn off temporary chat" : "Turn on temporary chat";
+
   return (
     <>
     {voiceSurface ? <VoiceTerminalSurface {...voiceSurface}
@@ -9481,7 +9595,7 @@ if (careerOpsAgent) {
         </>
       ) : null}
 
-      {codePresentation ? (
+      {embeddedPresentation ? null : codePresentation ? (
         <AssistantPanelHeader
           title={sidebarChats.find((chat) => chat.id === session.sessionId)?.title ?? "New chat"}
           starredOpen={sidePanel === "starred"}
@@ -9494,6 +9608,39 @@ if (careerOpsAgent) {
           onOpenOther={(item) => openHistorySession(item.id)}
           onNewChat={startNewSavedChat}
           newChatDisabled={blankSavedChatSelected}
+        />
+      ) : browserAssistantPresentation ? (
+        <AssistantPanelHeader
+          title={sidebarChats.find((chat) => chat.id === session.sessionId)?.title ?? viewingWebsite ?? "New chat"}
+          starredOpen={sidePanel === "starred"}
+          onToggleStarred={() => togglePanel("starred")}
+          items={browserSiteItems}
+          activeId={session.sessionId}
+          currentLabel={viewingSite ? "This website" : "Browser chats"}
+          otherLabel="Other websites"
+          onOpen={(id) => openHistorySession(id)}
+          searchOthers={viewingSite ? searchOtherWebsiteChats : undefined}
+          onOpenOther={(item) => openHistorySession(item.id)}
+          onNewChat={startNewSavedChat}
+          newChatDisabled={blankSavedChatSelected}
+          onClose={onClose}
+          // The temporary-chat switch sits in this row rather than floating
+          // under it, which left a lone icon in an otherwise empty band.
+          extra={newChatPageSelected ? (
+            <button
+              type="button"
+              onClick={toggleTemporaryChat}
+              disabled={currentChatActive}
+              aria-pressed={temporaryChat}
+              title={temporaryChatTitle}
+              aria-label={temporaryChatLabel}
+              className={`inline-flex h-7 w-7 items-center justify-center rounded-md transition hover:bg-[var(--paper-strong)] disabled:cursor-not-allowed disabled:opacity-45 ${
+                temporaryChat ? "text-[#2F5C41]" : "text-[var(--ink-muted)] hover:text-[var(--ink)]"
+              }`}
+            >
+              {temporaryChatIcon("h-[18px] w-[18px]")}
+            </button>
+          ) : null}
         />
       ) : (
       <header
@@ -9632,7 +9779,7 @@ if (careerOpsAgent) {
             {/* The rail is always mounted. Closed, it keeps a narrow column of
               actions and its divider; there is no toolbar button to bring it
               back, so it must never leave the layout entirely. */}
-            {codePresentation ? null : (
+            {codePresentation || embeddedPresentation || browserAssistantPresentation ? null : (
             <TerminalSidebar
               surface="tinted"
               collapsed={terminalRailCollapsed}
@@ -9705,7 +9852,7 @@ if (careerOpsAgent) {
                 switch only belongs on the new-chat page. The banner below keeps
                 an active temporary conversation identified after the switch is
                 gone. */}
-              {newChatPageSelected ? (
+              {newChatPageSelected && !browserAssistantPresentation ? (
                 <button
                   type="button"
                   onClick={toggleTemporaryChat}
@@ -9716,40 +9863,10 @@ if (careerOpsAgent) {
                       ? "text-[#2F5C41]"
                       : "text-[#9AAAA1] hover:text-[#172A22]"
                   }`}
-                  title={
-                    currentChatActive
-                      ? "Temporary chat can be changed after the current response finishes"
-                      : temporaryChat
-                        ? "Temporary chat is on — click to leave it. This chat is not in your history and is not used or saved as memory."
-                        : "Temporary chats stay out of your history and don’t use or save memory."
-                  }
-                  aria-label={
-                    temporaryChat
-                      ? "Turn off temporary chat"
-                      : "Turn on temporary chat"
-                  }
+                  title={temporaryChatTitle}
+                  aria-label={temporaryChatLabel}
                 >
-                  {/* A message bubble drawn as a broken line: the shape of a chat,
-                    without the part that lasts. While the mode is on it carries a
-                    tick, so "this is on" is legible without comparing shades. */}
-                  <svg
-                    className="h-[26px] w-[26px]"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth={1.7}
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    aria-hidden="true"
-                  >
-                    <path
-                      strokeDasharray="3.6 3"
-                      d="M20.25 12a8.25 8.25 0 01-11.9 7.4L4 20.5l1.16-4.2A8.25 8.25 0 1120.25 12z"
-                    />
-                    {temporaryChat ? (
-                      <path strokeWidth={2} d="M8.6 12.1l2.4 2.4 4.6-5" />
-                    ) : null}
-                  </svg>
+                  {temporaryChatIcon("h-[26px] w-[26px]")}
                 </button>
               ) : null}
               {/* The mode is a promise about what happens to what you type, so it
@@ -10099,6 +10216,24 @@ onClearCareerOps={() => {
                           suggestions={(newChatWorkspace ? chatGreeting.suggestions : []).slice(0, 2)}
                           suggestionDetails={chatGreeting.suggestionDetails}
                           suggestionScopeKey={JSON.stringify([newChatWorkspace?.slug, chatGreeting.suggestionScopeKey])}
+                          disabled={runtimeUnavailable}
+                          onSelectSuggestion={fillComposerWithPrompt}
+                        />}
+                      />
+                    </>
+                  ) : browserAssistantPresentation ? (
+                    <>
+                      <ConnectModelNotice />
+                      <AssistantEmptyState
+                        line={viewingWebsite && !privateBrowser
+                          ? `Ask about ${viewingWebsite}, or anything else.`
+                          : "Ask anything, or open a website to ask about it."}
+                        cards={<ChatSuggestionCards
+                          suggestions={(browserPage ? pageSuggestions ?? [] : chatGreeting.suggestions).slice(0, 2)}
+                          suggestionDetails={browserPage
+                            ? Object.fromEntries((pageSuggestions ?? []).map(prompt => [prompt, { label: "This website" }]))
+                            : chatGreeting.suggestionDetails}
+                          suggestionScopeKey={browserPage ? JSON.stringify(["page", browserPage.title]) : chatGreeting.suggestionScopeKey}
                           disabled={runtimeUnavailable}
                           onSelectSuggestion={fillComposerWithPrompt}
                         />}

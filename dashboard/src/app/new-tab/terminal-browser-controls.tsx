@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Settings, X } from "lucide-react";
+import { ArrowRight, Settings, X } from "lucide-react";
 import NavigationLink from "@/app/components/navigation-link";
 import { useDesktopTabs } from "@/app/components/use-desktop-tabs";
 import BrowserDownloadsButton from "@/app/browser/browser-downloads-button";
@@ -13,7 +13,7 @@ import { BrowserStarredPanel } from "@/app/browser/browser-starred-panel";
 import { useBrowserRecentSearches } from "@/app/browser/use-browser-recent-searches";
 import { useBrowserSavedItems } from "@/app/browser/use-browser-saved-items";
 import { bookmarksKey, normalizeBookmarks } from "@/app/browser/browser-bookmarks";
-import { browserBookmarksControl, navigateBrowserFromHome } from "@/lib/desktop-browser-tabs";
+import { browserBookmarksControl, navigateBrowserFromHome, sendDesktopTabsCommand } from "@/lib/desktop-browser-tabs";
 import { webDestinationUrl } from "@/lib/new-tab-search-suggestions";
 import styles from "./terminal-browser-controls.module.css";
 
@@ -24,9 +24,14 @@ export default function TerminalBrowserControls({ ownerKey }: { ownerKey: string
   const current = tabs?.tabs.find(tab => tab.id === tabs.selfId);
   const active = Boolean(current && current.id === tabs?.activeId);
   const [panel, setPanel] = useState<Panel | null>(null);
+  if (current?.browser?.terminalOrigin) return null;
   return <>
     <div className={styles.controls}>
       {tabs && <>
+        {current?.terminalForward && <button type="button" className="browser-toolbar-button" aria-label="Forward" title="Forward to website (Alt+Right)"
+          onClick={() => void sendDesktopTabsCommand({ type: "forward", targetTabId: current.id, generation: current.generation, presentationRevision: tabs.presentationRevision })}>
+          <ArrowRight size={18} aria-hidden="true" />
+        </button>}
         <BrowserDownloadsButton active={active} open={current?.downloadsOpen ?? current?.browser?.downloadsOpen ?? false} />
         <BrowserMenuControls profileLabel={ownerKey} onPanel={setPanel} />
       </>}

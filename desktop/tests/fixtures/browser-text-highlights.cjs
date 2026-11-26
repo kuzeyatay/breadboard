@@ -138,7 +138,7 @@ app.whenReady().then(async () => {
   assert.equal(await page.executeJavaScript('typeof window.breadboardDesktop'), 'undefined');
   assert.equal(await manager.handleCommand(page, { type: 'browser-selection-action', action: 'highlight', value: 'pink' }), false);
   assert.equal(await popup.executeJavaScript('getComputedStyle(document.querySelector(".desktop-title-bar")).display'), 'none');
-  assert.deepEqual(await popup.executeJavaScript('Array.from(document.querySelectorAll("button")).map(b=>b.textContent.trim()).filter(Boolean)'), ['Add note', 'Ask in chat', 'Ask here']);
+  assert.deepEqual(await popup.executeJavaScript('Array.from(document.querySelectorAll("button")).map(b=>b.textContent.trim()).filter(Boolean)'), ['Ask in chat', 'Ask here']);
   assert.equal(await popup.executeJavaScript('Math.round(document.querySelector(".bb-chat-selection-menu").getBoundingClientRect().width)'), 390);
   // Save an image for visual QA outside the temporary profile.
   const artifactDir = process.env.BREADBOARD_HIGHLIGHT_QA_DIR;
@@ -161,10 +161,10 @@ app.whenReady().then(async () => {
   await until(async () => !page.isLoading() && await page.executeJavaScript('document.body.textContent.includes("New content was inserted")') && await marks('blue') === 1, 'refresh relocation');
   assert.equal(await page.executeJavaScript('Array.from(CSS.highlights.get("breadboard-web-blue"))[0].toString()'), 'The selected words follow.');
   assert.equal(await page.executeJavaScript('document.querySelectorAll("#passage mark").length'), 0, 'painting preserves page DOM');
-  popup = await select(); await click(popup, 'Add note');
-  await until(() => popup.executeJavaScript('Boolean(document.querySelector("textarea"))'), 'note editor');
-  await popup.executeJavaScript('document.querySelector("textarea").focus()'); await popup.insertText('Remember this passage');
-  await popup.executeJavaScript('Array.from(document.querySelectorAll("button")).find(b=>b.textContent.trim()==="Save note").click()');
+  // The web picker no longer offers "Add note" (an Only me crumb replaces it); notes saved earlier still reopen and edit.
+  popup = await select();
+  assert.equal(await popup.executeJavaScript('Array.from(document.querySelectorAll("button")).some(b=>b.textContent.trim()==="Add note")'), false);
+  assert.equal(await manager.handleCommand(popup, { type: 'browser-selection-action', action: 'note', value: 'Remember this passage' }), true);
   await until(() => [...documents.values()][0]?.values().next().value?.note === 'Remember this passage', 'saved note');
   await clickSaved();
   await until(async()=>{

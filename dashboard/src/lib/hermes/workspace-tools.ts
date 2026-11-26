@@ -1,6 +1,7 @@
 import db from "../db.ts";
 import { createOwnedGarden } from "../garden-creation.ts";
-import { ConversationStoreError, getConversationForUser, getConversationById, listConversationsForUser, moveConversationToGarden } from "../conversations/store.ts";
+import { ConversationStoreError, getConversationForUser, getConversationById, listArchivedConversationsForUser, listConversationsForUser, moveConversationToGarden } from "../conversations/store.ts";
+import { normalizeFolderPath } from "../cluster-folders.ts";
 import { ApiError } from "./route-core.ts";
 import { stageAuthoredSkill } from "./stage-authored-skill.ts";
 import { gardenFiles } from "../garden-files/repository.ts";
@@ -16,10 +17,10 @@ const skillDraftTool = { name: "draft_skill", description: "Write a local skill 
 
 const descriptions = {
   list_gardens: ["List owned Gardens.", [], []],
-  create_garden: ["Create a private Garden.", ["name", "description", "folder"], ["name"]],
-  find_chats: ["Find saved Terminal and workspace chats by title and source Garden slug.", ["title", "garden"], []],
+  create_garden: ["Create or reuse a matching private Garden. For an explicitly requested additional copy, supply a unique copyKey and reuse it on retries.", ["name", "description", "folder", "copyKey"], ["name"]],
+  find_chats: ["Find saved and archived Terminal and workspace chats. Pass nextOffset as offset to continue.", ["title", "garden","offset","archived"], []],
   move_chat: ["Move the selected chat into an owned Garden by slug. Use current for this chat.", ["chatId", "garden"], ["chatId", "garden"]],
-  find_space_files: ["Find your editable Spaces files by name.", ["title"], []],
+  find_space_files: ["Find your editable Spaces files by name. Pass nextOffset as offset to continue.", ["title","offset"], []],
   save_space_template: ["Create or update a Spaces creation tile from the current revision of one of your files.", ["name", "fileId"], ["name", "fileId"]],
 } as const;
 
@@ -31,9 +32,15 @@ function stringArg(args: Record<string, unknown>, key: string, limit: number, re
   return args[key].trim();
 }
 
+function page<T>(matches:T[], offset:unknown) {
+  const start = offset ?? 0;
+  if (typeof start !== "number" || !Number.isSafeInteger(start) || start < 0) throw new ApiError(400,"invalid_offset","Provide a non-negative offset.");
+  return {total:matches.length, items:matches.slice(start,start+100), nextOffset:start+100 < matches.length ? start+100 : null};
+}
+
 export function callWorkspaceTool(userId: number, conversationId: number, tool: string, args: Record<string, unknown>) {
   if (tool === "__breadboard_list_tools") return { tools: [skillDraftTool, ...Object.entries(descriptions).map(([name, [description, fields, required]]) => ({
-    name, description, inputSchema: { type: "object", properties: Object.fromEntries(fields.map(key => [key, { type: "string" }])), required },
+    name, description, inputSchema: { type: "object", properties: Object.fromEntries(fields.map(key => [key, { type: key === "offset" ? "integer" : key === "archived" ? "boolean" : "string" }])), required },
   }))] };
   if (tool === "draft_skill") {
     const { report, warnings } = stageAuthoredSkill(userId, args);
@@ -42,20 +49,37 @@ export function callWorkspaceTool(userId: number, conversationId: number, tool: 
   if (tool === "create_garden") {
     const name = stringArg(args, "name", 120, true);
     const description = stringArg(args, "description", 2000);
-    const folder = stringArg(args, "folder", 500);
-    const garden = createOwnedGarden(userId, name, description, folder);
+    const folder = normalizeFolderPath(stringArg(args, "folder", 500));
+    const copyKey = stringArg(args, "copyKey", 120);
+    const garden = db.transaction(() => {
+      if (copyKey) {
+        db.exec(`CREATE TABLE IF NOT EXISTS workspace_garden_copies(user_id INTEGER NOT NULL,copy_key TEXT NOT NULL,
+          garden_id INTEGER NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,PRIMARY KEY(user_id,copy_key))`);
+        const copy = db.prepare(`SELECT c.name,c.slug,c.folder FROM workspace_garden_copies k JOIN clusters c ON c.id=k.garden_id
+          WHERE k.user_id=? AND k.copy_key=? AND c.user_id=k.user_id`).get(userId,copyKey) as {name:string;slug:string;folder:string|null} | undefined;
+        if (copy) return copy;
+        const created = createOwnedGarden(userId, name, description, folder);
+        db.prepare("INSERT INTO workspace_garden_copies VALUES(?,?,?)").run(userId,copyKey,created.id);
+        return created;
+      }
+      const existing = db.prepare(`SELECT name, slug, folder FROM clusters WHERE user_id=? AND name=? AND visibility='private'
+        AND COALESCE(folder,'')=? AND (?='' OR description=?) ORDER BY id LIMIT 1`)
+        .get(userId,name,folder,description,description) as {name:string;slug:string;folder:string|null} | undefined;
+      return existing ?? createOwnedGarden(userId, name, description, folder);
+    }).immediate();
     return { garden: { name: garden.name, slug: garden.slug, folder: garden.folder, url: "/gardens/" + garden.slug } };
   }
   if (tool === "save_space_template") {
     return { template: saveSpaceTemplate(gardenFiles(), userId, stringArg(args, "name", 80, true), stringArg(args, "fileId", 120, true)) };
   }
   if (tool === "find_space_files") {
-    const title = stringArg(args, "title", 120).toLowerCase();
+    const title = stringArg(args, "title", 120).normalize("NFC").toLowerCase();
     const store = gardenFiles();
     const rows = store.database.prepare(`SELECT f.id AS fileId,c.slug AS garden,f.path FROM garden_files f JOIN clusters c ON c.id=f.cluster_id
-      WHERE f.owner_id=? AND c.user_id=? AND f.deleted_at IS NULL AND f.kind='file' AND instr(lower(f.path),?)>0 ORDER BY f.updated_at DESC`)
+      WHERE f.owner_id=? AND c.user_id=? AND f.deleted_at IS NULL AND f.kind='file' AND instr(f.path_key,?)>0 ORDER BY f.updated_at DESC, f.id`)
       .all(userId,userId,title) as Array<{fileId: string; garden: string; path: string}>;
-    return { files: rows.filter(row => spacesKindForPath(row.path)).slice(0,100) };
+    const {items:files,...pagination} = page(rows.filter(row => spacesKindForPath(row.path)),args.offset);
+    return { files,...pagination };
   }
   const gardens = db.prepare("SELECT id, slug, name, folder FROM clusters WHERE user_id = ? ORDER BY name, slug").all(userId) as
     Array<{ id: number; slug: string; name: string; folder: string | null }>;
@@ -64,12 +88,15 @@ export function callWorkspaceTool(userId: number, conversationId: number, tool: 
     const title = stringArg(args, "title", 200).toLowerCase();
     const slug = stringArg(args, "garden", 200);
     const gardenSlugs = new Map(gardens.map(garden => [garden.id, garden.slug]));
-    const matches = listConversationsForUser(userId).filter(chat => {
+    const archived = args.archived;
+    if (archived !== undefined && typeof archived !== "boolean") throw new ApiError(400,"invalid_archive_filter","Use true or false for archived.");
+    const matches = [...(archived === true ? [] : listConversationsForUser(userId)), ...(archived === false ? [] : listArchivedConversationsForUser(userId))].filter(chat => {
       return (chat.surface === "dashboard_terminal" || chat.surface === "garden_chat") &&
         chat.title.toLowerCase().includes(title) && (!slug || gardenSlugs.get(chat.default_garden_id ?? 0) === slug);
     });
-    return { total: matches.length, chats: matches.slice(0, 100).map(chat => ({
-      chatId: chat.public_id, title: chat.title, garden: gardenSlugs.get(chat.default_garden_id ?? 0) ?? null,
+    const {items,...pagination} = page(matches,args.offset);
+    return { ...pagination, chats: items.map(chat => ({
+      chatId: chat.public_id, title: chat.title, archived:!!chat.archived_at, garden: gardenSlugs.get(chat.default_garden_id ?? 0) ?? null,
     })) };
   }
   if (tool === "move_chat") {

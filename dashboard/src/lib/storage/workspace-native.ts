@@ -22,6 +22,7 @@ public static class WorkspaceStorageNative {
  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern SafeFileHandle CreateFileW(string p,uint a,uint s,IntPtr x,uint c,uint f,IntPtr t);
  [DllImport("kernel32.dll", SetLastError=true)] static extern bool SetFileInformationByHandle(SafeFileHandle h,int c,ref int b,int n);
  [DllImport("kernel32.dll", SetLastError=true)] static extern bool DeviceIoControl(SafeFileHandle h,uint c,ref short b,int n,IntPtr o,int z,out int r,IntPtr x);
+ [DllImport("kernel32.dll", EntryPoint="DeviceIoControl", SetLastError=true)] static extern bool DeviceIoControlBytes(SafeFileHandle h,uint c,byte[] b,int n,IntPtr o,int z,out int r,IntPtr x);
  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern uint GetFinalPathNameByHandleW(SafeFileHandle h,StringBuilder b,uint n,uint f);
  [DllImport("kernel32.dll", SetLastError=true)] static extern bool GetFileInformationByHandle(SafeFileHandle h,out Info i);
  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern uint GetCompressedFileSizeW(string p,out uint high);
@@ -58,14 +59,25 @@ public static class WorkspaceStorageNative {
  static string Hash(FileStream f) { f.Position=0; using(var h=SHA256.Create()) return BitConverter.ToString(h.ComputeHash(f)).Replace("-","").ToLowerInvariant(); }
  static long Allocated(string p) { uint hi; uint lo=GetCompressedFileSizeW(p,out hi); if(lo==uint.MaxValue && Marshal.GetLastWin32Error()!=0) throw Failure(); return (long)(((ulong)hi<<32)|lo); }
  public static long Apply(string root,string path,string obj,string sha,string identity,string action,bool newObject) {
-  bool compress=action=="compress";
+  bool compress=action=="compress"||action=="wof";
   using(var source=Open(root,path,action=="deduplicate",compress,identity)) {
    long before=Allocated(path); if(action=="inspect")return before;
    string original=Hash(source);
    if(sha!="" && original!=sha) throw new IOException("Workspace content changed");
    if(compress) {
-    short format=2; int returned;
-    if(!DeviceIoControl(source.SafeFileHandle,0x9c040,ref format,2,IntPtr.Zero,0,out returned,IntPtr.Zero)) throw Failure();
+    short format=2; int returned; bool wof=false;
+    if(action=="wof") {
+     // FSCTL_SET_EXTERNAL_BACKING: WOF_EXTERNAL_INFO{1,WOF_PROVIDER_FILE} +
+     // FILE_PROVIDER_EXTERNAL_INFO_V1{1,XPRESS8K,0}. Reads decompress
+     // transparently at ordinary speed; the first write restores a plain file,
+     // so an edited file simply becomes hot again. Volumes without WOF fall
+     // back to NTFS compression below.
+     var info=new byte[20];
+     BitConverter.GetBytes(1).CopyTo(info,0); BitConverter.GetBytes(2).CopyTo(info,4);
+     BitConverter.GetBytes(1).CopyTo(info,8); BitConverter.GetBytes(2).CopyTo(info,12);
+     wof=DeviceIoControlBytes(source.SafeFileHandle,0x9030C,info,20,IntPtr.Zero,0,out returned,IntPtr.Zero);
+    }
+    if(!wof && !DeviceIoControl(source.SafeFileHandle,0x9c040,ref format,2,IntPtr.Zero,0,out returned,IntPtr.Zero)) throw Failure();
     source.Flush(true); if(Hash(source)!=original) throw new IOException("Compression verification failed");
     return Math.Max(0,before-Allocated(path));
    }
@@ -87,7 +99,7 @@ public static class WorkspaceStorageNative {
 
 export async function nativeWorkspaceFile(input: {
   root: string; path: string; object?: string; hash?: string; identity: string;
-  action: "deduplicate" | "compress" | "inspect"; newObject?: boolean; signal?: AbortSignal;
+  action: "deduplicate" | "compress" | "wof" | "inspect"; newObject?: boolean; signal?: AbortSignal;
 }): Promise<number> {
   if (process.platform !== "win32") throw new Error("Workspace archival requires exclusive native file handles on this platform.");
   const { signal, ...request } = input;

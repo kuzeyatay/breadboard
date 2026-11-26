@@ -74,6 +74,29 @@ function gardenRow(slug) {
   return db.prepare("SELECT * FROM clusters WHERE slug = ?").get(slug);
 }
 
+test("Garden and cluster archives preserve uploads, empty folders and visibility; mail includes only shared uploads", async () => {
+  const { gardenFiles } = await import("../src/lib/garden-files/repository.ts");
+  const store = gardenFiles();
+  seedGarden("upload-test","Upload Test","Archive QA");
+  const scope = slug=>({clusterId:gardenRow(slug).id,gardenId:slug,userId:Number(USER),ownerId:Number(USER)});
+  const source = scope("upload-test");
+  store.createFolder(source,"Empty");
+  const bytes = Buffer.from([0,1,255,47,19]);
+  const file = store.import(source,"Samples/results.dat",await store.stage(new Blob([bytes]).stream()));
+  store.share(source,file.id,file.revision,"garden");
+  store.import(source,"private.txt",await store.stage(new Blob(["Private"]).stream()));
+  for (const [archive,privateIncluded] of [[exportGardenArchive(USER,source.gardenId),true],[exportClusterArchive(USER,"Archive QA"),true],[exportGardenArchive(USER,source.gardenId,true),false]]) {
+    const result = await importTransferArchive(USER,await readBuffer(archive.stream));
+    const destination = scope(result.gardens[0].slug);
+    const entries = store.list(destination);
+    const saved = entries.find(e=>e.path === file.path);
+    assert.equal(saved?.visibility,"garden");
+    assert.deepEqual(fs.readFileSync(store.content(destination,saved.id).path),bytes);
+    assert.equal(entries.some(e=>e.path === "private.txt" && e.visibility === "private"),privateIncluded);
+    assert.equal(entries.some(e=>e.path === "Empty" && e.kind === "folder"),privateIncluded);
+  }
+});
+
 function relativeFiles(dir) {
   const found = [];
   const walk = (current, prefix) => {

@@ -86,6 +86,11 @@ export async function storeMessagingAttachment(userId: number, file: InboundAtta
   }
   if (document) {
     const blob = await writeDocumentBlob({ userId, format: document, body });
+    // The same document sent again shares the first copy's bytes on disk.
+    // Never in the way of the message: any failure keeps the plain file.
+    if (blob.sha256) {
+      await import("../storage/service.ts").then(({ shareFreshUpload }) => shareFreshUpload(blob.path, blob.sha256!)).catch(() => 0);
+    }
     const { readMessagingDocument } = await import("./read-document.ts");
     const reading = await readMessagingDocument(userId, blob.blobId, document, blob.path, name);
     return { type: "document", name, blobId: blob.blobId, format: document, sizeBytes: blob.byteSize, ...reading };

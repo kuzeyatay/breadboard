@@ -8,7 +8,7 @@ import {
   type RosterPersonaMeta,
 } from "@/lib/hermes/use-delegation-tree";
 
-const PERSONA_TAG = /^\s*\[persona:\s*[a-z0-9-]+\]\s*/i;
+const PERSONA_TAG = /^\s*\[persona:\s*(?:bot-[\p{L}\p{M}\p{N}-]+|[a-z0-9-]+)\]\s*/iu;
 
 function cleanGoal(goal?: string): string {
   return goal ? goal.replace(PERSONA_TAG, "").trim() : "";

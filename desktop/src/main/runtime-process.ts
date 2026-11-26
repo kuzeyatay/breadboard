@@ -156,6 +156,10 @@ export const RUNTIME_PRODUCT_ENVIRONMENT_NAMES = [
   "GOOGLE_APPLICATION_CREDENTIALS",
   "GOOGLE_CLOUD_PROJECT",
   "GOOGLE_CLOUD_LOCATION",
+  // Google Drive, the carrier for files shared in organizations (OAuth Desktop client + optional API key).
+  "GOOGLE_DRIVE_CLIENT_ID",
+  "GOOGLE_DRIVE_CLIENT_SECRET",
+  "GOOGLE_DRIVE_API_KEY",
   "COMPOSIO_API_KEY",
   "ELEVENLABS_API_KEY",
   "OPENAI_API_KEY",

@@ -70,3 +70,29 @@ export function parseWebSelectionAction(value: string): WebSelectionAction | nul
       ...(typeof data.visible === "boolean" ? { visible: data.visible } : {}) } : null;
   } catch { return null; }
 }
+
+/**
+ * The page says which painted passage the pointer is over (or `id: null` when
+ * it leaves one), or which followed crumb was clicked. Only an id and a
+ * rectangle cross over; what is shown for it is looked up in the app.
+ */
+export type WebHighlightPointer =
+  | { action: "hover"; id: string | null; kind: "note" | "follow" | "crumb"; rect: { x: number; y: number; width: number; height: number } }
+  | { action: "follow-open"; id: string };
+
+export function parseWebHighlightPointer(value: string): WebHighlightPointer | null {
+  if (value.length > 4_000) return null;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "breadboard-selection:" || (url.hostname !== "hover" && url.hostname !== "follow")) return null;
+    const data = JSON.parse(url.searchParams.get("data") ?? "null");
+    const id = typeof data?.id === "string" && /^[A-Za-z0-9:._~%/-]{1,512}$/.test(data.id) ? data.id as string : null;
+    if (url.hostname === "follow") return id ? { action: "follow-open", id } : null;
+    if (data?.id !== null && !id) return null;
+    if (data.kind !== "note" && data.kind !== "follow" && data.kind !== "crumb") return null;
+    const rect = data.rect ?? { x: 0, y: 0, width: 0, height: 0 };
+    const numbers = [rect.x, rect.y, rect.width, rect.height];
+    if (!numbers.every(item => typeof item === "number" && Number.isFinite(item) && item >= -20000 && item <= 20000)) return null;
+    return { action: "hover", id, kind: data.kind, rect: { x: rect.x, y: rect.y, width: Math.max(0, rect.width), height: Math.max(0, rect.height) } };
+  } catch { return null; }
+}

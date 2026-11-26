@@ -40,12 +40,3 @@ export function PasswordField({ id, label, autoComplete, autoFocus }: {
     </div>
   );
 }
-
-/** The circle with the owner's initial, like an operating system's lock screen. */
-export function Avatar({ name }: { name: string }) {
-  return (
-    <div aria-hidden className="mx-auto mb-4 flex h-20 w-20 items-center justify-center rounded-full border border-gray-800 bg-gray-800 text-3xl font-semibold text-white">
-      {name.trim().charAt(0).toUpperCase() || '?'}
-    </div>
-  );
-}

@@ -16,11 +16,9 @@ test('loading glyphs fade from their current frame when a busy row is replaced',
       import BreadboardLoader from '@/app/components/breadboard-loader';
       import AssistantResponseMeta from '@/app/components/assistant-response-meta';
       import { ReplyText } from '@/app/components/loading-text-reveal';
-      import { ArtifactLoadingMark } from '@/app/components/hermes/artifact-preview-loading';
       const root = createRoot(document.querySelector('main'));
       window.show = kind => flushSync(() => root.render(<StrictMode>{kind
-        ? <section role="status" style={{ padding: 32 }}>{kind === 'orb'
-          ? <BreadboardLoader className="orb" /> : <ArtifactLoadingMark />}</section>
+        ? <section role="status" style={{ padding: 32 }}><BreadboardLoader className="orb" /></section>
         : <button>Ready</button>}</StrictMode>));
       window.reply = (text, active) => flushSync(() => root.render(<StrictMode>
         <AssistantResponseMeta active={active} />
@@ -37,7 +35,7 @@ test('loading glyphs fade from their current frame when a busy row is replaced',
   await page.addScriptTag({ content: bundle.outputFiles[0].text });
   for (const reducedMotion of ['no-preference', 'reduce']) {
     await page.emulateMedia({ reducedMotion });
-    for (const kind of ['orb', 'triangle']) {
+    for (const kind of ['orb']) {
       const frame = await page.evaluate(async kind => {
         window.show(kind);
         const icon = document.querySelector('[data-loading-icon]');

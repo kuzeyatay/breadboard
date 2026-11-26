@@ -227,8 +227,12 @@ export default function BrowserNavigation({ tab, showFlowers, restoreOwnerKey, o
       <div className="browser-toolbar" role="toolbar" aria-label="Browser navigation">
         <NavbarFlowerWind showFlowers={showFlowers} />
         <div className="browser-navigation-controls">
-          <button type="button" className="browser-toolbar-button" aria-label="Back" title="Back (Alt+Left)" disabled={!browser?.canGoBack} onClick={() => void sendDesktopTabsCommand({ type: "back" })}>
-            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M16 10H4m5-5-5 5 5 5" {...STROKE} /></svg>
+          <button type="button" className="browser-toolbar-button" aria-label={browser?.backToTerminal ? "Back to Terminal" : "Back"} title={browser?.backToTerminal ? "Back to Terminal (Alt+Left)" : "Back (Alt+Left)"} disabled={!browser?.canGoBack} onClick={() => void sendDesktopTabsCommand({ type: "back" })}>
+            <svg viewBox="0 0 20 20" aria-hidden="true">{browser?.backToTerminal ? <>
+              <path d="m5 7-3 3 3 3m-3-3h6" {...STROKE} />
+              <rect x="8" y="4" width="10" height="12" rx="2" {...STROKE} />
+              <path d="m10.5 8 2 2-2 2m3 0h2" {...STROKE} />
+            </> : <path d="M16 10H4m5-5-5 5 5 5" {...STROKE} />}</svg>
           </button>
           <button type="button" className="browser-toolbar-button" aria-label="Forward" title="Forward (Alt+Right)" disabled={!browser?.canGoForward} onClick={() => void sendDesktopTabsCommand({ type: "forward" })}>
             <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10h12m-5-5 5 5-5 5" {...STROKE} /></svg>

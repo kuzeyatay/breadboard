@@ -39,6 +39,7 @@ export async function GET(request: Request) {
     const organizations = listOrganizations(userId).map((organization) => ({
       id: organization.id,
       name: organization.name,
+      image: organization.image ?? null,
       role: organization.role,
       people: organization.members.map((member) => ({
         userId: member.userId,

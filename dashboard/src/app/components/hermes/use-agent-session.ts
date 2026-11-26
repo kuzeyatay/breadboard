@@ -90,7 +90,6 @@ import {
   disposeAgentStreamReader,
   isRecoverableAgentStreamDisconnect,
   isAgentStreamTurnActivity,
-  isAgentStreamTimeoutError,
   waitForAgentStreamReconnect,
   withAgentStreamTimeout,
 } from "./agent-stream-watchdog";
@@ -3018,13 +3017,9 @@ export function useAgentSession(
               : item,
           ),
         );
-        if (isAgentStreamTimeoutError(streamError)) {
-          controller.abort();
-          await fetch(
-            `/api/hermes/sessions/${activeSessionId}/abort`,
-            { method: "POST" },
-          ).catch(() => undefined);
-        }
+        // The browser never stops the server turn on its own timeout: losing
+        // the stream only detaches this viewer. The server's supervisor reaps
+        // a runtime that truly went away.
         throw streamError;
       } finally {
         await disposeAgentStreamReader(streamReader);

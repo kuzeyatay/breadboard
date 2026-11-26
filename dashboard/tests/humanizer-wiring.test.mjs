@@ -28,7 +28,7 @@ const recovery = source("src/lib/humanizer/recovery.ts");
 const autoHumanize = source("src/app/components/humanizer/auto-humanize.ts");
 const autoHook = source("src/app/components/humanizer/use-auto-humanize.ts");
 const actions = source("src/app/components/assistant-message-actions.tsx");
-const composer = source("src/app/components/assistant-composer.tsx");
+const composer = (source("src/app/components/assistant-intelligence-menu.tsx") + source("src/app/components/assistant-composer.tsx"));
 const panel = source("src/app/components/hermes/agent-runtime-panel.tsx");
 
 const HUMANIZER_CLIENT_FILES = [

@@ -380,16 +380,21 @@ test("a globe presentation keeps sibling research progress visible until synthes
   }
 });
 
-test("a task-recovery answer replaces the answer it re-did instead of stacking", async () => {
+test("a task-recovery answer replaces a failed attempt but follows a delivered answer", async () => {
   const { delegatedResponsePresentation } = await import("../src/lib/hermes/delegated-response.ts");
-  const turn = (recovery) => [
+  const turn = (recovery, first = { content: "First answer." }) => [
     { role: "user", content: "brief me", clientMessageId: "schedule-6-1" },
-    { role: "assistant", content: "First answer.", clientMessageId: "schedule-6-1" },
+    { role: "assistant", clientMessageId: "schedule-6-1", ...first },
     { role: "user", content: "brief me", clientMessageId: "recovery:run-1", internalAgentContinuation: true },
     { role: "assistant", clientMessageId: "recovery:run-1", internalAgentContinuation: true, ...recovery },
   ];
-  assert.deepEqual([...supersededDelegationAssistantIndices(turn({ content: "Better answer." }))], [1]);
-  assert.equal(delegatedResponsePresentation(turn({ content: "Better answer." }), 3).stateLabel, undefined);
+  // A delivered answer was read and notified; the recovery is a follow-up to it,
+  // never a silent replacement (arXiv briefing, 2026-11-26).
+  assert.deepEqual([...supersededDelegationAssistantIndices(turn({ content: "Now saved." }))], []);
+  // A failed or empty first attempt is replaced instead of stacking.
+  assert.deepEqual([...supersededDelegationAssistantIndices(turn({ content: "Better answer." }, { content: "", failed: true }))], [1]);
+  assert.deepEqual([...supersededDelegationAssistantIndices(turn({ content: "Better answer." }, { content: "" }))], [1]);
+  assert.equal(delegatedResponsePresentation(turn({ content: "Better answer." }, { content: "", failed: true }), 3).stateLabel, undefined);
   // Not yet answered, or failed: the earlier answer stays on screen.
   assert.deepEqual([...supersededDelegationAssistantIndices(turn({ content: "" }))], []);
   assert.deepEqual([...supersededDelegationAssistantIndices(turn({ content: "x", failed: true }))], []);

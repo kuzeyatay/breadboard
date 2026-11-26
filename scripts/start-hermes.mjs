@@ -184,6 +184,12 @@ writeFileSync(
     // the model was told to call `vision_analyze` itself, which no Breadboard
     // session enables.
     "  image_input_mode: native",
+    // An unanswered question must not park the turn. After this many seconds
+    // the clarify tool returns "no answer" and the agent carries on with its
+    // best judgment (stating its assumption), the way Codex does. Hermes's
+    // default is an hour, long enough for the turn to look dead and get
+    // reaped by the server's 15-minute approval bound.
+    "  clarify_timeout: 300",
     "",
   ].join("\n"),
   { encoding: "utf8" },

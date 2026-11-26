@@ -19,10 +19,14 @@ import {
   Italic,
   Link2,
   List,
+  Loader2,
+  Paperclip,
   Quote,
   Smile,
   Strikethrough,
+  X,
 } from "lucide-react";
+import { MAX_STORED_FILE_ATTACHMENT_BYTES, STORED_FILE_FILENAME_HEADER } from "@/lib/stored-file-attachments.ts";
 
 import { cn } from "@/app/buzz/lib/cn";
 import { useTheme } from "@/app/buzz/lib/theme";
@@ -43,6 +47,31 @@ import {
   TooltipTrigger,
 } from "@/app/buzz/ui/tooltip";
 import type { BuzzMember, BuzzMessage } from "../types.ts";
+import type { RoomAttachment } from "../use-room.ts";
+import { CommandHub } from "@/app/components/hermes/command-hub";
+
+/** A file picked here: stored on this machine first, then sent with the message. */
+type PickedFile = { key: string; name: string; size: number } & (
+  | { state: "uploading" }
+  | { state: "ready"; stored: RoomAttachment }
+  | { state: "failed"; error: string });
+
+const sizeLabel = (bytes: number) => bytes < 1024 ? `${bytes} B` : bytes < 1024 * 1024 ? `${Math.round(bytes / 1024)} KB` : `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+
+async function storeFile(file: File): Promise<RoomAttachment> {
+  if (file.size > MAX_STORED_FILE_ATTACHMENT_BYTES) throw new Error("Files must be under 128 MiB.");
+  const response = await fetch("/api/chat-attachments/files", {
+    method: "POST", body: file, duplex: "half",
+    headers: { [STORED_FILE_FILENAME_HEADER]: encodeURIComponent(file.name), "Content-Type": "application/octet-stream" },
+  } as RequestInit & { duplex: "half" });
+  const data = (await response.json().catch(() => ({}))) as { blobId?: string; format?: string; sizeBytes?: number; message?: string };
+  if (!response.ok || !data.blobId || !data.format) throw new Error(data.message ?? "The file could not be attached.");
+  return { name: file.name, blobId: data.blobId, format: data.format, sizeBytes: data.sizeBytes ?? file.size };
+}
+
+// The toolbar's buttons share the capability button's round, raised style.
+const TOOL_BUTTON =
+  "neu-button-icon h-9 w-9 rounded-full text-[var(--ink)] hover:bg-[var(--paper-strong)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--botanical)] disabled:opacity-40";
 
 export function Composer({
   members,
@@ -50,6 +79,7 @@ export function Composer({
   disabled = false,
   autoFocus = false,
   onSend,
+  files: fileMode,
   draftKey,
   roomId,
   threadId,
@@ -59,7 +89,13 @@ export function Composer({
   placeholder: string;
   disabled?: boolean;
   autoFocus?: boolean;
-  onSend: (body: string) => boolean | void;
+  onSend: (body: string, attachments?: RoomAttachment[]) => boolean | void;
+  /**
+   * Shows the attach button. `"linked"` is a room of an organization on
+   * Crumbs: its files reach members on other machines through the sender's
+   * Google Drive, so Drive is connected first.
+   */
+  files?: "local" | "linked";
   draftKey?: string;
   roomId?: string;
   threadId?: number;
@@ -71,6 +107,51 @@ export function Composer({
   const [highlighted, setHighlighted] = useState(0);
   const [showFormatting, setShowFormatting] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [picked, setPicked] = useState<PickedFile[]>([]);
+  const [driveNotice, setDriveNotice] = useState<null | "connect" | "waiting" | "connected" | "unavailable" | string>(null);
+  const uploading = picked.some(file => file.state === "uploading");
+  const ready = picked.flatMap(file => file.state === "ready" ? [file.stored] : []);
+
+  const addFiles = (list: FileList | null) => {
+    for (const file of Array.from(list ?? []).slice(0, Math.max(0, 10 - picked.length))) {
+      const key = `${file.name}:${file.size}:${crypto.randomUUID()}`;
+      setPicked(current => [...current, { key, name: file.name, size: file.size, state: "uploading" }]);
+      void storeFile(file).then(
+        stored => setPicked(current => current.map(item => item.key === key ? { ...item, state: "ready", stored } : item)),
+        error => setPicked(current => current.map(item => item.key === key ? { ...item, state: "failed", error: error instanceof Error ? error.message : "The file could not be attached." } : item)),
+      );
+    }
+    if (fileRef.current) fileRef.current.value = "";
+  };
+
+  /** In a linked room the picker opens once Google Drive is connected; otherwise it says what is missing. */
+  const attach = async () => {
+    if (fileMode === "linked") {
+      const status = await fetch("/api/drive", { cache: "no-store" }).then(response => response.ok ? response.json() as Promise<{ configured: boolean; connected: boolean }> : null).catch(() => null);
+      if (!status?.configured) { setDriveNotice("unavailable"); return; }
+      if (!status.connected) { setDriveNotice("connect"); return; }
+    }
+    setDriveNotice(null);
+    fileRef.current?.click();
+  };
+
+  const connectDrive = async () => {
+    try {
+      const response = await fetch("/api/drive", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "connect" }) });
+      const data = (await response.json().catch(() => ({}))) as { url?: string; message?: string };
+      if (!response.ok || !data.url) { setDriveNotice(data.message ?? "Google Drive could not be connected."); return; }
+      // Opens in the system browser, where Google allows the consent page.
+      window.open(data.url, "_blank");
+      setDriveNotice("waiting");
+      for (let tries = 0; tries < 90; tries++) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        const status = await fetch("/api/drive", { cache: "no-store" }).then(next => next.ok ? next.json() as Promise<{ connected: boolean }> : null).catch(() => null);
+        if (status?.connected) { setDriveNotice("connected"); return; }
+      }
+      setDriveNotice("connect");
+    } catch { setDriveNotice("Google Drive could not be connected."); }
+  };
   const [personalize] = usePersonalize();
   const [roomCards,setRoomCards] = useState<{scope:string;items:string[]}|null>(null);
   const cardScope = JSON.stringify([roomId,threadId,draftKey, messages?.filter(m =>
@@ -97,6 +178,21 @@ export function Composer({
   const changeValue = (next: string) => {
     setValue(next);
     if (draftKey && draftReady.current) writeStored(`${draftKey}:draft`, next);
+  };
+
+  const [capabilitiesOpen, setCapabilitiesOpen] = useState(false);
+  /**
+   * A capability is an instruction to an agent, so it sits after the @mentions that
+   * open the message. A message that names no one asks the room's Bread (or its
+   * first agent), the agent that would otherwise not be asked at all.
+   */
+  const insertCapability = (token: string) => {
+    const lead = /^(?:@[\w.-]+\s+)*/.exec(value)?.[0] ?? "";
+    const agent = members.find(member => member.kind === "agent" && member.handle.toLowerCase() === "bread") ?? members.find(member => member.kind === "agent");
+    const mentions = lead || (agent ? `@${agent.handle} ` : "");
+    const next = `${mentions}${token} ${value.slice(lead.length).replace(/^\s+/, "")}`;
+    changeValue(next);
+    requestAnimationFrame(() => { inputRef.current?.focus(); inputRef.current?.setSelectionRange(next.length, next.length); });
   };
 
   const matches = useMemo(() => {
@@ -223,11 +319,14 @@ export function Composer({
 
   const submit = () => {
     const text = value.trim();
-    if (text === "" || disabled) return;
-    if (onSend(text) === false) return;
+    if ((text === "" && !ready.length) || disabled || uploading) return;
+    if (onSend(text, ready.length ? ready : undefined) === false) return;
     changeValue("");
+    setPicked([]);
+    if (driveNotice === "connected") setDriveNotice(null);
     setMentionQuery(null);
   };
+  const canSend = !disabled && !uploading && (value.trim() !== "" || ready.length > 0);
 
   return (
     <TooltipProvider delayDuration={400}>
@@ -278,6 +377,31 @@ export function Composer({
           onPointerDown={(event) => { if (event.target === event.currentTarget) inputRef.current?.focus(); }}
         >
           {!disabled && <ChatDraftFormatting key={draftKey} inputRef={inputRef} value={value} />}
+          {driveNotice ? (
+            <div role="status" className="mx-2 mb-1 flex flex-wrap items-center gap-2 rounded-xl bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
+              <span>{driveNotice === "connect" ? "Connect Google Drive to share files with members on other machines. Files are encrypted before they leave this computer."
+                : driveNotice === "waiting" ? "Finish connecting in your browser, then come back here."
+                : driveNotice === "connected" ? "Google Drive is connected. Attach your files."
+                : driveNotice === "unavailable" ? "File sharing in this organization needs Google Drive, which is not set up on this Breadboard yet."
+                : driveNotice}</span>
+              {driveNotice === "connect" ? <button type="button" className="neu-button rounded-lg px-2 py-1 text-xs text-foreground" onClick={() => void connectDrive()}>Connect Google Drive</button> : null}
+              {driveNotice === "waiting" ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : null}
+              <button type="button" aria-label="Dismiss" className="ml-auto rounded-full p-0.5 hover:bg-muted" onClick={() => setDriveNotice(null)}><X className="size-3.5" /></button>
+            </div>
+          ) : null}
+          {picked.length ? (
+            <ul className="mx-2 mb-1 flex flex-wrap gap-1.5" aria-label="Attached files">
+              {picked.map(file => (
+                <li key={file.key} className={cn("flex max-w-full items-center gap-1.5 rounded-lg border border-border/60 bg-background/60 px-2 py-1 text-xs", file.state === "failed" && "border-destructive/60 text-destructive")}
+                  title={file.state === "failed" ? file.error : undefined}>
+                  {file.state === "uploading" ? <Loader2 className="size-3.5 shrink-0 animate-spin" aria-label="Attaching" /> : <Paperclip className="size-3.5 shrink-0" aria-hidden />}
+                  <span className="truncate">{file.name}</span>
+                  <span className="shrink-0 text-muted-foreground">{file.state === "failed" ? "not attached" : sizeLabel(file.size)}</span>
+                  <button type="button" aria-label={`Remove ${file.name}`} className="shrink-0 rounded-full p-0.5 hover:bg-muted" onClick={() => setPicked(current => current.filter(item => item.key !== file.key))}><X className="size-3" /></button>
+                </li>
+              ))}
+            </ul>
+          ) : null}
           <textarea
             ref={inputRef}
             value={value}
@@ -397,6 +521,7 @@ export function Composer({
               <Tooltip disableHoverableContent>
                 <TooltipTrigger asChild>
                   <Button
+                    className={TOOL_BUTTON}
                     aria-label="Mention someone"
                     data-testid="message-insert-mention"
                     disabled={disabled}
@@ -410,13 +535,47 @@ export function Composer({
                 </TooltipTrigger>
                 <TooltipContent>Mention someone</TooltipContent>
               </Tooltip>
+              {/* The Terminal's capability palette. The chosen capability goes right after the message's
+                  @mentions, where the agent that answers reads it as its first instruction. */}
+              <CommandHub
+                open={capabilitiesOpen}
+                onOpenChange={setCapabilitiesOpen}
+                onSelect={item => { setCapabilitiesOpen(false); if (item.kind === "prompt") { changeValue(item.content ?? ""); inputRef.current?.focus(); return; } insertCapability(`/${item.token}`); }}
+                onSelectReference={token => { setCapabilitiesOpen(false); insertCapability(`/${token}`); }}
+                disabled={disabled}
+                compact
+                surface="dashboard_terminal"
+              />
+              {fileMode ? (
+                <>
+                  <input ref={fileRef} type="file" multiple hidden onChange={event => addFiles(event.target.files)} />
+                  <Tooltip disableHoverableContent>
+                    <TooltipTrigger asChild>
+                      <Button
+                        className={TOOL_BUTTON}
+                    aria-label="Attach files"
+                        data-testid="composer-attach"
+                        disabled={disabled || picked.length >= 10}
+                        onClick={() => void attach()}
+                        size="icon"
+                        type="button"
+                        variant="ghost"
+                      >
+                        <Paperclip />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>Attach files</TooltipContent>
+                  </Tooltip>
+                </>
+              ) : null}
               <EmojiPicker
                 onPick={(emoji) => insertAtCaret(emoji)}
                 side="top"
                 align="start"
               >
                 <Button
-                  aria-label="Emoji"
+                  className={TOOL_BUTTON}
+                    aria-label="Emoji"
                   data-testid="composer-emoji"
                   disabled={disabled}
                   size="icon"
@@ -431,7 +590,7 @@ export function Composer({
                   <Button
                     aria-label="Toggle formatting"
                     aria-pressed={showFormatting}
-                    className={cn(showFormatting && "bg-accent text-accent-foreground")}
+                    className={cn(TOOL_BUTTON, showFormatting && "bg-[var(--paper-strong)]")}
                     data-testid="composer-formatting"
                     disabled={disabled}
                     onClick={() => {
@@ -455,7 +614,7 @@ export function Composer({
             <ComposerIntelligence disabled={disabled} />
             <MetalSendButton
               variant="circle"
-              disabled={disabled || value.trim() === ""}
+              disabled={!canSend}
               // Match the surrounding Organization surface and app chrome.
               theme={isDark ? "dark" : "light"}
             >
@@ -463,7 +622,7 @@ export function Composer({
               aria-label="Send message"
               className="rounded-full"
               data-testid="send-message"
-              disabled={disabled || value.trim() === ""}
+              disabled={!canSend}
               onClick={submit}
               size="icon"
               type="button"

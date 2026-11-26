@@ -185,7 +185,7 @@ export function listOrganizations(
 ): Organization[] {
   const rows = database
     .prepare(
-      `SELECT o.id, o.name, o.created_at, m.role
+      `SELECT o.id, o.name, o.image, o.created_at, m.role
        FROM organization_members m
        JOIN organizations o ON o.id = m.organization_id
        WHERE m.user_id = ?
@@ -194,6 +194,7 @@ export function listOrganizations(
     .all(userId) as {
     id: number;
     name: string;
+    image: string | null;
     created_at: string;
     role: string;
   }[];
@@ -201,6 +202,7 @@ export function listOrganizations(
   return rows.map((row) => ({
     id: row.id,
     name: row.name,
+    image: row.image ?? null,
     createdAt: row.created_at,
     role: normalizeRole(row.role),
     members: readMembers(row.id, database),
@@ -276,6 +278,15 @@ export function renameOrganization(
     clean,
     organizationId,
   );
+}
+
+/** A small picture as a data URL: PNG, JPEG or WebP, at most about 45 KB. */
+export function cleanOrganizationImage(value: unknown): string | null {
+  if (value === null || value === "") return null;
+  if (typeof value !== "string" || value.length > 64_000 || !/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/]+=*$/.test(value)) {
+    throw new OrganizationError(400, "Use a PNG, JPEG or WebP picture under 45 KB");
+  }
+  return value;
 }
 
 /** Look someone up the way a person would type them: username or email. */

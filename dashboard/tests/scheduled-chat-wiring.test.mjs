@@ -197,7 +197,8 @@ test("a scheduled run goes through the same authenticated turn pipeline as a per
 
 test("conditional schedules decide privately and publish only a met objective", () => {
   assert.match(runner, /temporary: waitsForObjective/);
-  assert.match(runner, /scheduledObjectiveEvaluationPrompt\(job\.prompt\)/);
+  assert.match(runner, /const prompt = scheduledBotPrompt\(db, job\)/);
+  assert.match(runner, /scheduledObjectiveEvaluationPrompt\(prompt\)/);
   assert.match(runner, /objective\.decision === "pending"[\s\S]{0,220}deleteConversation\(conversation\)/);
   assert.match(runner, /publishObjectiveConversation\(/);
   assert.match(runner, /content: input\.job\.prompt/);

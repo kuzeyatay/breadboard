@@ -7,6 +7,7 @@ import { Readable } from 'node:stream';
 import Database from 'better-sqlite3';
 import { GardenFileStore, gardenFilePath } from '../src/lib/garden-files/store.ts';
 import { gardenFileContentResponse } from '../src/lib/garden-files/content-response.ts';
+import { listSpaceTemplates, createFromSpaceTemplate } from '../src/lib/office/templates.ts';
 
 function fixture(t, limit) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'garden-files-'));
@@ -31,6 +32,21 @@ test('unknown formats and nested Unicode names round-trip without changing bytes
   const again = await put('Research/Δοκιμή/原本.unknown', 'second');
   assert.equal(again.name, '原本 (2).unknown');
   const zero = await put('empty.txt', Buffer.alloc(0)); assert.equal(zero.size, 0);
+});
+
+test('legacy template tiles keep their saved revision when the source is trashed or permanently removed', async t => {
+  const {store,scope,put,database} = fixture(t);
+  const file = await put('Spaces/Original.md','first revision');
+  const changed = store.save(scope,file.id,file.revision,await store.stage(Readable.from(['later content'])));
+  store.trash(scope,file.id,changed.revision);
+  database.exec(`DROP TABLE spaces_templates;
+    CREATE TABLE spaces_templates (id TEXT PRIMARY KEY,user_id INTEGER,name TEXT,file_id TEXT,version INTEGER,extension TEXT,kind TEXT)`);
+  database.prepare("INSERT INTO spaces_templates VALUES ('existing-tile',1,'Shift',?,1,'md','md')").run(file.id);
+  const reopened = new GardenFileStore(database,store.root);
+  database.prepare('DELETE FROM garden_files WHERE id=?').run(file.id);
+  assert.equal(listSpaceTemplates(reopened,1)[0].id,'existing-tile');
+  const copy = await createFromSpaceTemplate(reopened,scope,'existing-tile','New shift');
+  assert.equal(fs.readFileSync(reopened.content(scope,copy.id).path,'utf8'),'first revision');
 });
 
 test('retry is idempotent, failed transfers leave no visible entry or blob', async t => {

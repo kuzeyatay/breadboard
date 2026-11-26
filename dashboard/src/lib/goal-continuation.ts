@@ -7,6 +7,8 @@ import { goalCanContinue, readGoalModeState } from "./goal-mode.ts";
 import { getRuntimeRun, parseRuntimeRunDispatch, type RuntimeRunRow } from "./hermes/run-store.ts";
 import { recordAuditEvent } from "./hermes/runtime-store.ts";
 import type { GoalTurnSnapshot } from "./goal-turn-activity.ts";
+import { livePendingReplySql } from "./conversations/live-pending.ts";
+import { interruptedTurnNote } from "./hermes/interrupted-turn.ts";
 
 /** The composer polls goal state even when this viewer owns no stream. */
 export function latestGoalTurn(conversationId: number, goalId: string): GoalTurnSnapshot | null {
@@ -29,8 +31,8 @@ export function goalContinuationCurrent(conversationId: number, sourceRunId: str
     ORDER BY r.started_at DESC, r.rowid DESC LIMIT 1`)
     .get(conversationId) as { id: string; status: string } | undefined;
   if (latest?.id !== sourceRunId || latest.status === "active") return false;
-  if (db.prepare(`SELECT 1 FROM conversation_messages WHERE conversation_id=? AND status='pending'
-    AND client_message_id<>? LIMIT 1`).get(conversationId, ownClientMessageId)) return false;
+  if (db.prepare(`SELECT 1 FROM conversation_messages pending WHERE pending.conversation_id=? AND ${livePendingReplySql("pending")}
+    AND pending.client_message_id<>? LIMIT 1`).get(conversationId, ownClientMessageId)) return false;
   if (db.prepare(`SELECT 1 FROM conversation_messages WHERE conversation_id=?
     AND json_extract(metadata, '$.externalAgentOutcome')='running' LIMIT 1`).get(conversationId)) return false;
   return !db.prepare(`SELECT 1 FROM hermes_steer_requests q
@@ -67,7 +69,7 @@ async function continueGoal(conversationId: number, sourceRunId?: string): Promi
     .get(conversationId) as RuntimeRunRow | undefined;
   if (!run || !goalContinuationCurrent(conversationId, run.id, goal.goal_id)) return;
   // A pending user answer, delegated result, or approval owns the next turn.
-  if (db.prepare("SELECT 1 FROM conversation_messages WHERE conversation_id=? AND status='pending' LIMIT 1").get(conversationId)) return;
+  if (db.prepare(`SELECT 1 FROM conversation_messages pending WHERE pending.conversation_id=? AND ${livePendingReplySql("pending")} LIMIT 1`).get(conversationId)) return;
   const dispatch = parseRuntimeRunDispatch(run);
   if (!dispatch.goalMode?.enabled) return;
   const { startConversationTurn } = await import("./conversations/turn-service.ts");
@@ -78,7 +80,7 @@ async function continueGoal(conversationId: number, sourceRunId?: string): Promi
     conversation,
     clientMessageId,
     text: "Continue working toward the active conversation goal. Verify the actual result against its full requirements before marking it complete." +
-      (run.status === "error" ? " The previous runtime turn failed. Inspect the preserved files, artifacts and command/job status before doing more work. Resume from verified progress; do not repeat a completed experiment, download, publication or other side effect merely because its response was interrupted." : ""),
+      (run.status === "error" ? " " + interruptedTurnNote(run, dispatch.clientMessageId, conversationId) : ""),
     surface: conversation.surface,
     surfaceContext: dispatch.goalMode.context,
     model: dispatch.modelIdentity?.modelID ?? dispatch.model?.modelID,

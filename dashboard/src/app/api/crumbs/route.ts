@@ -1,8 +1,8 @@
 import { requireUserId } from "@/lib/server-auth";
 import { apiErrorResponse, readJsonBody } from "@/lib/hermes/route-helpers.ts";
 import { requireSameOrigin } from "@/lib/request-origin.ts";
-import { buzzBridge, crumbs, crumbsErrorResponse } from "@/lib/crumbs/service.ts";
-import { AnnotationError, browserAnnotationFeed, browserAnnotationMine } from "@/lib/browser-annotations-store.ts";
+import { crumbs, crumbsErrorResponse, orgListener } from "@/lib/crumbs/service.ts";
+import { AnnotationError, browserAnnotationMine } from "@/lib/browser-annotations-store.ts";
 import db from "@/lib/db";
 
 export const dynamic = "force-dynamic";
@@ -26,8 +26,6 @@ export async function GET(request: Request) {
       case "typeahead": return json({ people: await crumbs.typeahead(query.get("q")) });
       case "feed": {
         const scope = query.get("scope") ?? "following";
-        // A Breadboard organization's crumbs live in its crumbs room on this machine, not on the network.
-        if (scope.startsWith("room:")) return json({ items: browserAnnotationFeed(db, userId, scope), before: null });
         const page = await crumbs.feed(userId, scope, query.get("before"));
         if (scope !== "mine" || query.get("before")) return json(page);
         // Mine is everything this account wrote, wherever it was left: the network's crumbs, and the ones kept here.
@@ -35,14 +33,14 @@ export async function GET(request: Request) {
         return json({ ...page, items });
       }
       case "organizations": {
-        const local = db.prepare(`SELECT o.name, 'room:' || r.public_id AS scope FROM organizations o JOIN organization_members m ON m.organization_id=o.id AND m.user_id=?
-          JOIN buzz_rooms r ON r.organization_id=o.id AND r.slug='crumbs' AND r.archived_at IS NULL ORDER BY o.name COLLATE NOCASE`).all(userId) as Array<{ name: string; scope: string }>;
+        // Crumbs organizations: encrypted on the network, readable by their members anywhere.
         const remote = crumbs.status(userId).signedIn ? await crumbs.listOrgs(userId).catch(() => []) : [];
-        const unconnected = remote.filter(org => !buzzBridge.crumbsRoomOf(userId, org.id)).map(org => ({ name: org.name, scope: `org:${org.id}` }));
-        return json({ organizations: [...local, ...unconnected] });
+        return json({ organizations: remote.map(org => ({ name: org.name, scope: `org:${org.id}` })) });
       }
       case "follows": return json(await crumbs.follows(userId));
-      case "orgs": return json({ orgs: (await crumbs.listOrgs(userId)).map(org => ({ ...org, crumbsRoom: buzzBridge.crumbsRoomOf(userId, org.id) })), local: buzzBridge.localOrganizations(userId) });
+      // What people you follow highlighted on the page the browser has open.
+      case "page-follows": return json(await crumbs.followedOnPage(userId, query.get("url")));
+      case "orgs": return json({ orgs: await crumbs.listOrgs(userId) });
       case "org": return json(await crumbs.orgDetail(userId, query.get("id") ?? ""));
       case "notes": return json(await crumbs.listNotes(userId, query.get("id")));
       case "rooms": return json({ rooms: await crumbs.listRooms(userId, query.get("id") ?? "") });
@@ -62,15 +60,12 @@ export async function POST(request: Request) {
       case "feed-preference": crumbs.setFeedPreference(userId, body.enabled); return json(crumbs.status(userId));
       case "feed-feedback": crumbs.feedFeedback(userId, body); return json({ ok: true });
       case "sign-in": return json(await crumbs.startSignIn(userId, { handle: body.handle, signup: body.signup === true, origin: requestOrigin(request), returnTo: body.returnTo }));
-      case "sign-out": await crumbs.signOut(userId); return json(crumbs.status(userId));
-      case "visibility": crumbs.setDefaultVisibility(userId, body.value); return json(crumbs.status(userId));
-      case "servers": crumbs.setServers({ indexer: body.indexer, orgStore: body.orgStore, publicMode: body.publicMode }); return json(crumbs.status(userId));
+      case "sign-out": orgListener.stop(userId); await crumbs.signOut(userId); return json(crumbs.status(userId));
       case "ai-flag": return json(await crumbs.aiFlag(userId, body.url, body.on));
       case "follow": return json(await crumbs.follow(userId, body.who, body.on !== false));
       case "delete": await crumbs.deleteMine(userId, body.id); return json({ deleted: true });
       case "handle": return json(await crumbs.claimHandle(userId, body.name));
       case "org-create": return json(await crumbs.createOrg(userId, body.name));
-      case "org-connect": await buzzBridge.connectOrganization(userId, Number(body.organization)); return json({ connected: true });
       case "org-add": return json(await crumbs.addOrgMember(userId, org, body.who, body.role));
       case "org-remove": return json(await crumbs.removeOrgMember(userId, org, body.did));
       case "org-leave": await crumbs.leaveOrg(userId, org); return json({ left: true });

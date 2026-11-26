@@ -238,8 +238,11 @@ export function hardenWebContents(
     // The account-linking flow returns through a localhost callback. Start
     // it in the system browser so federated sign-in uses that browser session.
     const target = new URL(url);
-    const accountLogin = target.origin === "https://auth.openai.com" &&
-      target.pathname === "/oauth/authorize" && !target.username && !target.password;
+    // Google Drive's consent page (organization file sharing) returns the same
+    // way, and Google refuses OAuth inside an embedded browser anyway.
+    const accountLogin = !target.username && !target.password && (
+      (target.origin === "https://auth.openai.com" && target.pathname === "/oauth/authorize") ||
+      (target.origin === "https://accounts.google.com" && target.pathname === "/o/oauth2/v2/auth"));
     if (!accountLogin && isSafeBrowserUrl(url) && handlers.onOpenExternalTab) {
       handlers.onOpenExternalTab(url, background);
       return;

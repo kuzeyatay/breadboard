@@ -8,6 +8,8 @@
 
 import crypto from "node:crypto";
 import type Database from "better-sqlite3";
+import { botHandle } from "../bots/mentions.ts";
+import { mentionedHandles } from "./mentions.ts";
 
 import {
   BREAD_ACCENT,
@@ -117,12 +119,7 @@ export function canonicalRoomSlug(name: string): string {
  * slug, which is already canonical and already unique in the roster.
  */
 export function canonicalHandle(value: string): string {
-  const handle = value
-    .normalize("NFKD")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 40);
+  const handle = botHandle(value).slice(0, 40);
   return handle || "member";
 }
 
@@ -973,13 +970,7 @@ function toHit(row: HitRow, handles: ReadonlySet<string>): BuzzMessageHit {
 /** Whether a body names one of these handles — `@ada`, not `ada@example.com`. */
 function mentionsAnyHandle(body: string, handles: ReadonlySet<string>): boolean {
   if (handles.size === 0) return false;
-  const pattern = /(^|[^\w@.])@([a-z0-9][a-z0-9-]{0,39})/gi;
-  let match = pattern.exec(body);
-  while (match) {
-    if (handles.has(match[2].toLowerCase())) return true;
-    match = pattern.exec(body);
-  }
-  return false;
+  return mentionedHandles(body).some(handle => handles.has(handle));
 }
 
 /** Every handle the reader posts under, across their rooms. */

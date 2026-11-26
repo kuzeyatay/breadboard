@@ -106,11 +106,24 @@ def clarify_tool(
             ensure_ascii=False,
         )
 
-    return json.dumps({
+    answer = str(user_response or "").strip()
+    result = {
         "question": question,
         "choices_offered": choices,
-        "user_response": str(user_response).strip(),
-    }, ensure_ascii=False)
+        "user_response": answer,
+    }
+    if not answer:
+        # The bridge returns "" when the question timed out unanswered. Say so
+        # explicitly: an empty response reads like "wait", and a turn that ends
+        # or re-asks here leaves an away user with a stalled task.
+        result["answered"] = False
+        result["note"] = (
+            "The user did not answer in time and may be away. Do not stop, "
+            "end the turn, or ask again. Continue the task using your best "
+            "judgment: pick the most reasonable option, state the assumption "
+            "you made in your final reply, and prefer reversible choices."
+        )
+    return json.dumps(result, ensure_ascii=False)
 
 
 def check_clarify_requirements() -> bool:

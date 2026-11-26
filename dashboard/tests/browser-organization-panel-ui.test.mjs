@@ -97,7 +97,7 @@ test('Crumbs: sign in, public and encrypted crumbs, moderation, AI, feed and acc
             case 'typeahead': return json({ people: await crumbs.typeahead(query.get('q')) });
             case 'feed': return json(await crumbs.feed(1, query.get('scope') ?? 'following', query.get('before')));
             case 'follows': return json(await crumbs.follows(1));
-            case 'orgs': return json({ orgs: await crumbs.listOrgs(1), local: [] });
+            case 'orgs': return json({ orgs: await crumbs.listOrgs(1) });
             case 'organizations': return json({ organizations: crumbs.status(1).signedIn ? (await crumbs.listOrgs(1)).map(org => ({ name: org.name, scope: `org:${org.id}` })) : [] });
             case 'org': return json(await crumbs.orgDetail(1, query.get('id') ?? ''));
             case 'notes': return json(await crumbs.listNotes(1, query.get('id')));
@@ -109,10 +109,8 @@ test('Crumbs: sign in, public and encrypted crumbs, moderation, AI, feed and acc
           switch (body.action) {
             case 'sign-in': return json(await crumbs.startSignIn(1, { handle: body.handle, signup: body.signup === true, origin: url.origin, returnTo: body.returnTo }));
             case 'sign-out': await crumbs.signOut(1); return json(crumbs.status(1));
-            case 'visibility': crumbs.setDefaultVisibility(1, body.value); return json(crumbs.status(1));
             case 'feed-preference': crumbs.setFeedPreference(1, body.enabled); return json(crumbs.status(1));
             case 'feed-feedback': crumbs.feedFeedback(1, body); return json({ ok: true });
-            case 'servers': crumbs.setServers({ indexer: body.indexer, orgStore: body.orgStore, publicMode: body.publicMode }); return json(crumbs.status(1));
             case 'follow': return json(await crumbs.follow(1, body.who, body.on !== false));
             case 'delete': await crumbs.deleteMine(1, body.id); return json({ deleted: true });
             case 'handle': return json(await crumbs.claimHandle(1, body.name));
@@ -259,9 +257,10 @@ test('Crumbs: sign in, public and encrypted crumbs, moderation, AI, feed and acc
   await panelB.getByText('The page says the study ran for twelve weeks.').waitFor();
   await shot(panelB, '5-panel-thread-with-check');
   await panelB.getByRole('button', { name: 'This page' }).click();
-  await panelB.getByRole('button', { name: 'Summarize the discussion' }).click();
-  await panelB.getByText(/Readers mostly agree/).waitFor();
-  await shot(panelB, '6-panel-summary');
+  // The page view lists the passage's crumb as a post replying to its text, with no summary button.
+  await panelB.getByRole('button', { name: /^Open \d+ crumbs? on/ }).first().waitFor();
+  assert.equal(await panelB.getByRole('button', { name: 'Summarize the discussion' }).count(), 0);
+  await shot(panelB, '6-panel-passage-replies');
   // Community notes: Bob adds context to Alice's crumb from the feed; it shows once a reader rates it helpful.
   const feedB = await b.open('/crumbs');
   await feedB.getByRole('tab', { name: 'Everyone' }).click();
@@ -332,8 +331,8 @@ test('Crumbs: sign in, public and encrypted crumbs, moderation, AI, feed and acc
   await accountA.getByRole('combobox', { name: 'Handle to follow' }).fill('bob.test');
   await accountA.getByRole('button', { name: 'Follow', exact: true }).click();
   await accountA.getByRole('button', { name: 'Unfollow bob' }).waitFor();
-  await accountA.getByRole('radio', { name: 'Public', exact: true }).click();
-  await accountA.waitForFunction(() => document.querySelector('[role=radiogroup][aria-label="Default audience"] [aria-checked=true]')?.textContent === 'Public');
+  // Settings carry no audience, server or Bluesky-posting choices, and no local organizations to connect.
+  for (const gone of ['Default audience', 'Servers', 'Bluesky posts', 'Your Breadboard organizations']) assert.equal(await accountA.getByText(gone).count(), 0, gone);
   const feedPage = await a.open('/crumbs');
   await feedPage.getByText('I have a reservation about this.', { exact: true }).waitFor();
   assert.equal(await feedPage.locator('article q').first().innerText(), QUOTE);
@@ -359,9 +358,12 @@ test('Crumbs: sign in, public and encrypted crumbs, moderation, AI, feed and acc
   await feedPage.waitForTimeout(400);
   await shot(feedPage, '9-feed');
   const opened = a.context.waitForEvent('page');
-  await bobsCrumb.getByRole('button', { name: /A quieter internet/ }).click();
+  // The feed is websites: the page heads its card, and opens the page itself.
+  const siteCard = feedPage.getByRole('region', { name: 'A quieter internet' });
+  assert.ok(await siteCard.locator('article').filter({ hasText: 'I have a reservation about this.' }).count(), 'the crumb sits under the website it is on');
+  await siteCard.getByRole('button', { name: /A quieter internet/ }).click();
   const passage = await opened;
-  assert.equal(passage.url(), 'https://example.com/article#:~:text=A%20more%20considered%20way%20to%20browse');
+  assert.equal(passage.url(), PAGE);
   await passage.close();
   // Your own crumbs are on your profile, behind your photo.
   await feedPage.getByRole('button', { name: 'Your profile' }).click();
@@ -401,10 +403,10 @@ test('Crumbs: sign in, public and encrypted crumbs, moderation, AI, feed and acc
   await accountA.reload();
   assert.equal(await toggle.isChecked(), false);
   await toggle.check();
-  // The default visibility chosen above now opens the panel on Public.
+  // The panel opens on the audience last used: here the organization.
   await panelA.reload();
-  await panelA.getByRole('radio', { name: 'Public' }).waitFor();
-  await panelA.waitForFunction(() => document.querySelector('[role=radio][aria-checked=true]')?.textContent === 'Public');
+  await panelA.getByRole('radio', { name: 'Organization' }).waitFor();
+  await panelA.waitForFunction(() => document.querySelector('[role=radio][aria-checked=true]')?.textContent === 'Organization');
 
   // 7. Narrow window, closing, signing out.
   await panelA.setViewportSize({ width: 540, height: 700 });

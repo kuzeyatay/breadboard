@@ -1268,7 +1268,7 @@ export default function DashboardClient({
             }}
             className="rounded p-1 text-gray-600 transition-colors hover:bg-gray-800 hover:text-white"
             aria-label={`Export cluster ${folderLabel(folder)}`}
-            title="Export this cluster as a .cluster file"
+            title="Export this cluster with its Gardens’ current private and shared uploads"
           >
             {transferBusy === `cluster:${folder}` ? (
               <Spinner className="h-3.5 w-3.5" />

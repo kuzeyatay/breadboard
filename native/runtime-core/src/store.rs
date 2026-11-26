@@ -33,7 +33,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
-const SCHEMA_VERSION: i64 = 14;
+const SCHEMA_VERSION: i64 = 15;
 const JOB_COLUMNS: &str = "job_id, job_type, worker_kind, resource_class, owner_principal, user_id, garden_id, conversation_id, state, stage, attempt, worker_instance_id, input_manifest_path, workspace_path, checkpoint_path, result_path, created_at, started_at, updated_at, finished_at, last_heartbeat_at, last_worker_sequence, progress_current, progress_total, failure_code, failure_message, cancellation_requested, idempotency_key, request_digest, (SELECT evidence.resource FROM runtime_job_resource_exhaustion evidence WHERE evidence.job_id=runtime_jobs.job_id), (SELECT evidence.required_headroom_mb FROM runtime_job_resource_exhaustion evidence WHERE evidence.job_id=runtime_jobs.job_id), (SELECT evidence.available_headroom_mb FROM runtime_job_resource_exhaustion evidence WHERE evidence.job_id=runtime_jobs.job_id)";
 const ADMISSION_RESOURCE_EXHAUSTED_FAILURE_CODE: &str = "BREADBOARD_RESOURCE_EXHAUSTED";
 const ADMISSION_RESOURCE_EXHAUSTED_FAILURE_MESSAGE: &str =
@@ -5110,8 +5110,52 @@ fn query_owned_events_after(
             })
         },
     )?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(StoreError::from)
+    let mut events = rows.collect::<Result<Vec<_>, _>>().map_err(StoreError::from)?;
+    // Old settled jobs keep their liveness pings packed in one row; replay
+    // merges them back in sequence order, so a reader sees the original stream.
+    let packed: Option<(i64, Vec<u8>)> = connection
+        .query_row(
+            "SELECT raw_bytes, data FROM runtime_job_event_archive
+             WHERE job_id=?1 AND last_sequence>?5
+               AND EXISTS (
+                   SELECT 1 FROM runtime_jobs
+                   WHERE runtime_jobs.job_id=runtime_job_event_archive.job_id
+                     AND owner_principal=?2 AND garden_id IS ?3 AND conversation_id IS ?4
+               )",
+            params![job_id, owner.principal(), garden_id, conversation_id, after_sequence],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    if let Some((raw_bytes, data)) = packed {
+        let limit = usize::try_from(bounded_limit).unwrap_or(0);
+        for event in crate::storage_maintenance::unpack_archived_events(&data, raw_bytes)? {
+            if event.sequence <= after_sequence {
+                continue;
+            }
+            if event.payload_json.len() > MAX_PROTOCOL_LINE_BYTES {
+                return Err(StoreError::CorruptState("archived event payload is oversized".into()));
+            }
+            events.push(JobEventRecord {
+                sequence: event.sequence,
+                job_id: job_id.to_string(),
+                attempt: u32::try_from(event.attempt)
+                    .map_err(|_| StoreError::CorruptState("archived event attempt is invalid".into()))?,
+                worker_instance_id: event.worker_instance_id,
+                worker_sequence: event
+                    .worker_sequence
+                    .map(u64::try_from)
+                    .transpose()
+                    .map_err(|_| StoreError::CorruptState("archived worker sequence is invalid".into()))?,
+                event_type: event.event_type,
+                payload: serde_json::from_str(&event.payload_json)
+                    .map_err(|_| StoreError::CorruptState("archived event payload is not JSON".into()))?,
+                created_at: event.created_at,
+            });
+        }
+        events.sort_by_key(|event| event.sequence);
+        events.truncate(limit);
+    }
+    Ok(events)
 }
 
 fn query_bound_job_input(connection: &Connection, job: &JobRecord) -> Result<Vec<u8>, StoreError> {
@@ -6246,6 +6290,13 @@ fn initialize_schema(connection: &mut Connection) -> Result<(), StoreError> {
         transaction.execute_batch(crate::storage_maintenance::SCHEMA)?;
         version = 14;
     }
+    if version == 14 {
+        // V15 adds only the lossless archive of settled jobs' liveness pings
+        // and its scan cursor; no existing table is rebuilt.
+        validate_storage_schema(&transaction, 14, false)?;
+        transaction.execute_batch(crate::storage_maintenance::SCHEMA_V15)?;
+        version = 15;
+    }
     if version != SCHEMA_VERSION {
         return Err(StoreError::UnsupportedSchemaVersion {
             found: version,
@@ -6260,16 +6311,29 @@ fn initialize_schema(connection: &mut Connection) -> Result<(), StoreError> {
             supported: SCHEMA_VERSION,
         });
     }
+    validate_storage_schema(&transaction, SCHEMA_VERSION, true)?;
+    transaction.commit()?;
+    Ok(())
+}
+
+fn validate_storage_schema(connection: &Connection, version: i64, archive: bool) -> Result<(), StoreError> {
     let mut storage_objects = SCHEMA_V13_OBJECTS.to_vec();
     storage_objects.extend_from_slice(&["runtime_storage_watermarks", "runtime_storage_proofs", "runtime_storage_daily", "runtime_storage_cursor"]);
-    validate_schema_v13_shape_for(&transaction, 14, &storage_objects)?;
+    if archive {
+        storage_objects.extend_from_slice(&["runtime_job_event_archive", "runtime_storage_archive_cursor"]);
+    }
+    validate_schema_v13_shape_for(connection, version, &storage_objects)?;
     for (kind,name) in [
         ("table","runtime_storage_watermarks"), ("table","runtime_storage_proofs"),
         ("table","runtime_storage_daily"), ("table","runtime_storage_cursor"),
     ] {
-        require_schema_object_matches(&transaction,14,kind,name,crate::storage_maintenance::SCHEMA)?;
+        require_schema_object_matches(connection,version,kind,name,crate::storage_maintenance::SCHEMA)?;
     }
-    transaction.commit()?;
+    if archive {
+        for name in ["runtime_job_event_archive", "runtime_storage_archive_cursor"] {
+            require_schema_object_matches(connection, version, "table", name, crate::storage_maintenance::SCHEMA_V15)?;
+        }
+    }
     Ok(())
 }
 
@@ -12676,15 +12740,15 @@ mod tests {
         let future_path = directory.path().join("future.sqlite3");
         let connection = Connection::open(&future_path).unwrap();
         connection
-            .execute_batch("PRAGMA user_version = 15;")
+            .execute_batch(&format!("PRAGMA user_version = {};", SCHEMA_VERSION + 1))
             .unwrap();
         drop(connection);
         assert!(matches!(
             JobStore::open_for_test(future_path),
             Err(StoreError::UnsupportedSchemaVersion {
-                found: 15,
+                found,
                 supported: SCHEMA_VERSION
-            })
+            }) if found == SCHEMA_VERSION + 1
         ));
 
         let malformed_path = directory.path().join("malformed.sqlite3");
@@ -12722,5 +12786,107 @@ mod tests {
                 rusqlite::Error::FromSqlConversionFailure(_, _, _)
             ))
         ));
+    }
+}
+
+#[cfg(test)]
+mod event_archive_tests {
+    use super::*;
+
+    const DAY: i64 = 86_400_000;
+
+    fn now() -> i64 {
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64
+    }
+
+    fn insert_person_job(store: &JobStore, id: &str, state: &str, updated_at: i64) {
+        let db = store.connection.lock().unwrap();
+        db.execute("INSERT INTO runtime_jobs(job_id,job_type,worker_kind,resource_class,owner_principal,user_id,state,input_manifest_path,workspace_path,checkpoint_path,result_path,created_at,updated_at,finished_at,idempotency_key,request_digest)
+            VALUES(?1,'learn','learn','lightweight','user:1',1,?2,'input.json','workspace','checkpoint.json','result.json',?3,?3,?3,?1,?4)",
+            params![id, state, updated_at, "b".repeat(64)]).unwrap();
+        for i in 0..60_i64 {
+            let kind = match i { 59 => "failed", i if i % 10 == 5 => "checkpoint", i if i % 3 == 0 => "progress", _ => "heartbeat" };
+            db.execute("INSERT INTO runtime_job_events(job_id,attempt,worker_instance_id,worker_sequence,event_type,payload_json,created_at) VALUES(?1,1,'worker_1',?2,?3,?4,?5)",
+                params![id, i + 1, kind, format!(r#"{{"sequence":{},"stage":"learn-rebuild","type":"{kind}","note":"é ✓"}}"#, i + 1), updated_at - 60_000 + i]).unwrap();
+        }
+    }
+
+    fn replay(store: &JobStore, id: &str, after: i64, limit: i64) -> Vec<JobEventRecord> {
+        let db = store.connection.lock().unwrap();
+        query_owned_events_after(&db, &JobOwner::user(1).unwrap(), None, None, id, after, limit).unwrap()
+    }
+
+    fn paged(store: &JobStore, id: &str, page: i64) -> Vec<JobEventRecord> {
+        let mut all = Vec::new();
+        loop {
+            let after = all.last().map_or(0, |event: &JobEventRecord| event.sequence);
+            let next = replay(store, id, after, page);
+            if next.is_empty() {
+                return all;
+            }
+            all.extend(next);
+        }
+    }
+
+    fn count(store: &JobStore, sql: &str, id: &str) -> i64 {
+        store.connection.lock().unwrap().query_row(sql, [id], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn old_settled_pings_are_packed_losslessly_and_replay_is_unchanged() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = RuntimePaths::new(directory.path(), directory.path(), directory.path()).unwrap();
+        let store = JobStore::open_for_test(directory.path().join("runtime.sqlite3")).unwrap();
+        insert_person_job(&store, "old", "failed", now() - 40 * DAY);
+        insert_person_job(&store, "recent", "failed", now() - DAY);
+        let before = replay(&store, "old", 0, 1_000);
+        let recent_before = replay(&store, "recent", 0, 1_000);
+        assert_eq!(before.len(), 60);
+
+        let report = store.storage_maintenance(&paths).unwrap();
+        assert_eq!(report.events_archived, 53, "every heartbeat and progress row of the old job");
+
+        // Only the pings left the row table; outcomes stay as rows.
+        let live = "SELECT count(*) FROM runtime_job_events WHERE job_id=?1";
+        assert_eq!(count(&store, live, "old"), 7);
+        assert_eq!(count(&store, "SELECT count(*) FROM runtime_job_event_archive WHERE job_id=?1", "old"), 1);
+        // A job settled yesterday is untouched.
+        assert_eq!(count(&store, live, "recent"), 60);
+        assert_eq!(replay(&store, "recent", 0, 1_000), recent_before);
+
+        // Replay is identical: whole, from the middle, and in small pages.
+        assert_eq!(replay(&store, "old", 0, 1_000), before);
+        let middle = before[29].sequence;
+        assert_eq!(replay(&store, "old", middle, 7), before[30..37].to_vec());
+        assert_eq!(paged(&store, "old", 7), before);
+        assert_eq!(paged(&store, "old", 1), before);
+
+        // Running again finds nothing new and changes nothing.
+        assert_eq!(store.storage_maintenance(&paths).unwrap().events_archived, 0);
+        assert_eq!(replay(&store, "old", 0, 1_000), before);
+
+        // The archive is owned: another person sees nothing, and it goes with its job.
+        {
+            let db = store.connection.lock().unwrap();
+            assert!(query_owned_events_after(&db, &JobOwner::user(2).unwrap(), None, None, "old", 0, 1_000).unwrap().is_empty());
+            db.execute("DELETE FROM runtime_jobs WHERE job_id='old'", []).unwrap();
+        }
+        assert_eq!(count(&store, "SELECT count(*) FROM runtime_job_event_archive WHERE job_id=?1", "old"), 0);
+    }
+
+    #[test]
+    fn a_version_14_store_upgrades_in_place_and_keeps_its_history() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("runtime.sqlite3");
+        {
+            let store = JobStore::open_for_test(&database).unwrap();
+            insert_person_job(&store, "kept", "succeeded", now() - 40 * DAY);
+            store.connection.lock().unwrap().execute_batch(
+                "DROP TABLE runtime_job_event_archive; DROP TABLE runtime_storage_archive_cursor; PRAGMA user_version=14;").unwrap();
+        }
+        let store = JobStore::open_for_test(&database).unwrap();
+        let version: i64 = store.connection.lock().unwrap().query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, 15);
+        assert_eq!(replay(&store, "kept", 0, 1_000).len(), 60);
     }
 }

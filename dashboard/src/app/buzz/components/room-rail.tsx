@@ -12,7 +12,7 @@
 // rail was spending its quietest corner telling that account its own name.
 
 import { useSyncExternalStore } from "react";
-import { Bot, Hash, Inbox, Lock, Plus, Search } from "lucide-react";
+import { Bot, Hash, Inbox, Lock, Plus, Search, Settings } from "lucide-react";
 
 import CrumbsIcon from "@/app/components/crumbs-icon";
 import { cn } from "@/app/buzz/lib/cn";
@@ -47,6 +47,7 @@ export function RoomRail({
   agentCount,
   onSelect,
   onCreateRoom,
+  onOpenSettings,
   onSearch,
   onOpenView,
   onOpenWorkspace,
@@ -60,6 +61,8 @@ export function RoomRail({
   agentCount: number;
   onSelect: (publicId: string) => void;
   onCreateRoom: () => void;
+  /** The organization's settings: its picture and name. */
+  onOpenSettings?: () => void;
   onSearch: () => void;
   onOpenView: (view: Exclude<RailView, "room">) => void;
   /** Open a Garden shared with this organization in its own workspace screen. */
@@ -211,6 +214,17 @@ export function RoomRail({
             <Plus className="h-4 w-4" />
             <span className="sr-only">New room</span>
           </SidebarGroupAction>
+          {community && onOpenSettings ? (
+            <SidebarGroupAction
+              onClick={onOpenSettings}
+              title="Organization settings"
+              className="sidebar-section-action right-10"
+              data-testid="organization-settings"
+            >
+              <Settings className="h-4 w-4" />
+              <span className="sr-only">Organization settings</span>
+            </SidebarGroupAction>
+          ) : null}
           <SidebarMenu>{channels.map(roomRow)}</SidebarMenu>
         </SidebarGroup>
 

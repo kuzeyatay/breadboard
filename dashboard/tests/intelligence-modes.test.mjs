@@ -94,7 +94,7 @@ test("the Intelligence menu overrides the profile fallback locally", () => {
 });
 
 test("the composer renders modes from the active model", () => {
-  const composer = source("src/app/components/assistant-composer.tsx");
+  const composer = (source("src/app/components/assistant-intelligence-menu.tsx") + source("src/app/components/assistant-composer.tsx"));
   assert.match(composer, /intelligenceModes\?: IntelligenceMode\[\]/);
   assert.match(composer, /effortOptions\.map/);
 });

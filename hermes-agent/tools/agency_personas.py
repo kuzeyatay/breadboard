@@ -30,7 +30,7 @@ _index_root: Optional[str] = None
 
 _FRONTMATTER_RE = re.compile(r"^﻿?---\s*\n(.*?)\n---\s*\n?(.*)$", re.DOTALL)
 _NAME_RE = re.compile(r"^name:\s*(.+)$", re.MULTILINE)
-_PERSONA_TAG_RE = re.compile(r"^\s*\[persona:\s*([a-z0-9][a-z0-9-]*)\]\s*", re.IGNORECASE)
+_PERSONA_TAG_RE = re.compile(r"^\s*\[persona:\s*(bot-[^\s\[\]/\\]{1,60}|[a-z0-9][a-z0-9-]*)\]\s*", re.IGNORECASE)
 
 _MAX_PERSONA_BODY_CHARS = 12_000
 
@@ -48,6 +48,10 @@ def _agency_root() -> Optional[str]:
 
 
 def _normalize_slug(value: str) -> str:
+    if value and value.lower().startswith("bot-"):
+        handle = unicodedata.normalize("NFC", value[4:]).lower()
+        if handle and all(c == "-" or unicodedata.category(c)[0] in "LMN" for c in handle):
+            return "bot-" + handle[:60]
     normalized = unicodedata.normalize("NFKD", value or "").lower()
     normalized = re.sub(r"[^a-z0-9]+", "-", normalized)
     normalized = re.sub(r"^-+|-+$", "", normalized)

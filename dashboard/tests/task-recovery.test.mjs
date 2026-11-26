@@ -259,3 +259,52 @@ test('failed CAD and video delegates hand back for repair, while Stop and denial
     assert.match(agentLaunchContinuationMessage({agentName:'Parametric CAD',outcome,content}),/Do not relaunch it without being asked/);
   }
 });
+
+test('a recovery after a delivered answer is told to follow up, not repeat the answer', () => {
+  const failed = setup();
+  assert.doesNotMatch(prepareTaskRecovery(failed.conversation.id,failed.run.id).surfaceContext.authorizedContext,/stays visible/);
+  const conversation=createConversation({userId:1,surface:'dashboard_terminal'});
+  const session=createRuntimeSession({conversationId:conversation.id,surface:conversation.surface,userId:1,
+    chatSessionId:null,agentName:'breadboard-assistant',clusterId:null,gardenId:null,pageSlug:null,
+    workspaceKey:conversation.public_id,activeDirectory:directory,filesystemMode:'restricted'});
+  const id=`delivered-${conversation.id}`;
+  reserveConversationTurn({conversation,clientMessageId:id,surface:conversation.surface,content:'Make the slide.'});
+  const run=beginRuntimeRun({runtimeSessionId:session.id,instruction:'Make the slide.',dispatch:{clientMessageId:id,
+    taskRecovery:{request:'Make the slide.',rootClientMessageId:id,turn:0}}});
+  completeAssistantMessage({conversationId:conversation.id,clientMessageId:id,content:'I could not save the slide.'});
+  const outcome=recordTaskRecoveryOutcome({runId:run.id,status:'idle',
+    tools:[{toolName:'office_run',success:false,failure:{code:'task_tool_failed',message:'Tool failed'}}]});
+  assert.equal(outcome.pending,true);
+  finishRuntimeRun(run.id,'completed');
+  assert.match(prepareTaskRecovery(conversation.id,run.id).surfaceContext.authorizedContext,/delivered and stays visible to the person\. Do not repeat it/);
+});
+
+test('an orphaned pending reply left by a crash does not block recovery forever, a live one still does', () => {
+  const s = setup();
+  const strand = (updatedAt) => db.prepare(`UPDATE conversation_messages SET status='pending', updated_at=?
+    WHERE conversation_id=? AND client_message_id=? AND role='assistant'`).run(updatedAt, s.conversation.id, s.clientMessageId);
+  // Two months old, no run active: an orphan (five real chats held one).
+  strand('2026-09-27 18:24:46');
+  assert.equal(taskRecoveryCurrent(s.conversation.id, s.run.id), true);
+  // Changed moments ago: dispatch or live progress may still own it.
+  strand(new Date().toISOString().replace('T', ' ').slice(0, 19));
+  assert.equal(taskRecoveryCurrent(s.conversation.id, s.run.id), false);
+});
+
+test('an interrupted turn that saved nothing is not sent to inspect files, and keeps its last plan', async () => {
+  const { interruptedTurnNote } = await import('../src/lib/hermes/interrupted-turn.ts');
+  const { recordAuditEvent } = await import('../src/lib/hermes/runtime-store.ts');
+  const s = setup();
+  db.prepare(`UPDATE conversation_messages SET metadata=json_set(COALESCE(metadata,'{}'), '$.progressNotes', json(?))
+    WHERE conversation_id=? AND client_message_id=? AND role='assistant'`)
+    .run(JSON.stringify(['I will test whether one deterministic generator covers the filters.']), s.conversation.id, s.clientMessageId);
+  const run = getRuntimeRun(s.run.id);
+  // P vs NP, 2026-11-26: a 26-minute reasoning turn cut off by a restart.
+  const quiet = interruptedTurnNote(run, s.clientMessageId, s.conversation.id);
+  assert.match(quiet, /nothing on disk to inspect and nothing is missing/);
+  assert.match(quiet, /last stated plan was: "I will test whether one deterministic generator/);
+  assert.equal(prepareTaskRecovery(s.conversation.id, s.run.id).surfaceContext.authorizedContext.includes('nothing on disk to inspect'), true);
+  recordAuditEvent({ eventType: 'terminal.command_completed', runtimeSessionId: s.session.id, userId: 1,
+    payload: { runId: s.run.id, exitCode: 0 } });
+  assert.match(interruptedTurnNote(run, s.clientMessageId, s.conversation.id), /Inspect what it saved/);
+});

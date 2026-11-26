@@ -21,7 +21,7 @@ export function conversationOriginLabel(origin: ConversationOrigin): string {
 /** The garden's own chat rail. */
 export const WORKSPACE_ORIGIN_LABEL = "Workspace";
 /** The Assistant inside a garden's Quartz reader. */
-export const EXPLORE_ASSISTANT_ORIGIN_LABEL = "Explore Assistant";
+export const EXPLORE_ASSISTANT_ORIGIN_LABEL = "Explore";
 export const PDF_ASSISTANT_ORIGIN_LABEL = "PDF Assistant";
 
 /**

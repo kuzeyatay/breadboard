@@ -18,6 +18,7 @@ const stubs = {
   "./mcp-connections.ts": `
     const state = () => globalThis.__mcpInstallerTest;
     export const listMcpConnections = () => state().saved;
+    export const getMcpConnectionBySlug = (user, slug) => state().saved.find(row=>row.userId === user && row.slug === slug);
     export const mcpSlug = value => value.toLowerCase().replace(/[^a-z0-9_-]+/g, '-');
     export const parseMcpConfig = value => value;
     export const runtimeMcpConfig = value => value;

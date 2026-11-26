@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -19,7 +20,10 @@ test("a file over 512 MiB exports and decompresses intact through bounded reads"
   const filename = path.join(root, "large.bin");
   const size = 513 * 1024 * 1024;
   const tail = Buffer.from("garden-export-end");
-  const fd = fs.openSync(filename, "w");
+  fs.writeFileSync(filename, "");
+  // Windows allocates a truncated file in full unless it is marked sparse.
+  if (process.platform === "win32") execFileSync("fsutil", ["sparse","setflag",filename], {windowsHide:true});
+  const fd = fs.openSync(filename, "r+");
   fs.ftruncateSync(fd, size);
   fs.writeSync(fd, tail, 0, tail.length, size - tail.length);
   fs.closeSync(fd);

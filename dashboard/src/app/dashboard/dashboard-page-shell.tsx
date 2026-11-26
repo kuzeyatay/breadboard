@@ -14,6 +14,7 @@ import {
 } from "@/lib/profile/navbar-shortcuts-store.ts";
 import type { TerminalPanel } from "@/app/components/hermes/terminal-sidebar";
 import DashboardClient from "./dashboard-client";
+import TerminalBrowserSurface from "@/app/new-tab/terminal-browser-surface";
 import { randomInt } from "node:crypto";
 import db from "@/lib/db";
 import { readNewTabGardens } from "@/lib/new-tab-gardens";
@@ -59,7 +60,9 @@ export default async function DashboardPageShell({
     name: organization.name,
   }));
 
-  return (
+  const showFlowers = getNavbarFlowers(userId);
+  const ownerKey = (userEmail || String(userId)).trim().toLowerCase();
+  const dashboard = (
     <DashboardClient
       userEmail={userEmail}
       username={username}
@@ -69,7 +72,7 @@ export default async function DashboardPageShell({
       organizations={organizations}
       initialClusterFolders={clusterFolders}
       navbarShortcuts={getNavbarShortcuts(userId)}
-      showNavbarFlowers={getNavbarFlowers(userId)}
+      showNavbarFlowers={showFlowers}
       initialTerminalPanel={initialTerminalPanel}
       initialTerminalChatId={initialTerminalChatId}
       home={combinedHome ? {
@@ -77,8 +80,9 @@ export default async function DashboardPageShell({
         initialSearchHistory: readSearchHistory(db, userId),
         addressee: pickNewTabAddressee({}, [], () => randomInt(0x1000000) / 0x1000000),
         greetingOwnerKey: String(userId),
-        widgetOwnerKey: (userEmail || String(userId)).trim().toLowerCase(),
+        widgetOwnerKey: ownerKey,
       } : undefined}
     />
   );
+  return combinedHome ? <TerminalBrowserSurface ownerKey={ownerKey} showFlowers={showFlowers}>{dashboard}</TerminalBrowserSurface> : dashboard;
 }

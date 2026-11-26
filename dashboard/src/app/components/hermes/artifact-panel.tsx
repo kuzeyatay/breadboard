@@ -19,7 +19,7 @@ import type { PresentedArtifact } from "@/lib/hermes/artifact-types";
 import { ARTIFACT_CATEGORIES, artifactCategory, type ArtifactCategory } from "@/lib/generated/artifact-reference";
 import styles from "./artifact-panel.module.css";
 import ArtifactCardContent from "./artifact-card-content";
-import { ArtifactLoadingMark } from "./artifact-preview-loading";
+import BreadboardLoader from "../breadboard-loader";
 import { useLoadingTextReveal } from "../loading-text-reveal";
 import AttachmentPreviewDialog from "@/app/components/attachment-preview-dialog";
 import { artifactVersionKey } from "./use-learn-artifacts";
@@ -843,7 +843,7 @@ export default function ArtifactPanel({
       <div className={styles.list}>
         {loading && archiveArtifacts.length === 0 ? (
           <p role="status" className="flex items-center gap-2 p-3 text-xs text-[var(--ink-muted)]">
-            <ArtifactLoadingMark size={16} /> Loading…
+            <BreadboardLoader className="h-4 w-4 shrink-0" /> Loading…
           </p>
         ) : null}
         {archiveArtifacts.length === 0 && !loading ? (
@@ -1045,7 +1045,7 @@ export default function ArtifactPanel({
                         aria-expanded={openColorPaletteId === artifactVersionKey(artifact)}
                       >
                         {attaching ? (
-                          <ArtifactLoadingMark size={12} />
+                          <BreadboardLoader className="h-3 w-3 shrink-0" />
                         ) : (
                           <span
                             className="h-3 w-3 rounded-sm border border-[var(--line-strong)]"

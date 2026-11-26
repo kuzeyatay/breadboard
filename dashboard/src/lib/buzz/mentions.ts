@@ -15,7 +15,7 @@ import type { BuzzMember } from "./store.ts";
  */
 export function mentionedHandles(body: string): string[] {
   const handles: string[] = [];
-  const pattern = /(^|[^\w@.])@([a-z0-9][a-z0-9-]{0,39})/gi;
+  const pattern = /(^|[^\p{L}\p{M}\p{N}_@.])@([\p{L}\p{N}][\p{L}\p{M}\p{N}-]{0,39})/giu;
   let match = pattern.exec(body);
   while (match) {
     handles.push(match[2].toLowerCase());

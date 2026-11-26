@@ -31,7 +31,8 @@ export async function POST(request: Request) {
     }
     const body = await readJsonBody(request, 2048);
     const args = body.args && typeof body.args === "object" && !Array.isArray(body.args) ? body.args as Record<string, unknown> : {};
-    if (body.action !== "system_prompt_persona" || typeof args.slug !== "string" || !/^[a-z0-9][a-z0-9-]{0,99}$/.test(args.slug)) {
+    if (body.action !== "system_prompt_persona" || typeof args.slug !== "string" ||
+        !/^(?:[a-z0-9][a-z0-9-]{0,99}|bot-[\p{L}\p{N}][\p{L}\p{M}\p{N}-]{0,59})$/u.test(args.slug)) {
       throw new ApiError(400, "invalid_prompt_persona", "Choose a valid specialist persona.");
     }
     // "[persona: bot-sage]" is a teammate bot (lib/bots/team.ts), not a catalog specialist.

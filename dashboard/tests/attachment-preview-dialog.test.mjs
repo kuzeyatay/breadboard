@@ -53,9 +53,10 @@ test("PDF and video have a context menu while audio deliberately does not", () =
 test("selected and sent chat files use the same preview dialog", () => {
   assert.match(composer, /<AttachmentPreviewDialog[\s\S]*?kind: 'audio'/);
   assert.match(composer, /kind: 'video'/);
-  assert.match(composer, /attachment\.format === 'pdf'/);
+  // A selected document is a page-miniature card that opens the same popup.
+  assert.match(composer, /<ComposerDocumentCard[\s\S]*?documentPreviewSource\(/);
   assert.match(sentAttachments, /sourceAttachments\s*=\s*\[\]/);
-  assert.match(sentAttachments, /attachment\.format === "pdf"/);
+  assert.match(sentAttachments, /documentPreviewSource\(attachment\)[\s\S]*?<MessageDocumentCard/);
   assert.match(sentAttachments, /kind: "audio"/);
   // A sent video is an inline card like a pasted YouTube link, playing every
   // format: Matroska and AVI through their converted MP4 copy.

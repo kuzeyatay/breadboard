@@ -63,6 +63,11 @@ import {
 } from "./runtime-store.ts";
 import { ApiError } from "./route-core.ts";
 import { runtimeMessagesForBranch } from "../conversations/branch-history.ts";
+import type { AttachmentLocator } from "../conversations/message-context.ts";
+import { findDocumentBlob } from "../conversations/document-blob-store.ts";
+import { findVideoBlob } from "../conversations/video-blob-store.ts";
+import { findAudioBlob } from "../conversations/audio-blob-store.ts";
+import { findStoredFileBlob } from "../conversations/stored-file-blob-store.ts";
 import { listMcpConnections, runtimeMcpConfig } from "./mcp-connections.ts";
 import { composioConnectedIntegrationSlugs } from "../composio/service.ts";
 import {
@@ -894,7 +899,29 @@ function canonicalRuntimeMessages(
   return runtimeMessagesForBranch(listConversationMessages(
     conversationId,
     { limit: 500, includePending: false },
-  ));
+  ), attachmentLocatorForConversation(conversationId));
+}
+
+/**
+ * Point replayed turns at the saved originals of their uploads, scoped to the
+ * conversation owner's own blob store; a blob id from metadata never reaches
+ * a path outside it.
+ */
+function attachmentLocatorForConversation(conversationId: number): AttachmentLocator | undefined {
+  const owner = db.prepare("SELECT user_id FROM conversations WHERE id = ?")
+    .get(conversationId) as { user_id: number | null } | undefined;
+  const userId = owner?.user_id;
+  if (typeof userId !== "number") return undefined;
+  return (attachment) => {
+    if (!attachment.blobId) return null;
+    const input = { userId, blobId: attachment.blobId };
+    const found = attachment.type === "document" ? findDocumentBlob(input)
+      : attachment.type === "video" ? findVideoBlob(input)
+        : attachment.type === "audio" ? findAudioBlob(input)
+          : attachment.type === "file" || attachment.type === "text" ? findStoredFileBlob(input)
+            : null;
+    return found?.path ?? null;
+  };
 }
 
 function normalizedAuthorizedGardens(userId: number): AuthorizedGardenSummary[] {

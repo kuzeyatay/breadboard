@@ -96,9 +96,12 @@ app.whenReady().then(async () => {
     sendInputEvent: event => findSurface().sendInputEvent(event),
   };
   const captureFind = async name => {
-    let capture;
-    await until(async () => { capture = await findSurface().capturePage(); return !capture.isEmpty(); }, "find bar paints");
+    const bar = findSurface();
+    assert.ok(window.contentView.children.some(view => view.webContents === bar && view.getBounds().y >= 0));
+    assert.equal(await bar.executeJavaScript("document.querySelector('form').checkVisibility()"), true);
     if (!process.env.BREADBOARD_MENU_QA_DIR) return;
+    let capture;
+    await until(async () => { capture = await bar.capturePage(); return !capture.isEmpty(); }, "find bar paints");
     fs.mkdirSync(process.env.BREADBOARD_MENU_QA_DIR, { recursive: true });
     fs.writeFileSync(path.join(process.env.BREADBOARD_MENU_QA_DIR, name), capture.toPNG());
   };
@@ -109,12 +112,22 @@ app.whenReady().then(async () => {
   shortcut(local, "F", ["control"]);
   await until(() => findUI.executeJavaScript(`document.activeElement?.matches('${findInput}')`), "Ctrl+F focuses dashboard search");
   const trackSound = () => findUI.executeJavaScript(`
+    // Supply the visible-document condition for the foreground sound check.
+    // Windows may occlude this deliberately inactive fixture at any time.
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => false });
+    // Exercise the actual oscillator scheduling without requiring an audio
+    // output device or unlocking real-time audio with a synthetic keystroke.
     window.findSoundNotes = 0;
-    const create = AudioContext.prototype.createOscillator;
-    AudioContext.prototype.createOscillator = function () {
-      const oscillator = create.call(this), start = oscillator.start.bind(oscillator);
-      oscillator.start = (...args) => { window.findSoundNotes++; start(...args); };
-      return oscillator;
+    window.AudioContext = class extends OfflineAudioContext {
+      constructor() { super(1, 48000, 48000); }
+      get state() { return 'running'; }
+      async close() {}
+      createOscillator() {
+        const oscillator = super.createOscillator();
+        const start = oscillator.start.bind(oscillator);
+        oscillator.start = (...args) => { start(...args); window.findSoundNotes++; };
+        return oscillator;
+      }
     };
     void 0;
   `);

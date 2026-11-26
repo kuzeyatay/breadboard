@@ -395,14 +395,17 @@ export function saveMcpConnection(
 
 /** Publish only a tested definition. A retry can reuse its exact launch, but
  * two chats creating different tools with the same name cannot replace each other. */
-export function createVerifiedMcpConnection(userId: number, slug: string, name: string, launch: LegacyApprovedLocalMcpDefinition): McpConnectionRecord {
+export function createVerifiedMcpConnection(userId: number, slug: string, name: string, launch: LegacyApprovedLocalMcpDefinition, previousProfile?: string): McpConnectionRecord {
   const parsed = parseMcpConfig({ ...launch, approved: true, displayName: name, slug });
   const { reference } = sealApprovedLocalMcpProfile(userId, slug, launch);
   return db.transaction(() => {
     const existing = getMcpConnectionBySlug(userId, slug);
     if (existing) {
       if (existing.enabled && isApprovedLocalMcpProfileReference(existing.config) && existing.config.profileDigest === reference.profileDigest) return existing;
-      throw new ApiError(409, "mcp_name_in_use", "That connection name is already in use. Choose another name or manage the existing connection in Settings.");
+      if (!existing.enabled || !isApprovedLocalMcpProfileReference(existing.config) || existing.config.profileDigest !== previousProfile)
+        throw new ApiError(409, "mcp_name_in_use", "This name is in use. Read the current authored definition before updating it.");
+    } else if (previousProfile) {
+      throw new ApiError(409, "mcp_revision_changed", "The connection was removed during the update.");
     }
     return saveMcpConnection(userId, { ...parsed, config: reference });
   }).immediate();

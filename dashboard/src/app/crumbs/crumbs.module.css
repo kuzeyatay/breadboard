@@ -164,14 +164,6 @@ a.primary, a.secondary { text-decoration: none; }
 .accountRow > div { flex: 1; min-width: 0; }
 .accountRow h2 { margin: 0; font-size: 18px; font-weight: 650; letter-spacing: -.02em; }
 .accountRow p { margin: 0; color: var(--ink-muted); }
-.choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px; }
-.choices button { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--paper-raised); color: var(--ink); text-align: left; transition: border-color .15s ease, background-color .15s ease; }
-.choices button > svg { flex-shrink: 0; color: var(--ink-muted); }
-.choices button span { display: flex; flex-direction: column; min-width: 0; line-height: 1.35; }
-.choices strong { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.choices small { color: var(--ink-muted); font-size: 12px; }
-.choices button[aria-checked="true"] { border-color: var(--botanical); background: color-mix(in srgb, var(--botanical) 9%, var(--paper-raised)); }
-.choices button[aria-checked="true"] > svg { color: var(--botanical); }
 .row { display: flex; align-items: center; gap: 8px; }
 .people { margin: 12px 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 2px; }
 .people li { display: flex; align-items: center; gap: 10px; padding: 6px 0; }
@@ -187,11 +179,6 @@ a.primary, a.secondary { text-decoration: none; }
 .reports li span { color: var(--ink-muted); }
 .reports li strong { color: var(--ink); }
 .reports p { margin: 3px 0 5px; white-space: pre-wrap; overflow-wrap: anywhere; }
-.servers { display: grid; gap: 10px; }
-.servers label { display: grid; gap: 4px; color: var(--ink-muted); font-size: 12.5px; }
-.servers input { padding: 8px 11px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--paper-raised); color: var(--ink); font: 13px ui-monospace, "JetBrains Mono", monospace; }
-.servers button { justify-self: start; }
-.card h3.sub { margin: 18px 0 8px; }
 .error { margin: 0 0 12px; padding: 9px 13px; border-radius: 10px; background: color-mix(in srgb, var(--danger) 10%, transparent); color: var(--danger); font-size: 13px; }
 .error button { border: 0; background: transparent; color: inherit; text-decoration: underline; padding: 0; }
 
@@ -202,10 +189,44 @@ a.primary, a.secondary { text-decoration: none; }
 @media (prefers-reduced-motion: reduce) { .page * { transition: none !important; } }
 
 
-.feedSwitch { display: flex; align-items: center; justify-content: space-between; gap: 16px; font-weight: 600; cursor: pointer; }
-.feedSwitch input { appearance: none; width: 44px; height: 24px; flex: none; border-radius: 12px; background: var(--line-strong); cursor: pointer; }
-.feedSwitch input:checked { background: var(--botanical); }
-.feedSwitch input::before { content: ""; display: block; width: 20px; height: 20px; margin: 2px; border-radius: 50%; corner-shape: round; background: var(--paper-raised); }
-.feedSwitch input:checked::before { transform: translateX(20px); }
+.feedSwitch { display: flex; align-items: center; justify-content: space-between; gap: 16px; font-weight: 600; }
 .card .feedSwitch + p { margin: 6px 0 0; }
-@media (forced-colors: active) { .feedSwitch input { appearance: auto; } .feedSwitch input::before { display: none; } }
+/* The feed as websites, drawn like an iOS inset grouped list: one rounded card
+   per page, the site on top, then the people who left crumbs on it as rows
+   split by hairlines inset to the text. */
+.feed:has(> .site) { display: flex; flex-direction: column; gap: 14px; padding: 14px 14px 4px; }
+.site { overflow: hidden; border: 1px solid var(--line); border-radius: 18px; background: var(--paper-raised, var(--paper-surface)); box-shadow: 0 1px 2px color-mix(in srgb, var(--ink) 4%, transparent); }
+.siteHead { display: flex; align-items: center; gap: 12px; width: 100%; padding: 13px 14px 12px; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--ink); text-align: left; transition: background-color .15s ease; }
+.siteHead:hover { background: color-mix(in srgb, var(--ink) 3%, transparent); }
+.siteIcon { display: grid; place-items: center; flex: 0 0 36px; width: 36px; height: 36px; border-radius: 10px; background: var(--paper-bg); box-shadow: inset 0 0 0 1px var(--line); color: var(--ink-muted); }
+.siteIcon :global(.browser-site-icon) > img { width: 22px; height: 22px; border-radius: 5px; }
+.siteText { display: flex; flex-direction: column; gap: 1px; flex: 1; min-width: 0; }
+.siteText strong { overflow: hidden; font-size: 15px; font-weight: 600; letter-spacing: -.01em; line-height: 20px; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-heading, var(--ink)); }
+.siteText small { overflow: hidden; color: var(--ink-muted); font-size: 12.5px; line-height: 16px; text-overflow: ellipsis; white-space: nowrap; }
+.siteChevron { flex-shrink: 0; color: var(--ink-muted); opacity: .6; }
+
+.entries { margin: 0; padding: 0; list-style: none; }
+.entry { position: relative; display: flex; gap: 11px; padding: 12px 14px; cursor: pointer; transition: background-color .12s ease; }
+.thread { position: relative; }
+.thread + .thread::before { content: ""; position: absolute; top: 0; left: 57px; right: 0; height: 1px; background: var(--line); }
+/* The newest reply, tucked under the crumb it answers. */
+.entry[data-reply] { padding-top: 2px; padding-left: 51px; }
+.entry:hover { background: color-mix(in srgb, var(--ink) 3%, transparent); }
+.entry:focus-visible { outline: 2px solid var(--botanical); outline-offset: -2px; }
+.entryMain { flex: 1; min-width: 0; }
+.entryHead { display: flex; align-items: center; gap: 6px; min-height: 22px; }
+.entryHead strong { overflow: hidden; font-size: 14px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-heading, var(--ink)); }
+.entryHead > span { overflow: hidden; color: var(--ink-muted); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.entryHead time { flex-shrink: 0; color: var(--ink-muted); font-size: 13px; }
+.entryHead > details { margin-left: auto; opacity: 0; transition: opacity .15s ease; }
+.entry:hover .entryHead > details, .entry:focus-within .entryHead > details, .entryHead > details[open] { opacity: 1; }
+.entryHead > details summary { padding: 2px; }
+.entryComment { margin: 2px 0 0; font-size: 15px; line-height: 21px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.entryQuote { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin-top: 6px; padding-left: 10px; border-left: 2px solid var(--line-strong); color: var(--ink-muted); font-size: 13.5px; line-height: 19px; quotes: none; overflow-wrap: anywhere; }
+.entryActions { display: flex; gap: 2px; margin: 6px 0 -4px -6px; }
+.entryActions button { display: inline-flex; align-items: center; gap: 4px; padding: 4px 6px; border: 0; border-radius: 999px; corner-shape: round; background: transparent; color: var(--ink-muted); font-size: 12.5px; line-height: 16px; transition: color .15s ease, background-color .15s ease; }
+.entryActions button:hover, .entryActions button[aria-expanded="true"] { color: var(--botanical); background: color-mix(in srgb, var(--botanical) 11%, transparent); }
+.entry .notice { margin: 8px 0 0; }
+.showAll { display: block; width: 100%; padding: 11px 14px; border: 0; border-top: 1px solid var(--line); background: transparent; color: var(--botanical); font-size: 14px; font-weight: 500; text-align: left; padding-left: 57px; transition: background-color .15s ease; }
+.showAll:hover { background: color-mix(in srgb, var(--ink) 3%, transparent); }
+@media (hover: none) { .entryHead > details { opacity: 1; } }

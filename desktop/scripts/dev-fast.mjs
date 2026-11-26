@@ -4,6 +4,7 @@
 // it intentionally leaves outside the trace, then launch the normal desktop
 // supervisor with that server instead of an on-demand compiler.
 import { spawn, spawnSync } from "node:child_process";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { assertWindowsCommitHeadroom } from "./commit-preflight.mjs";
@@ -77,7 +78,50 @@ if (!Number.isSafeInteger(buildEstimateMb) || buildEstimateMb < 4_096 || buildEs
   process.exit(2);
 }
 
+// Every Next output (one-off QA, verify, plain `next build`) leaves a ~3 GB
+// `.next*` folder behind, and they silently filled the system drive. Keep only
+// the outputs something reuses: this build's own `.next-desktop` (+ its
+// last-good rollback) and the hot compiler's `.next-dev`. A folder is renamed
+// before deletion; Windows refuses that while a running server holds a file
+// inside it, so an in-use output is skipped instead of half-deleted.
+const KEPT_DASHBOARD_OUTPUTS = new Set([".next-desktop", ".next-desktop-last-good", ".next-dev"]);
+
+function pruneStaleDashboardOutputs() {
+  const dashboard = path.join(repoRoot, "dashboard");
+  let entries;
+  try {
+    entries = fs.readdirSync(dashboard, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !/^\.next(?:$|-)/u.test(entry.name)) continue;
+    if (KEPT_DASHBOARD_OUTPUTS.has(entry.name)) continue;
+    const source = path.join(dashboard, entry.name);
+    let target = source;
+    if (!entry.name.startsWith(".next-trash-")) {
+      target = path.join(dashboard, `.next-trash-${Date.now()}-${entry.name.replace(/^\./u, "")}`);
+      try {
+        fs.renameSync(source, target);
+      } catch {
+        process.stdout.write(`[desktop] kept ${entry.name}: it is in use\n`);
+        continue;
+      }
+    }
+    try {
+      fs.rmSync(target, { recursive: true, force: true, maxRetries: 2 });
+      process.stdout.write(`[desktop] removed stale dashboard output ${entry.name}\n`);
+    } catch (error) {
+      process.stderr.write(
+        `[desktop] could not fully remove ${entry.name}; it will be retried next build: ` +
+        `${error instanceof Error ? error.message : String(error)}\n`,
+      );
+    }
+  }
+}
+
 async function runDashboardBuild() {
+  pruneStaleDashboardOutputs();
   const build = spawn(
     process.execPath,
     [path.join(repoRoot, "desktop", "scripts", "build-dashboard.mjs")],

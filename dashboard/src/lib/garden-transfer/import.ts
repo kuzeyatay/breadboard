@@ -40,6 +40,8 @@ import {
 import type { GardenManifest, TransferImportResult } from "./format.ts";
 import { openArchive, readJsonEntry, unpackPrefix } from "./archive.ts";
 import { acquireGardenMutationLease } from "../garden-mutation-lease.ts";
+import { restoreUploads, stageUploads, type StagedUpload } from "./uploads.ts";
+import { gardenFiles } from "../garden-files/repository.ts";
 
 interface PendingGarden {
   manifest: GardenManifest;
@@ -50,6 +52,7 @@ interface PendingGarden {
   prefix: string;
   files: number;
   bytes: number;
+  uploads: StagedUpload[];
 }
 
 /**
@@ -133,10 +136,10 @@ function assertFolderDepth(root: string, relativeFolders: string[]): void {
   }
 }
 
-function insertGarden(userId: number, pending: PendingGarden): void {
+function insertGarden(userId: number, pending: PendingGarden): number {
   const { manifest } = pending;
   if (pending.folder) ensureFolderPath(db, userId, pending.folder);
-  db.prepare(
+  const row = db.prepare(
     `INSERT INTO clusters (
        user_id,
        name,
@@ -163,6 +166,7 @@ function insertGarden(userId: number, pending: PendingGarden): void {
     manifest.cardHeight,
     pending.folder || null,
   );
+  return Number(row.lastInsertRowid);
 }
 
 /**
@@ -253,6 +257,7 @@ export async function importTransferArchive(
       directory,
       folder,
       prefix: GARDEN_CONTENT_PREFIX,
+      uploads: [],
       files: 0,
       bytes: 0,
     });
@@ -280,6 +285,7 @@ export async function importTransferArchive(
         directory,
         folder,
         prefix: `${entryPrefix}${GARDEN_CONTENT_PREFIX}`,
+        uploads: [],
         files: 0,
         bytes: 0,
       });
@@ -325,17 +331,23 @@ export async function importTransferArchive(
       const written = unpackPrefix(zip, garden.prefix, garden.directory);
       garden.files = written.files;
       garden.bytes = written.bytes;
+      await stageUploads(zip,garden.prefix.slice(0,-GARDEN_CONTENT_PREFIX.length),garden.uploads);
+      for (const upload of garden.uploads) if (upload.stage) { garden.files++; garden.bytes += upload.stage.size; }
     }
 
     db.transaction(() => {
       if (clusterPath) ensureFolderPath(db, userId, clusterPath);
       for (const folder of emptyFolders) ensureFolderPath(db, userId, folder);
-      for (const garden of pending) insertGarden(userId, garden);
+      for (const garden of pending) {
+        const clusterId = insertGarden(userId, garden);
+        if (garden.uploads.length) restoreUploads({clusterId,gardenId:garden.slug,userId,ownerId:userId},garden.uploads);
+      }
     })();
   } catch (error) {
     removeCreated();
     throw error;
   } finally {
+    for (const garden of pending) for (const upload of garden.uploads) if (upload.stage) gardenFiles().discard(upload.stage);
     for (const lease of mutationLeases.reverse()) lease.release();
   }
 

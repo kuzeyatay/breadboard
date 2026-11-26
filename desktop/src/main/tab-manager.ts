@@ -42,7 +42,7 @@ import { BrowserVpn } from "./browser-vpn";
 import { BrowserNotifications } from "./browser-notifications";
 import { BrowserNotificationPages } from "./browser-notification-pages";
 import { browserUserAgent } from "./browser-user-agent";
-import { attachGoogleSignInHandoff } from "./browser-google-signin";
+import { attachGoogleSignInHandoff, googleSignInDestination } from "./browser-google-signin";
 import { toggleBrowserPictureInPicture } from "./browser-picture-in-picture";
 import { GooglePipExtension, GOOGLE_PIP_EXTENSION_ID } from "./google-pip-extension";
 import { BrowserHlsDownloads } from "./browser-hls-downloads";
@@ -122,7 +122,8 @@ import { BrowserToolbarPopover, loadCardPage } from "./browser-toolbar-popover";
 import { BrowserTextHighlights } from "./browser-text-highlights";
 import { BrowserInlineAnswer } from "./browser-inline-answer";
 import { browserTextHighlightsBootstrapScript } from "./browser-text-highlights-dom";
-import { parseWebSelectionAction, type BrowserSelection, type WebTextHighlight } from "../shared/web-text-selection";
+import { parseWebHighlightPointer, parseWebSelectionAction, type BrowserSelection, type WebTextHighlight } from "../shared/web-text-selection";
+import { BrowserHoverTip } from "./browser-hover-tip";
 import { FindInPage } from "./find-in-page";
 import { browserMenuTemplate, browserMenuShortcut, savedPageFilename, type BrowserMenuAction } from "./browser-menu";
 import { browserContextMenuTemplate, runBrowserContextAction, runBrowserSelectionAction } from "./browser-context-menu";
@@ -254,6 +255,9 @@ interface BrowserPage extends PageFindState {
   toolbarErrorBottom?: number;
   /** The trusted new-tab page precedes the first web page in user navigation. */
   homeEntryAvailable: boolean;
+  /** This browser uses the original Terminal document as its trusted renderer. */
+  terminalHomeTitle?: string;
+  terminalOpener?: WeakRef<Tab>;
   /** The trusted new-tab page is currently shown instead of the web view. */
   showingHome: boolean;
   /** A website PDF shown in Breadboard's viewer (a dashboard path). The web
@@ -467,6 +471,7 @@ export const MAX_REOPENABLE_TABS = 10;
 export const REVEAL_MAX_WAIT_MS = 10_000;
 
 interface Tab extends PageFindState {
+  forwardWebsite?: WeakRef<Tab>;
   /** Temporary app page owned by an AI run, just like browser automation pages. */
   automationRunId?: string;
   /** Temporarily parked for input/inspection without changing the visible page. */
@@ -616,6 +621,8 @@ interface Host {
   selectionPopover?: BrowserToolbarPopover;
   selectionCandidate?: { tab: Tab; entry: WebTextHighlight; anchor: { x: number; y: number; height?: number } };
   inlineAnswer?: BrowserInlineAnswer;
+  /** The card over a hovered highlight: your note, or who you follow left a crumb there. */
+  hoverTip?: BrowserHoverTip;
   extensionsClosedAt?: number;
   /** Lazily-created copy of Breadboard's startup loading field. */
   loadingScene: TabLoadingScene | null;
@@ -915,6 +922,7 @@ export class TabManager {
     const host = this.hostByContents.get(sender.id);
     if (!host || host.window.isDestroyed() || !host.tabs.some(tab => tab.contents === sender) || !this.enabled || !this.browserUrl || this.browserSignInsResetting) return false;
     if (url !== undefined && (typeof url !== "string" || !isSafeBrowserUrl(url))) return false;
+    if (typeof url === "string" && this.openGoogleSignIn(url)) return true;
     // Check availability here so openBrowserTab cannot fall back to the OS browser.
     return this.openBrowserTab(host, url as string | undefined, false, undefined, undefined, undefined, null) !== null;
   }
@@ -1693,7 +1701,7 @@ export class TabManager {
     if (host.privateBrowsing || !host.sessionTracked || !this.sessionDashboardUrl || this.sessionFrozen || this.restoringSession ||
         (this.authenticationUrl && !this.authenticatedUser)) return;
     const tabs = host.tabs.filter(tab => !tab.browser?.privatePartition && (!(tab.automationRunId ?? tab.browser?.automationRunId) || tab.anchored)).map((tab) => ({ tab,
-      saved: saveTab({ ...tab, url: tab.authReturnUrl ?? tab.url, title: tab.authReturnTitle ?? tab.title }, this.sessionDashboardUrl!) }))
+      saved: saveTab({ ...tab, ...(this.showingTerminal(tab) ? { browser: undefined, url: tab.browser!.shellUrl } : { url: tab.authReturnUrl ?? tab.url }), title: tab.authReturnTitle ?? tab.title }, this.sessionDashboardUrl!) }))
       .filter((entry) => entry.saved !== null);
     this.savedWindows.set(host.window.id, {
       tabs: tabs.map((entry) => entry.saved!),
@@ -2032,6 +2040,7 @@ export class TabManager {
         this.flushSession();
       }
       this.hosts.delete(window.id);
+      host.hoverTip?.destroy(); host.hoverTip = undefined;
       this.distributeSurfaceBudget();
       this.discardPreparedNewTab(host);
       if (this.hosts.size === 0) void this.browserTerminal.close();
@@ -2146,9 +2155,13 @@ export class TabManager {
     return splitMembers({ tabs: host.tabs, groups: host.groups, activeId: visible.id });
   }
 
+  private showingTerminal(tab: Tab): boolean {
+    return !!tab.browser?.terminalHomeTitle && tab.browser.showingHome && !tab.url && !tab.browser.pdfViewer;
+  }
+
   private toolbarTab(host: Host): Tab | undefined {
     const visible = this.visibleTab(host);
-    return visible?.browser ? visible : this.visibleSplitMembers(host, visible).find(tab => tab.browser);
+    return visible?.browser && !this.showingTerminal(visible) ? visible : this.visibleSplitMembers(host, visible).find(tab => tab.browser && !this.showingTerminal(tab));
   }
 
   private shellState(host: Host, state = this.state(host)): TabsState {
@@ -2244,7 +2257,7 @@ export class TabManager {
         return true;
       }
       case "browser-shell-context":
-        if (sender !== host.browserChrome?.contents) return false;
+        if (sender !== host.browserChrome?.contents && !(senderTab?.browser?.terminalHomeTitle && senderTab.contents === sender)) return false;
         host.browserOwnerKey = command.ownerKey;
         this.broadcast(host);
         return true;
@@ -2488,6 +2501,10 @@ export class TabManager {
             )
           : undefined;
         if (command.replaceCurrent && !current) return false;
+        if (command.url && this.openGoogleSignIn(command.url)) return true;
+        if (current && this.showingTerminal(current)) {
+          return command.url === undefined || this.navigateBrowser(host, current, command.url);
+        }
         const owner = senderTab?.automationRunId ?? senderTab?.browser?.automationRunId;
         return this.openBrowserTab(
           host,
@@ -2499,6 +2516,7 @@ export class TabManager {
           senderTab?.browser?.privatePartition
             ?? retainedControls?.browser?.privatePartition
             ?? (host.privateBrowsing ? this.privateBrowserPartition() : null),
+          { opener: senderTab },
         ) !== null;
       }
       case "browser-agent":
@@ -2511,7 +2529,8 @@ export class TabManager {
         const tab = senderTab;
         if (tab?.browser) return this.navigateBrowser(host, tab, command.input);
         // A local page with the toolbar (Browser settings) becomes a browser tab.
-        return tab && this.toolbarShellUrl(tab) ? this.openBrowserTab(host, command.input, false, undefined, tab) !== null : false;
+        if (!tab || !this.toolbarShellUrl(tab)) return false;
+        return this.openGoogleSignIn(command.input) || this.openBrowserTab(host, command.input, false, undefined, tab) !== null;
       }
       case "browser-stop": {
         const tab = senderTab;
@@ -3451,6 +3470,8 @@ export class TabManager {
         terminalOpen: browser.terminalOpen,
         terminalWidth: browser.terminalWidth,
         addressSuggestionsOpen: false,
+        terminalHomeTitle: browser.terminalHomeTitle,
+        terminalOpener: browser.terminalOpener,
         homeEntryAvailable: browser.homeEntryAvailable,
         showingHome: browser.showingHome,
         pdfViewer: browser.pdfViewer,
@@ -3595,12 +3616,12 @@ export class TabManager {
 
   /** Browser chrome, the app-owned Terminal and Browser settings share the same toolbar tools. */
   private toolbarShellUrl(tab: Tab): string | null {
-    if (tab.browser) return tab.browser.shellUrl;
+    if (tab.browser) return this.browserUrl ?? tab.browser.shellUrl;
     if (!this.browserUrl || tab.contents.isDestroyed()) return null;
     try {
       const current = new URL(tab.contents.getURL());
       const isCurrent = (page: URL) => current.origin === page.origin && current.pathname.replace(/\/$/, "") === page.pathname.replace(/\/$/, "");
-      return (this.newTabUrl && isCurrent(new URL(this.newTabUrl))) || isCurrent(new URL(`${BROWSER_TAB_PATH}/settings`, this.browserUrl))
+      return (this.newTabUrl && (isCurrent(new URL(this.newTabUrl)) || isCurrent(new URL("/dashboard", this.newTabUrl)))) || isCurrent(new URL(`${BROWSER_TAB_PATH}/settings`, this.browserUrl))
         ? this.browserUrl : null;
     } catch { return null; }
   }
@@ -3709,7 +3730,7 @@ export class TabManager {
   private toolbarAnchor(tab: Tab, anchor: { x: number; y: number }): { x: number; y: number } {
     // Browser toolbar coordinates already come from the full-window shell.
     // Terminal renders inside its local tab view below the native tab strip.
-    const bounds = !tab.browser ? tab.view?.getBounds() : undefined;
+    const bounds = !tab.browser || this.showingTerminal(tab) ? tab.view?.getBounds() : undefined;
     return { x: anchor.x + (bounds?.x ?? 0), y: anchor.y + (bounds?.y ?? 0) };
   }
 
@@ -4131,6 +4152,13 @@ export class TabManager {
     return this.openTab(host, url, { background, origin: "link", from, showLoader: false }) !== null;
   }
 
+  private openGoogleSignIn(url: string, currentPage?: string): boolean {
+    const target = googleSignInDestination(url, currentPage);
+    if (!target || !this.options.openExternal) return false;
+    this.options.openExternal(target);
+    return true;
+  }
+
   /** Route a trusted Breadboard page's external web link into its own browser. */
   openExternalTab(sender: WebContents, url: string, background = false): void {
     const host = this.hostByContents.get(sender.id);
@@ -4138,11 +4166,12 @@ export class TabManager {
       this.options.openExternal?.(url);
       return;
     }
+    if (this.openGoogleSignIn(url)) return;
     const from = sender === host.browserChrome?.contents ? tabById(host, host.activeId)
       : host.tabs.find(tab => tab.contents === sender || tab.browser?.contents === sender);
     const owner = from?.automationRunId ?? from?.browser?.automationRunId;
     this.openBrowserTab(host, url, background || Boolean(owner), owner, undefined, undefined,
-      from?.browser?.privatePartition ?? (host.privateBrowsing ? this.privateBrowserPartition() : null));
+      from?.browser?.privatePartition ?? (host.privateBrowsing ? this.privateBrowserPartition() : null), { opener: from });
   }
 
   /** Only the foreground, presented tab contributes Screen Time. Never count background/AI tabs. */
@@ -4165,72 +4194,78 @@ export class TabManager {
   // ------------------------------------------------------------------ state
 
   private state(host: Host): TabsState {
-    const tabView = (tab: Tab): TabView => ({
-      id: tab.id,
-      generation: tab.generation,
-      anchored: tab.anchored,
-      aiOpened: Boolean(tab.automationRunId ?? tab.browser?.automationRunId),
-      highlighted: tab.highlighted === true,
-      ...(tab.groupId ? { groupId: tab.groupId } : {}),
-      title: tab.title,
-      url: tab.url,
-      // Restored tabs have no document yet, but do no work until selected.
-      loading: !tab.deferredUrl && (tab.loading || !tab.loaded),
-      pageLoading: tab.pageLoading,
-      downloadsOpen: host.downloadsPopover?.ownerId === tab.id,
-      ...(tab.find ? { find: tab.find } : {}),
-      learnActive: !tab.browser && tab.learnActivity?.active === true &&
-        new URL(tab.url).pathname.replace(/\/$/, "") === tab.learnActivity.pathname,
-      ...(tab.browser
-        ? {
-            browser: {
-              aiOpened: Boolean(tab.browser.automationRunId),
-              private: Boolean(tab.browser.privatePartition),
-              hls: tab.browser.privatePartition ? { streams: [], available: false }
-                : this.browserHls.snapshot(tab.browser.showingHome ? undefined : liveBrowserPage(tab.browser)?.contents),
-              adBlock: this.browserAdBlocker.snapshot(
-                liveBrowserPage(tab.browser)?.contents,
-                tab.browser.showingHome ? "" : tab.url,
-                session.fromPartition(tab.browser.privatePartition ?? BROWSER_SESSION_PARTITION),
-              ),
-              vpn: this.browserVpn.snapshot(),
-              uiKey: tab.browser.uiKey,
-              // The run marker only exists so the worker can select this exact
-              // Chromium target. It is not an address the person can use, so
-              // keep the trusted toolbar looking like an ordinary fresh tab.
-              address:
-                tab.browser.automationRunId &&
-                isBrowserAgentBootstrapUrl(tab.url, tab.browser.automationRunId)
-                  ? ""
-                  : tab.url,
-              pageReady: tab.browser.ready && !tab.browser.showingHome,
-              ...(tab.browser.pdfViewer ? { pdfViewer: tab.browser.pdfViewer } : {}),
-              uiVisited: tab.browser.uiVisited,
-              canGoBack: tab.browser.pdfViewer || tab.browser.pdfTransfer
-                ? this.browserPdfBackAvailable(tab)
-                : !tab.browser.showingHome &&
-                (tab.browser.homeEntryAvailable ||
-                  this.browserNavigationTarget(tab, "back") !== null),
-              canGoForward: tab.browser.pdfViewer ? false : tab.browser.showingHome
-                ? this.browserHomeForwardAvailable(tab)
-                : this.browserNavigationTarget(tab, "forward") !== null,
-              terminalOpen: tab.browser.terminalOpen,
-              organizationOpen: tab.browser.organizationOpen === true,
-              organizationWidth: tab.browser.organizationWidth,
-              annotationTarget: tab.browser.annotationTarget,
-              ...(tab.browser.aiFlags && !tab.browser.showingHome && tab.browser.aiFlags.site === aiFlagHost(tab.url) ? { aiFlagLevel: tab.browser.aiFlags.level } : {}),
-              downloadsOpen: host.downloadsPopover?.ownerId === tab.id,
-              extensionsOpen: host.extensionsPopover?.ownerId === tab.id,
-              terminalWidth: tab.browser.terminalWidth,
-              zoomPercent: liveBrowserPage(tab.browser) ? Math.round(tab.browser.contents!.getZoomFactor() * 100) : 100,
-              ...(tab.browser.translation ? { translation: tab.browser.translation.state } : {}),
-              ...(this.findTarget(tab)?.find ? { find: this.findTarget(tab)!.find } : {}),
-              ...(tab.browser.favicon ? { favicon: tab.browser.favicon } : {}),
-              ...(tab.browser.selection ? { selection: tab.browser.selection } : {}),
-            },
-          }
-        : {}),
-    });
+    const tabView = (tab: Tab): TabView => {
+      const atTerminal = this.showingTerminal(tab);
+      const back = this.browserBackTarget(host, tab);
+      const forwardWebsite = this.forwardWebsite(host, tab);
+      return {
+        id: tab.id,
+        generation: tab.generation,
+        anchored: tab.anchored,
+        aiOpened: Boolean(tab.automationRunId ?? tab.browser?.automationRunId),
+        highlighted: tab.highlighted === true,
+        ...(tab.groupId ? { groupId: tab.groupId } : {}),
+        title: tab.title,
+        url: atTerminal ? tab.browser!.shellUrl : tab.url,
+        ...(forwardWebsite || (atTerminal && this.browserHomeForwardAvailable(tab)) ? { terminalForward: true } : {}),
+        // Restored tabs have no document yet, but do no work until selected.
+        loading: !tab.deferredUrl && (tab.loading || !tab.loaded),
+        pageLoading: tab.pageLoading,
+        downloadsOpen: host.downloadsPopover?.ownerId === tab.id,
+        ...(tab.find ? { find: tab.find } : {}),
+        learnActive: !tab.browser && tab.learnActivity?.active === true &&
+          new URL(tab.url).pathname.replace(/\/$/, "") === tab.learnActivity.pathname,
+        ...(tab.browser && !atTerminal
+          ? {
+              browser: {
+                aiOpened: Boolean(tab.browser.automationRunId),
+                private: Boolean(tab.browser.privatePartition),
+                hls: tab.browser.privatePartition ? { streams: [], available: false }
+                  : this.browserHls.snapshot(tab.browser.showingHome ? undefined : liveBrowserPage(tab.browser)?.contents),
+                adBlock: this.browserAdBlocker.snapshot(
+                  liveBrowserPage(tab.browser)?.contents,
+                  tab.browser.showingHome ? "" : tab.url,
+                  session.fromPartition(tab.browser.privatePartition ?? BROWSER_SESSION_PARTITION),
+                ),
+                vpn: this.browserVpn.snapshot(),
+                uiKey: tab.browser.uiKey,
+                // The run marker only exists so the worker can select this exact
+                // Chromium target. It is not an address the person can use, so
+                // keep the trusted toolbar looking like an ordinary fresh tab.
+                address:
+                  tab.browser.automationRunId &&
+                  isBrowserAgentBootstrapUrl(tab.url, tab.browser.automationRunId)
+                    ? ""
+                    : tab.url,
+                pageReady: tab.browser.ready && !tab.browser.showingHome,
+                ...(tab.browser.pdfViewer ? { pdfViewer: tab.browser.pdfViewer } : {}),
+                uiVisited: tab.browser.uiVisited,
+                ...(tab.browser.terminalHomeTitle ? { terminalOrigin: true } : {}),
+                ...(back?.kind === "terminal" && !tab.browser.pdfTransfer ? { backToTerminal: true } : {}),
+                canGoBack: tab.browser.pdfViewer || tab.browser.pdfTransfer
+                  ? this.browserPdfBackAvailable(tab)
+                  : back !== null,
+                canGoForward: tab.browser.pdfViewer ? false : tab.browser.showingHome
+                  ? this.browserHomeForwardAvailable(tab)
+                  : this.browserNavigationTarget(tab, "forward") !== null,
+                terminalOpen: tab.browser.terminalOpen,
+                organizationOpen: tab.browser.organizationOpen === true,
+                organizationWidth: tab.browser.organizationWidth,
+                annotationTarget: tab.browser.annotationTarget,
+                ...(tab.browser.aiFlags && !tab.browser.showingHome && tab.browser.aiFlags.site === aiFlagHost(tab.url) ? { aiFlagLevel: tab.browser.aiFlags.level } : {}),
+                downloadsOpen: host.downloadsPopover?.ownerId === tab.id,
+                extensionsOpen: host.extensionsPopover?.ownerId === tab.id,
+                terminalWidth: tab.browser.terminalWidth,
+                zoomPercent: liveBrowserPage(tab.browser) ? Math.round(tab.browser.contents!.getZoomFactor() * 100) : 100,
+                ...(tab.browser.translation ? { translation: tab.browser.translation.state } : {}),
+                ...(this.findTarget(tab)?.find ? { find: this.findTarget(tab)!.find } : {}),
+                ...(tab.browser.favicon ? { favicon: tab.browser.favicon } : {}),
+                ...(tab.browser.selection ? { selection: tab.browser.selection } : {}),
+              },
+            }
+          : {}),
+      };
+    };
     const tabs = host.tabs.map(tabView);
     const visible = this.visibleTab(host);
     return {
@@ -4762,8 +4797,8 @@ export class TabManager {
     popup?: BrowserPopup,
     privatePartition: string | null = replace?.browser?.privatePartition ?? tabById(host, host.activeId)?.browser?.privatePartition
       ?? (host.privateBrowsing ? this.privateBrowserPartition() : null),
-    { deferred = false, restored = false, notificationBackground = false }:
-      { deferred?: boolean; restored?: boolean; notificationBackground?: boolean } = {},
+    { deferred = false, restored = false, notificationBackground = false, opener }:
+      { deferred?: boolean; restored?: boolean; notificationBackground?: boolean; opener?: Tab } = {},
   ): Tab | null {
     automationRunId ??= replace?.automationRunId ?? replace?.browser?.automationRunId;
     if (automationRunId && this.releasedAutomationRuns.has(automationRunId)) return null;
@@ -4784,7 +4819,9 @@ export class TabManager {
         }
       }
     }
-    const tab = host.shell ? this.createSharedBrowserTab(host, shellUrl) : this.createView(host, shellUrl, deferred);
+    const terminal = replace && !replace.browser && !automationRunId && !privatePartition &&
+      this.isTerminalWorkspace(replace) ? replace : undefined;
+    const tab = terminal ?? (host.shell ? this.createSharedBrowserTab(host, shellUrl) : this.createView(host, shellUrl, deferred));
     // The toolbar and recents paint above the native page when the omnibox
     // is open; the rest of this renderer must allow that page to show through.
     tab.view?.setBackgroundColor(host.shell ? backgroundColorForTheme(this.options.theme()) : "#00000000");
@@ -4793,12 +4830,19 @@ export class TabManager {
     tab.keepLoaded = replace?.keepLoaded;
     tab.groupId = replace?.groupId;
     if (automationRunId) tab.groupId = ensureAiTabGroup(host).id;
+    // A URL opened in place from Terminal shares the same history boundary as
+    // a first navigation from the browser's built-in Terminal home.
+    const startsAtHome = !automationRunId && !popup &&
+      (requestedUrl === undefined || !!terminal);
     tab.browser = {
       uiKey: randomUUID(),
       restoredMediaBlocked: restored && Boolean(initialUrl),
       scriptOpened: Boolean(popup),
       privatePartition: privatePartition ?? undefined,
-      shellUrl,
+      shellUrl: terminal?.contents.getURL() ?? shellUrl,
+      terminalHomeTitle: terminal ? terminal.title || "Terminal" : undefined,
+      terminalOpener: !replace && initialUrl && !privatePartition && !automationRunId && opener &&
+        (this.isTerminalWorkspace(opener) || this.showingTerminal(opener)) ? new WeakRef(opener) : undefined,
       view: null,
       contents: null,
       ready: false,
@@ -4807,14 +4851,14 @@ export class TabManager {
       terminalOpen: false,
       terminalWidth: BROWSER_TERMINAL_WIDTH,
       addressSuggestionsOpen: false,
-      homeEntryAvailable: requestedUrl === undefined && !automationRunId && !popup,
-      showingHome: requestedUrl === undefined && !automationRunId && !popup,
+      homeEntryAvailable: startsAtHome,
+      showingHome: startsAtHome,
       homeHistoryIndex: null,
       pendingHomeNavigation: false,
       ...(automationRunId ? { automationRunId } : {}),
     };
     this.retainPrivateProfile(tab);
-    tab.title = privatePartition ? "Private Tab" : automationRunId ? "Agent Browser" : "Browser";
+    tab.title = tab.browser.terminalHomeTitle ?? (privatePartition ? "Private Tab" : automationRunId ? "Agent Browser" : "Browser");
     tab.url = "";
     this.setTabLoading(tab, false);
     // A blank browser tab is entirely the trusted home page. Creating the
@@ -4835,6 +4879,12 @@ export class TabManager {
     }
 
     const replaceIndex = replace ? tabIndex(host, replace.id) : -1;
+    if (terminal) {
+      terminal.forwardWebsite = undefined;
+      if (initialUrl) this.navigateBrowser(host, tab, initialUrl);
+      this.activate(host, tab.id);
+      return tab;
+    }
     if (replace && replaceIndex >= 0) {
       this.retainTabControls(host, replace);
       host.tabs.splice(replaceIndex, 1, tab);
@@ -4918,10 +4968,6 @@ export class TabManager {
     });
     // Adopted popup contents already exist; a session change alone cannot update them.
     view.webContents.setUserAgent(userAgent);
-    // Google rejects sign-in from Electron, so interactive sign-in pages hand off to Edge/Chrome
-    // and the cookies come back into this session. The 2026-11-20 gemini.google.com popup was
-    // Google's silent passive=1209600 check being mistaken for sign-in; isGoogleSignInPage skips it.
-    attachGoogleSignInHandoff(view.webContents, browserSession, message => this.log(message));
     view.setBackgroundColor(browserPageBackgroundColor(this.options.theme()));
     // Background automation still needs a real viewport for layout and input.
     // Size the unattached view without putting it in front of the user's page.
@@ -5148,7 +5194,6 @@ export class TabManager {
     });
     const contents = view.webContents;
     contents.setUserAgent(userAgent);
-    attachGoogleSignInHandoff(contents, browserSession, message => this.log(message));
     view.setBackgroundColor(browserPageBackgroundColor(this.options.theme()));
     const window = new BrowserWindow({
       ...CHATGPT_WEB_PAGE_SIZE,
@@ -5160,6 +5205,9 @@ export class TabManager {
     });
     window.setMenuBarVisibility(false);
     const page: ChatgptWebPage = { lane, view, contents, window, targetId: undefined, hidden: true };
+    if (this.options.openExternal) attachGoogleSignInHandoff(contents, url => {
+      if (!page.hidden) this.options.openExternal?.(url);
+    });
     const fit = () => {
       if (window.isDestroyed()) return;
       const { width, height } = window.getContentBounds();
@@ -5192,7 +5240,7 @@ export class TabManager {
       // profile. Parked out of sight, the page has no business opening
       // anything.
       onOpenWindow: (details) =>
-        !page.hidden && isSafeBrowserUrl(details.url)
+        !page.hidden && isSafeBrowserUrl(details.url) && !this.openGoogleSignIn(details.url, contents.getURL())
           ? {
               action: "allow",
               overrideBrowserWindowOptions: {
@@ -5297,16 +5345,19 @@ export class TabManager {
   private navigateBrowser(host: Host, tab: Tab, input: string): boolean {
     const url = browserUrlForInput(input);
     if (!url) return false;
+    if (this.openGoogleSignIn(url, tab.browser?.contents?.getURL())) return true;
     if (host.downloadsPopover?.ownerId === tab.id) host.downloadsPopover.close();
     if (host.extensionsPopover?.ownerId === tab.id) host.extensionsPopover.close();
     if (host.selectionPopover?.ownerId === tab.id) host.selectionPopover.close();
     if (host.inlineAnswer?.ownerId === tab.id) host.inlineAnswer.close();
     const browser = this.ensureBrowserPage(host, tab);
     if (!browser) return false;
+    const leavingTerminal = this.showingTerminal(tab);
     browser.pdfTransfer?.abort();
     browser.pdfTransfer = undefined;
     browser.pdfViewer = undefined;
     if (browser.showingHome) {
+      tab.forwardWebsite = undefined;
       if (host.findBar?.ownerId === tab.id) host.findBar.close();
       browser.showingHome = false;
       browser.ready = false;
@@ -5319,6 +5370,7 @@ export class TabManager {
     tab.url = url;
     tab.title = browserFallbackTitle(url);
     this.setTabLoading(tab, true);
+    if (leavingTerminal) this.layout(host);
     this.broadcast(host);
     const contents = browser.contents;
     void contents.loadURL(url).catch((error) => {
@@ -5366,7 +5418,7 @@ export class TabManager {
       owner.selectionPopover?.close();
       const menu = Menu.buildFromTemplate(browserContextMenuTemplate(params, {
         annotationsEnabled: this.browserOrganizationAllowed(owner, tab),
-        canGoBack: browser.homeEntryAvailable || this.browserNavigationTarget(tab, "back") !== null,
+        canGoBack: this.browserBackTarget(owner, tab) !== null,
         canGoForward: this.browserNavigationTarget(tab, "forward") !== null,
       }, action => setImmediate(() => {
         // Menu actions belong to the document and tab that were right-clicked.
@@ -5521,6 +5573,7 @@ export class TabManager {
         if (!owner || !this.enabled || !this.browserUrl || owner.window.isDestroyed() || this.backgroundNotificationTabs.has(contents)) {
           return { action: "deny" };
         }
+        if (this.openGoogleSignIn(details.url, contents.getURL())) return { action: "deny" };
         if (!browser.automationRunId && !browser.privatePartition) this.browserVisitedLinks.remember(contents.getURL(), details.url);
         return {
           action: "allow",
@@ -5575,7 +5628,7 @@ export class TabManager {
     contents.on("did-start-navigation", (_event, _url, inPlace, isMainFrame) => {
       // Selection messages are blocked navigation attempts, not a new document.
       // Chromium can announce them before will-navigate cancels the scheme.
-      if (_url.startsWith("breadboard-selection:")) return;
+      if (browser.showingHome || _url.startsWith("breadboard-selection:")) return;
       const owner = current();
       if (isMainFrame && !inPlace) {
         browser.pdfTransfer?.abort();
@@ -5649,6 +5702,32 @@ export class TabManager {
     contents.on("will-redirect", (event, url, _inPlace, mainFrame) => {
       if (mainFrame) guardNotificationNavigation(event, url);
     });
+    if (this.options.openExternal) attachGoogleSignInHandoff(contents, url => {
+      const owner = current();
+      if (!owner || owner.activeId !== tab.id || browser.showingHome || this.backgroundNotificationTabs.has(contents)) return;
+      this.options.openExternal?.(url);
+      const generation = tab.generation;
+      // A cancelled redirect has no did-navigate event to present its predecessor.
+      setImmediate(() => {
+        if (contents.isDestroyed() || tab.generation !== generation || browser.showingHome) return;
+        const previous = contents.getURL();
+        if (browser.pendingHomeNavigation || (!isSafeBrowserUrl(previous) && browser.homeEntryAvailable)) {
+          this.showBrowserHome(owner, tab);
+        } else if (isSafeBrowserUrl(previous)) {
+          browser.documentCommitted = true;
+          tab.url = previous;
+          tab.title = contents.getTitle() || browserFallbackTitle(previous);
+          this.prepareBrowserDocument(owner, tab);
+          this.broadcast(owner);
+        } else {
+          const opener = browser.terminalOpener?.deref();
+          if (opener && owner.activeId === tab.id && owner.tabs.includes(opener)) {
+            this.activate(owner, opener.id);
+            this.closeTab(owner, tab.id);
+          }
+        }
+      });
+    }, () => contents.getURL() || tab.url);
     contents.on("did-navigate", (_event, url) => {
       const retained = this.backgroundNotificationTabs.get(contents);
       if (retained && notificationOrigin(url) !== retained.origin) {
@@ -5677,7 +5756,11 @@ export class TabManager {
     });
     contents.on("did-start-loading", () => {
       if (browser.showingHome) {
-        contents.stop();
+        // Chromium still owns its new NavigationRequest on this callback's stack.
+        // Synchronously stopping it can invalidate Navigator::OnBeginNavigation.
+        setImmediate(() => {
+          if (browser.showingHome && !contents.isDestroyed() && contents.isLoading()) contents.stop();
+        });
         return;
       }
       const loadingChanged = !tab.loading;
@@ -5734,7 +5817,10 @@ export class TabManager {
     // Parental site locks: swap a locked site for the lock page as it starts
     // loading. Address-bar loads never fire will-navigate, so this is the hook.
     contents.on("did-start-navigation", (_event, url, inPlace, isMainFrame) => {
-      if (!isMainFrame || inPlace) return;
+      if (!isMainFrame) return;
+      // The hovered passage is leaving with the page (or the route) it was on.
+      current()?.hoverTip?.hide();
+      if (inPlace) return;
       const verdict = this.siteLocks?.verdict(url);
       if (verdict) void contents.loadURL(siteLockPage(verdict, url)).catch(() => undefined);
     });
@@ -5769,6 +5855,33 @@ export class TabManager {
           const item = browser.annotationMarkers?.find(item => item.id === id);
           if (item && annotationPageUrl(tab.url) === item.target.url) this.openBrowserOrganization(owner, tab, item.target);
         } catch { /* Ignore invalid references from the untrusted page. */ }
+        return;
+      }
+      const pointer = parseWebHighlightPointer(targetUrl);
+      if (pointer) {
+        event.preventDefault();
+        const owner = current();
+        if (!owner || browser.automationRunId || owner.activeId !== tab.id || !browser.attached || !browser.view) return;
+        if (pointer.action === "follow-open") {
+          const passage = browser.highlights?.followedPassage(pointer.id);
+          const url = annotationPageUrl(tab.url);
+          owner.hoverTip?.hide();
+          const target = passage && url ? normalizeAnnotationTarget({ ...passage.target, url }) : null;
+          if (target) this.openBrowserOrganization(owner, tab, target);
+          return;
+        }
+        // A crumbed passage shows its first crumb in the same card as your notes.
+        const crumb = pointer.kind === "crumb" && pointer.id ? browser.annotationMarkers?.find(item => item.id === pointer.id) : undefined;
+        const split = crumb?.preview?.indexOf(": ") ?? -1;
+        const content = !pointer.id ? null : pointer.kind === "crumb"
+          ? (crumb?.preview ? (split > 0 ? { title: crumb.preview.slice(0, split), body: crumb.preview.slice(split + 2) } : { body: crumb.preview }) : null)
+          : browser.highlights?.hoverContent(pointer.id, pointer.kind);
+        if (!content || owner.selectionPopover) { owner.hoverTip?.hide(); return; }
+        const bounds = browser.view.getBounds();
+        const scale = contents.getZoomFactor();
+        const tip = owner.hoverTip ??= new BrowserHoverTip(owner.window);
+        void tip.show(tab.id, { x: bounds.x + pointer.rect.x * scale, y: bounds.y + pointer.rect.y * scale, width: pointer.rect.width * scale, height: pointer.rect.height * scale },
+          content, this.options.theme());
         return;
       }
       const annotation = parseWebSelectionAction(targetUrl);
@@ -6566,6 +6679,15 @@ export class TabManager {
     return this.isTerminalTab(tab);
   }
 
+  private isTerminalWorkspace(tab: Tab): boolean {
+    if (this.isTerminalTab(tab)) return true;
+    if (!this.newTabUrl || tab.browser) return false;
+    try {
+      const url = new URL(tab.url);
+      return url.origin === new URL(this.newTabUrl).origin && url.pathname.replace(/\/$/, "") === "/dashboard";
+    } catch { return false; }
+  }
+
   private isTerminalTab(tab: Tab): boolean {
     if (tab.browser || !this.newTabUrl) return false;
     try {
@@ -6576,7 +6698,7 @@ export class TabManager {
 
   /** "Never offload tab": the user's explicit choice, else on for Terminal tabs. */
   private keepsLoaded(tab: Tab): boolean {
-    return tab.keepLoaded ?? this.isTerminalTab(tab);
+    return tab.keepLoaded ?? (!!tab.browser?.terminalHomeTitle || this.isTerminalTab(tab));
   }
 
   /** The document has arrived and the renderer has composited it where it now sits. */
@@ -6955,6 +7077,9 @@ export class TabManager {
 
   private layout(host: Host): void {
     if (host.window.isDestroyed()) return;
+    // Another tab in front: the hovered passage is gone. Scrolling, resizing and
+    // navigating are reported by the page itself, so other layouts leave the card.
+    if (host.hoverTip && host.hoverTip.ownerId !== null && host.hoverTip.ownerId !== host.activeId) host.hoverTip.hide();
     const [width, height] = host.window.getContentSize();
     if (typeof width !== "number" || typeof height !== "number") return;
     // A search can replace the initial new-tab page before the independent
@@ -7295,6 +7420,7 @@ export class TabManager {
   }
 
   private reloadTab(host: Host, tab: Tab): void {
+    if (this.showingTerminal(tab)) { tab.contents.reload(); return; }
     if (tab.browser && (tab.browser.pdfViewer || !liveBrowserPage(tab.browser)) && isSafeBrowserUrl(tab.url)) {
       this.navigateBrowser(host, tab, tab.url);
       return;
@@ -7327,6 +7453,22 @@ export class TabManager {
       return null;
     }
     return target;
+  }
+
+  private browserBackTarget(host: Host, tab: Tab): { kind: "browser"; index: number } | { kind: "terminal"; opener?: Tab } | null {
+    const browser = tab.browser;
+    if (!browser || browser.showingHome) return null;
+    const index = this.browserNavigationTarget(tab, "back");
+    if (index !== null) return { kind: "browser", index };
+    if (browser.homeEntryAvailable) return { kind: "terminal" };
+    const opener = browser.terminalOpener?.deref();
+    return opener && host.tabs.includes(opener) && (this.showingTerminal(opener) || this.isTerminalWorkspace(opener))
+      ? { kind: "terminal", opener } : null;
+  }
+
+  private forwardWebsite(host: Host, tab: Tab): Tab | undefined {
+    const page = tab.forwardWebsite?.deref();
+    return page && host.tabs.includes(page) && page.browser?.terminalOpener?.deref() === tab ? page : undefined;
   }
 
   private browserHomeForwardAvailable(tab: Tab): boolean {
@@ -7377,7 +7519,7 @@ export class TabManager {
     browser.pdfTransfer = undefined;
     const url = browser.contents.getURL();
     tab.url = isSafeBrowserUrl(url) ? url : "";
-    tab.title = browser.contents.getTitle() || browserFallbackTitle(tab.url);
+    tab.title = !tab.url && browser.terminalHomeTitle ? browser.terminalHomeTitle : browser.contents.getTitle() || browserFallbackTitle(tab.url);
     browser.showingHome = !tab.url;
     browser.documentCommitted = Boolean(tab.url);
     this.setTabLoading(tab, false);
@@ -7398,7 +7540,7 @@ export class TabManager {
     browser.homeForwardTitle = undefined;
     browser.homeForwardFavicon = undefined;
     tab.url = "";
-    tab.title = browser.privatePartition ? "Private Tab" : "Browser";
+    tab.title = browser.terminalHomeTitle ?? (browser.privatePartition ? "Private Tab" : "Browser");
     this.applyTitle(host);
     this.broadcast(host);
   }
@@ -7420,14 +7562,18 @@ export class TabManager {
     browser.addressSuggestionsOpen = false;
     browser.favicon = undefined;
     tab.url = "";
-    tab.title = browser.privatePartition ? "Private Tab" : "Browser";
+    tab.title = browser.terminalHomeTitle ?? (browser.privatePartition ? "Private Tab" : "Browser");
     if (browser.contents.isLoading()) browser.contents.stop();
     this.setTabLoading(tab, false);
     this.detachBrowser(host.window, tab);
     this.layout(host);
+    // Back may cancel the first request while the window is waiting for its
+    // first frame. Finish the reveal against the trusted home surface.
+    if (host.pending === tab) void this.reveal(host, tab, ++host.revealToken);
+    else if (host.activeId === tab.id) host.presentationStatus = "presented";
     this.applyTitle(host);
     this.broadcast(host);
-    if (!tab.contents.isDestroyed()) tab.contents.focus();
+    if (host.activeId === tab.id && !tab.contents.isDestroyed()) tab.contents.focus();
     return true;
   }
 
@@ -7790,8 +7936,18 @@ export class TabManager {
       this.broadcast(owner);
     });
     const remember = (url: string) => {
-      if (tab.browser) return;
       if (!isTabPageUrl(this.options.allowed, url)) return;
+      if (this.showingTerminal(tab) && tab.browser!.shellUrl !== url) {
+        // A new local route branches from Terminal and discards its web forward history.
+        const browser = tab.browser!;
+        const page = browser.contents;
+        browser.contents = null;
+        browser.view = null;
+        tab.browser = undefined;
+        if (page && !page.isDestroyed()) setImmediate(() => { if (!page.isDestroyed()) page.close(); });
+      }
+      if (tab.browser) return;
+      if (tab.url !== url) tab.forwardWebsite = undefined;
       const owner = current();
       if (owner?.baseRetired && tab === owner.base) return;
       const origin = this.authenticationUrl ?? this.sessionDashboardUrl;
@@ -8086,8 +8242,16 @@ export class TabManager {
         }
         if (active) {
           const contents = this.navigationContents(active);
+          const back = this.browserBackTarget(host, active);
+          if (back?.kind === "terminal") {
+            if (back.opener) {
+              back.opener.forwardWebsite = new WeakRef(active);
+              this.activate(host, back.opener.id);
+            } else this.showBrowserHome(host, active);
+            return;
+          }
           const target = active.browser
-            ? this.browserNavigationTarget(active, "back")
+            ? back?.index ?? null
             : contents.navigationHistory.canGoBack()
               ? contents.navigationHistory.getActiveIndex() - 1
               : null;
@@ -8095,14 +8259,14 @@ export class TabManager {
             if (!active.browser && !this.allowTabNavigation(active, contents.navigationHistory.getEntryAtIndex(target)?.url ?? "")) return;
             if (contents.isLoading()) contents.stop();
             contents.navigationHistory.goToIndex(target);
-          } else if (active.browser) {
-            this.showBrowserHome(host, active);
           }
         }
         return;
       case "forward":
         if (active) {
           if (active.browser?.pdfViewer) return;
+          const website = this.forwardWebsite(host, active);
+          if (website) { this.activate(host, website.id); return; }
           if (active.browser?.showingHome) {
             this.showBrowserPageFromHome(host, active);
             return;

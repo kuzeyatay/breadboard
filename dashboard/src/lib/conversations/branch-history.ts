@@ -1,5 +1,5 @@
 import { ApiError } from "../hermes/route-core.ts";
-import { conversationMessageText } from "./message-context.ts";
+import { conversationMessageText, type AttachmentLocator } from "./message-context.ts";
 import {
   listConversationMessages,
   type ConversationMessageRow,
@@ -174,6 +174,7 @@ export function selectConversationBranchHistory(
 
 export function runtimeMessagesForBranch(
   messages: readonly ConversationMessageRow[],
+  locate?: AttachmentLocator,
 ): Array<{ role: "user" | "assistant"; content: string }> {
   return messages
     .filter(
@@ -183,6 +184,6 @@ export function runtimeMessagesForBranch(
         role: "user" | "assistant";
       } => message.role === "user" || message.role === "assistant",
     )
-    .map((message) => ({ role: message.role, content: conversationMessageText(message) }))
+    .map((message) => ({ role: message.role, content: conversationMessageText(message, locate) }))
     .filter((message) => message.content.trim().length > 0);
 }

@@ -26,6 +26,7 @@ import { externalRuntimeFilesystem as fs } from "@/lib/external-runtime-filesyst
 import { readPdfAttachment } from "@/lib/pdf-attachment-reader.ts";
 import { storeDocumentText } from "@/lib/conversations/document-reading-store.ts";
 import { STORE_ONLY_HEADER, sweepOpenedFiles } from "@/lib/conversations/opened-files.ts";
+import { shareFreshUpload } from "@/lib/storage/service.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -95,6 +96,8 @@ export async function POST(request: Request) {
       ocrPages = [...new Set(pages as number[])];
     }
     const stored = await writeDocumentBlob({ userId, format, body: request.body });
+    // The same document attached again shares the first copy's bytes on disk.
+    if (stored.sha256) await shareFreshUpload(stored.path, stored.sha256);
 
     // The desktop browser hands web PDFs to the viewer: it needs the bytes
     // kept, not read. Reading (and OCR) happens if the PDF is ever attached.

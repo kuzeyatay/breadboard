@@ -165,7 +165,7 @@ export default function InlineProgressNotes({
       {waiting ? (
         <div data-progress-waiting className="grid grid-cols-[8px_minmax(0,1fr)] gap-3 text-sm leading-6">
           <NoteDot active />
-          <span className="thinking-shimmer">Reading your message…</span>
+          <span className="thinking-shimmer">Reading your message</span>
         </div>
       ) : null}
     </div>

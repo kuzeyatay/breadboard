@@ -33,7 +33,7 @@ app.whenReady().then(async () => {
     'next/link': `export default ({children})=>children;`,
     '@/app/components/page-appearance': `export default ()=>null;`,
     '@/app/components/use-page-appearance': `export const usePageAppearance=()=>({ready:true,hasWallpaper:false});`,
-    '@/app/components/hermes/use-chat-greeting': `export const useChatGreeting=()=>({greeting:{}, suggestionSources:{}});`,
+    '@/app/components/hermes/use-chat-greeting': `export const useChatGreeting=()=>({greeting:{}, suggestions:[]});`,
     '@/app/components/hermes/dashboard-agent-terminal': `export default ()=>null;`,
     './browser-navigation': `export default ()=>null;`,
     './browser-home-accessories': `export default ()=>null;`,
@@ -51,11 +51,13 @@ app.whenReady().then(async () => {
     stdin: { resolveDir: dashboard, loader: 'tsx', contents: `
       import React from 'react'; import {createRoot} from 'react-dom/client';
       import NewTabSearch from '@/app/new-tab/new-tab-search';
+      import TerminalBrowserSurface from '@/app/new-tab/terminal-browser-surface';
+      import TerminalBrowserControls from '@/app/new-tab/terminal-browser-controls';
       import BrowserClient from '@/app/browser/browser-client';
       import NavigationProgress from '@/app/components/navigation-progress';
       const home = <section data-fixture-home><NewTabSearch ownerKey="fixture-id" browserOwnerKey="fixture@example.test" gardens={[]} initialHistory={[]}><p>Home shortcuts</p></NewTabSearch></section>;
       createRoot(document.getElementById('root')).render(<><NavigationProgress/>
-        {location.pathname === '/browser' ? <BrowserClient showFlowers={false} restoreOwnerKey="fixture@example.test" home={home}/> : home}</>);
+        {location.pathname === '/browser' ? <BrowserClient showFlowers={false} restoreOwnerKey="fixture@example.test" home={home}/> : <TerminalBrowserSurface ownerKey="fixture@example.test" showFlowers={false}>{home}<TerminalBrowserControls ownerKey="fixture@example.test" /></TerminalBrowserSurface>}</>);
     ` },
     bundle: true, write: false, outdir: path.join(dir, 'bundle'), format: 'iife', platform: 'browser', jsx: 'automatic',
     alias: { '@': path.join(dashboard, 'src') }, define: { 'process.env.NODE_ENV': '"production"' },
@@ -65,8 +67,11 @@ app.whenReady().then(async () => {
     } }],
   });
   const js = bundle.outputFiles.find(file => file.path.endsWith('.js')).text;
+  const googleLogin = 'https://accounts.google.com/ServiceLogin?continue=https%3A%2F%2Fwww.youtube.com%2F';
   let releaseImage;
   const server = http.createServer((req, res) => {
+    if (req.url === '/sign-in-redirect') { res.writeHead(302, {location:googleLogin}); return res.end(); }
+    if (req.url === '/pending-website') return; // Back can cancel before the first response.
     if (req.url === '/bundle.js') { res.setHeader('content-type', 'text/javascript'); return res.end(js); }
     if (req.url === '/held-image') {
       releaseImage = () => { res.setHeader('content-type', 'image/svg+xml'); res.end('<svg xmlns="http://www.w3.org/2000/svg"/>'); };
@@ -134,6 +139,7 @@ app.whenReady().then(async () => {
   window.showInactive();
   const base = manager.page(window);
   await base.loadURL(origin + '/new-tab');
+  manager.tabs.setNewTabUrl(origin + '/new-tab');
   manager.tabs.setBrowserUrl(origin + '/browser');
   const host = manager.tabs.hosts.get(window.id);
   const search = async (contents, value) => {
@@ -159,15 +165,20 @@ app.whenReady().then(async () => {
   await pressSearchKey('Tab');
   assert.equal(await base.executeJavaScript(`document.querySelector('[role=combobox]').value`), 'Saved trail maps');
   // The app home creates a browser in the current slot and releases page loading.
+  const originalId = host.activeId;
+  await base.executeJavaScript(`window.originalSearch = document.querySelector('[role=combobox]'); void 0`);
   await pressSearchKey('Enter');
   await until(() => host.tabs.find(tab => tab.id === host.activeId)?.browser?.contents?.getURL() === origin + '/website?from=home#saved' && !host.pending, 'website revealed from app home');
   const browserTab = host.tabs.find(tab => tab.id === host.activeId);
   await until(() => !browserTab.loading && !browserTab.pageLoading, 'loading finishes');
+  assert.equal(browserTab.id, originalId);
+  assert.equal(browserTab.contents, base);
+  await until(() => base.executeJavaScript(`!!document.querySelector('.browser-side-rail') && !window.originalSearch.checkVisibility()`), 'website rail shown over preserved Terminal');
   assert.equal(commands.filter(command => command.type === 'browser').length, 1);
   assert.ok(manager.tabs.browserHistory.snapshot().items.some(page => page.url === origin + '/website?from=home#saved'));
   // A page must be usable while slow images are still downloading.
   const started = Date.now();
-  assert.equal(manager.tabs.handleCommand(host.browserChrome.contents, {type:'browser-navigate', input:origin + '/website?streaming=1'}), true);
+  assert.equal(manager.tabs.handleCommand(browserTab.contents, {type:'browser-navigate', input:origin + '/website?streaming=1'}), true);
   await until(() => releaseImage && browserTab.browser.ready, 'page paints before a delayed image finishes');
   assert.equal(browserTab.browser.contents.isLoading(), true);
   assert.equal(browserTab.browser.attached, true);
@@ -175,8 +186,30 @@ app.whenReady().then(async () => {
   console.log(`Website visible with an unfinished image: ${Date.now() - started}ms`);
   releaseImage(); releaseImage = null;
   await until(() => !browserTab.loading, 'image loading finishes');
+  const toolbar = host.shell.contents;
+  const buttonEnabled = label => toolbar.executeJavaScript(`!!document.querySelector('button[aria-label="${label}"]:enabled')`);
+  const clickButton = label => toolbar.executeJavaScript(`document.querySelector('button[aria-label="${label}"]').click()`);
+  const firstWebsite = origin + '/website?from=home#saved';
+  await until(() => buttonEnabled('Back'), 'Back enabled on second website');
+  await clickButton('Back');
+  await until(() => browserTab.browser.contents.getURL() === firstWebsite && !browserTab.loading, 'Back restores first website from Terminal');
+  await until(() => buttonEnabled('Back to Terminal'), 'first website offers Back to Terminal');
+  await clickButton('Back to Terminal');
+  await until(() => base.executeJavaScript(`window.originalSearch === document.querySelector('[role=combobox]') && window.originalSearch.checkVisibility() && !!document.querySelector('button[aria-label="Forward"]')`), 'original Terminal controls restored');
+  assert.equal(await base.executeJavaScript('window.originalSearch.value'), 'Saved trail maps');
+  assert.equal(host.activeId, originalId);
+  assert.equal(manager.tabs.stateFor(base).tabs.find(t => t.id === originalId).browser, undefined);
+  // A website can still try to navigate after Back has hidden it.
+  const hiddenPage = browserTab.browser.contents;
+  const backgroundLoadStopped = new Promise(resolve => hiddenPage.once('did-stop-loading', resolve));
+  await hiddenPage.executeJavaScript(`location.assign('/pending-website')`);
+  await backgroundLoadStopped;
+  assert.equal(hiddenPage.getURL(), firstWebsite);
+  assert.equal(host.presentationStatus, 'presented');
+  await base.executeJavaScript(`document.querySelector('button[aria-label="Forward"]').click()`);
+  await until(() => browserTab.browser.attached && browserTab.url === firstWebsite, 'Forward restores first website');
   // A fresh native home reuses its browser and keeps back-to-home navigation.
-  assert.equal(manager.tabs.handleCommand(host.browserChrome.contents, {type:'browser'}), true);
+  assert.equal(manager.tabs.handleCommand(browserTab.contents, {type:'browser'}), true);
   await until(() => !host.pending, 'native home visible');
   const home = host.tabs.find(tab => tab.id === host.activeId);
   const chrome = home.contents;
@@ -239,7 +272,6 @@ app.whenReady().then(async () => {
   // The persistent address bar uses its own renderer and navigation handler.
   // It too must send the request while a history write is blocked.
   holdHistorySave = true;
-  const toolbar = host.shell.contents;
   assert.equal(host.browserOwnerKey, 'fixture@example.test', 'shared browser publishes the account to the persistent toolbar');
   await until(() => toolbar.executeJavaScript(`!!document.querySelector('[aria-label="Address and search"]')`), 'persistent address bar ready');
   await toolbar.executeJavaScript(`(() => {
@@ -252,6 +284,44 @@ app.whenReady().then(async () => {
   await until(() => releaseHistorySave, 'address bar history write remains pending');
   holdHistorySave = false; releaseHistorySave(); releaseHistorySave = null;
   await until(() => readBrowserRecentSearches(dir, 'fixture@example.test').includes('fixture toolbar search'), 'address bar search still persists');
+  assert.equal(manager.tabs.handleCommand(chrome, {type:'new'}), true);
+  const terminal = host.tabs.find(tab => tab.id === host.activeId);
+  await until(() => terminal.loaded && terminal.contents.getURL() === origin + '/new-tab', 'new Terminal loaded');
+  assert.equal(manager.tabs.handleCommand(terminal.contents, {type:'browser-navigate', input:origin + '/pending-website'}), true);
+  const pending = host.tabs.find(tab => tab.id === host.activeId);
+  await until(() => buttonEnabled('Back to Terminal'), 'Back enabled before the first response');
+  await clickButton('Back to Terminal');
+  await until(() => pending.browser.showingHome && !host.pending, 'Terminal presented after cancelling the first navigation');
+  assert.equal(pending.browser.attached, false);
+  assert.equal(pending.loading, false);
+  const systemUrls = [];
+  manager.tabs.options.openExternal = url => systemUrls.push(url);
+  const tabCount = host.tabs.length;
+  assert.equal(manager.tabs.handleCommand(terminal.contents, {type:'browser',url:googleLogin,replaceCurrent:true}), true);
+  assert.deepEqual(systemUrls, [googleLogin]);
+  assert.equal(host.tabs.length, tabCount);
+  assert.equal(host.activeId, terminal.id);
+  manager.tabs.openExternalTab(terminal.contents, origin + '/website?separate');
+  const separate = host.tabs.find(tab => tab.id === host.activeId);
+  assert.notEqual(separate.id, terminal.id);
+  await until(() => separate.browser.ready && !host.pending && buttonEnabled('Back to Terminal'), 'separate website links back to its Terminal');
+  await clickButton('Back to Terminal');
+  await until(() => host.activeId === terminal.id && terminal.contents.executeJavaScript(`!!document.querySelector('button[aria-label="Forward"]')`), 'original Terminal selected');
+  await terminal.contents.executeJavaScript(`document.querySelector('button[aria-label="Forward"]').click()`);
+  await until(() => host.activeId === separate.id && !host.pending, 'Forward selects the same separate website');
+  await separate.browser.contents.executeJavaScript(`location.assign(${JSON.stringify(googleLogin)})`);
+  await until(() => systemUrls.length === 2, 'website sign-in link handed off to system browser');
+  assert.equal(systemUrls[1], googleLogin);
+  assert.equal(separate.browser.contents.getURL(), origin + '/website?separate');
+  await separate.browser.contents.executeJavaScript(`location.assign('/sign-in-redirect')`);
+  await until(() => systemUrls.length === 3 && !separate.loading, 'server sign-in redirect handed off');
+  assert.equal(systemUrls[2], googleLogin);
+  assert.equal(separate.browser.contents.getURL(), origin + '/website?separate');
+  await until(() => separate.browser.ready && buttonEnabled('Back to Terminal'), 'original page remains usable after sign-in redirect');
+  await clickButton('Back to Terminal');
+  await until(() => host.activeId === terminal.id && !host.pending, 'Terminal selected before a first-request redirect');
+  assert.equal(manager.tabs.handleCommand(terminal.contents, {type:'browser',url:origin + '/sign-in-redirect',replaceCurrent:true}), true);
+  await until(() => systemUrls.length === 4 && terminal.browser.showingHome && !host.pending, 'first-request sign-in redirect returns to Terminal');
   console.log('Combined home: previous search terms restored without visited pages; Enter and arrow search the web; explicit Breadboard search works; sidebar persisted through navigation and reload; Back restored home.');
   window.destroy(); server.close(); app.exit(0);
 }).catch(error => { console.error(error); app.exit(1); });

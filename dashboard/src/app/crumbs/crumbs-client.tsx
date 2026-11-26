@@ -2,7 +2,8 @@
 
 import DefaultAvatar, { BREAD_AVATAR_SRC } from "@/app/components/default-avatar";
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode, type MouseEvent, type KeyboardEvent } from "react";
-import { ArrowLeft, BookOpen, ExternalLink, Flag, Globe2, Link2, Lock, LogOut, MessageCircle, MessageSquare, MinusCircle, Plus, ShieldCheck, Trash2, UserPlus, UsersRound, X } from "lucide-react";
+import { BrowserSiteIcon } from "@/app/browser/browser-site-icon";
+import { ArrowLeft, BookOpen, ChevronRight, ExternalLink, Flag, Globe2, Link2, Lock, LogOut, MessageCircle, MessageSquare, MinusCircle, Plus, ShieldCheck, Trash2, UserPlus, UsersRound, X } from "lucide-react";
 import CrumbsIcon from "@/app/components/crumbs-icon";
 import { shortHandle } from "@/lib/crumbs/handle";
 import type { FeedInteraction } from "@/lib/crumbs/feed-ranking";
@@ -15,10 +16,10 @@ import { PostAction, PostCard, PostMenu, PostMenuItem } from "./post-card";
 import styles from "./crumbs.module.css";
 
 interface Person { did: string; handle: string | null; displayName: string | null; avatar: string | null }
-export interface CrumbsStatus { personalizeFeed: boolean; signedIn: boolean; needsSignIn: boolean; did: string | null; handle: string | null; displayName: string | null; avatar: string | null; defaultVisibility: string; servers: { indexer: string; orgStore: string }; publicMode: "records" | "posts" }
+export interface CrumbsStatus { personalizeFeed: boolean; signedIn: boolean; needsSignIn: boolean; did: string | null; handle: string | null; displayName: string | null; avatar: string | null }
 type Status = CrumbsStatus;
 interface FeedItem { id: string; author: Person; url: string; title: string; target: BrowserAnnotationTarget; comment: string; source: string | null; createdAt: string; threadCount: number; own: boolean; audience: string; /** Where replies to it go, when that is not the tab it is shown in. */ scope?: string; state?: string; reason?: string | null; note?: { uri: string; body: string; source: string | null }; noteCount?: number; /** The crumb that started the thread, when this one is a reply. */ parent?: FeedItem }
-interface Org { id: string; name: string; role: "admin" | "member"; ready: boolean; /** Set when it is connected to a Breadboard organization: its crumbs are that organization's crumbs room. */ crumbsRoom?: string | null }
+interface Org { id: string; name: string; role: "admin" | "member"; ready: boolean }
 interface OrgDetail extends Org { members: Array<Person & { role: "admin" | "member"; waitingForKey: boolean }>; reports: Array<{ id: string; messageId: string; reporter: Person; reason: string; createdAt: string }> }
 
 /** Where the Crumbs account lives: a section of Breadboard's own settings. */
@@ -47,12 +48,10 @@ function ago(value: string) {
   if (minutes < 60 * 24 * 7) return `${Math.round(minutes / 1440)}d`;
   return new Date(value).toLocaleDateString(undefined, { month: "short", day: "numeric", year: new Date(value).getFullYear() === new Date().getFullYear() ? undefined : "numeric" });
 }
-/** A Breadboard organization that is not on Crumbs yet. */
-type LocalOrg = { id: number; name: string };
 async function loadAccount() {
   const status = await view<Status>("view=status");
-  const lists = status.signedIn ? await view<{ orgs: Org[]; local: LocalOrg[] }>("view=orgs").catch(() => ({ orgs: [], local: [] })) : { orgs: [], local: [] };
-  return { status, orgs: lists.orgs, local: lists.local };
+  const orgs = status.signedIn ? await view<{ orgs: Org[] }>("view=orgs").then(data => data.orgs).catch((): Org[] => []) : [];
+  return { status, orgs };
 }
 
 function Avatar({ person, size = 36 }: { person: Person; size?: number }) {
@@ -300,6 +299,116 @@ function threads(items: FeedItem[]): Array<[FeedItem, FeedItem?]> {
   return out;
 }
 
+/** One page in the feed, with the crumbs people left on it, newest first. */
+interface SiteGroup { key: string; url: string; title: string; host: string; latest: string; entries: Array<{ root: FeedItem; reply?: FeedItem }> }
+
+const pageKey = (url: string) => { try { const page = new URL(url); page.hash = ""; return page.toString(); } catch { return url; } };
+const hostOf = (url: string) => { try { return new URL(url).hostname.replace(/^www\./, ""); } catch { return url; } };
+
+/**
+ * The feed as websites: each page appears once, where its newest crumb falls,
+ * with everyone's crumbs on it listed underneath. A thread counts once, by its
+ * newest crumb.
+ */
+function sites(items: FeedItem[]): SiteGroup[] {
+  const groups = new Map<string, SiteGroup>();
+  for (const [first, latest] of threads(items)) {
+    const key = pageKey(first.target.url);
+    let group = groups.get(key);
+    if (!group) {
+      group = { key, url: first.target.url, title: first.title, host: hostOf(first.target.url), latest: (latest ?? first).createdAt, entries: [] };
+      groups.set(key, group);
+    }
+    if (!group.title && first.title) group.title = first.title;
+    group.entries.push({ root: first, reply: latest });
+  }
+  return [...groups.values()];
+}
+
+/** A website card: the page on top, then each person who left a crumb on it, with what they said. */
+function Site({ group, scope, signedIn, track, onOpen, onDismiss, onRemoved }: { group: SiteGroup; scope: string; signedIn: boolean; track: boolean; onOpen: (root: FeedItem, clicked: FeedItem) => void; onDismiss?: (item: FeedItem) => void; onRemoved: (id: string) => void }) {
+  const [expanded, setExpanded] = useState(false);
+  const limit = 3;
+  const shown = expanded ? group.entries : group.entries.slice(0, limit);
+  const hidden = group.entries.length - shown.length;
+  const people = new Set(group.entries.flatMap(entry => [entry.root.author.did, ...(entry.reply ? [entry.reply.author.did] : [])])).size;
+  const open = () => { if (track) void sendActivity(group.entries[0]!.root, "source").catch(() => {}); void openSite(group.url); };
+  return <section className={styles.site} aria-label={group.title || group.host}>
+    <button type="button" className={styles.siteHead} onClick={open} title="Open the page">
+      <span className={styles.siteIcon}><BrowserSiteIcon pageUrl={group.url} fallback={<Globe2 size={16} strokeWidth={1.8} />} /></span>
+      <span className={styles.siteText}>
+        <strong>{group.title || group.host}</strong>
+        <small>{group.host} · {people} {people === 1 ? "person" : "people"}</small>
+      </span>
+      <ChevronRight className={styles.siteChevron} size={18} strokeWidth={2} />
+    </button>
+    <div className={styles.entries}>
+      {shown.map(({ root, reply }) => <div key={root.id} className={styles.thread}>
+        <Entry item={root} root={root} scope={scope} signedIn={signedIn} onOpen={() => onOpen(root, root)} onDismiss={onDismiss} onRemoved={() => onRemoved(root.id)} />
+        {reply && <Entry item={reply} root={root} scope={scope} signedIn={signedIn} onOpen={() => onOpen(root, reply)} onDismiss={onDismiss} onRemoved={() => onRemoved(reply.id)} />}
+      </div>)}
+    </div>
+    {hidden > 0 && <button type="button" className={styles.showAll} onClick={() => setExpanded(true)}>Show {hidden} more</button>}
+  </section>;
+}
+
+/** One person's crumb under a website: photo, name, what they said, the passage it is about. */
+function Entry({ item, root, scope, signedIn, onOpen, onDismiss, onRemoved }: { item: FeedItem; root: FeedItem; scope: string; signedIn: boolean; onOpen: () => void; onDismiss?: (item: FeedItem) => void; onRemoved: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState("");
+  const name = nameOf(item.author);
+  const reply = item.id !== root.id;
+  const quote = root.target.kind === "text" ? root.target.quote : null;
+  const replies = root.threadCount > 1 ? root.threadCount - 1 : 0;
+  const audience = item.scope ?? (scope.startsWith("org:") || scope.startsWith("room:") ? scope : "public");
+  async function run(work: () => Promise<unknown>) {
+    if (busy) return;
+    setBusy(true);
+    try { await work(); } catch (error) { setNotice(message(error)); } finally { setBusy(false); }
+  }
+  const remove = () => void run(async () => {
+    if (item.id.startsWith("at://")) await act({ action: "delete", id: item.id });
+    else await fetch("/api/browser/annotations", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scope: audience, target: item.target, action: "delete-comment", body: "", messageId: item.id, operationId: crypto.randomUUID() }) }).then(read);
+    onRemoved();
+  });
+  const [notesOpen, setNotesOpen] = useState(false);
+  const [noteCount, setNoteCount] = useState(item.noteCount ?? 0);
+  const isPublic = audience === "public" && item.audience === "Public";
+  return <article className={styles.entry} data-reply={reply || undefined} data-crumb={item.id} tabIndex={0} aria-label={`Crumb by ${name}`}
+    onClick={event => { if (!(event.target as HTMLElement).closest("button, a, textarea, input, form, details") && !window.getSelection()?.toString()) onOpen(); }}
+    onKeyDown={event => { if (event.key === "Enter" && event.target === event.currentTarget) onOpen(); }}>
+    <Avatar person={item.author} size={reply ? 24 : 32} />
+    <div className={styles.entryMain}>
+      <div className={styles.entryHead}>
+        <strong>{name}</strong>
+        {reply && <span>replied to {nameOf(root.author)}</span>}
+        <time dateTime={item.createdAt} title={new Date(item.createdAt).toLocaleString()}>{ago(item.createdAt)}</time>
+        <PostMenu label={`More for ${name}’s crumb`}>
+          <PostMenuItem icon={<Link2 size={18} />} onClick={() => void navigator.clipboard?.writeText(item.url)}>Copy link to passage</PostMenuItem>
+          {onDismiss && <PostMenuItem icon={<Plus size={18} />} disabled={busy} onClick={() => void run(async () => { await sendActivity(root, "more"); setNotice("You’ll see more crumbs like this."); })}>Show more like this</PostMenuItem>}
+          {onDismiss && <PostMenuItem icon={<MinusCircle size={18} />} disabled={busy} onClick={() => void run(async () => { await sendActivity(root, "less"); onDismiss(root); })}>Show fewer like this</PostMenuItem>}
+          {signedIn && !item.own && <PostMenuItem icon={<Flag size={18} />} onClick={onOpen}>Report this crumb</PostMenuItem>}
+          {item.own && <PostMenuItem icon={<Trash2 size={18} />} danger disabled={busy} onClick={remove}>Delete</PostMenuItem>}
+        </PostMenu>
+      </div>
+      {item.state && item.state !== "visible" && <p className={styles.state} data-state={item.state}>{item.state === "rejected" ? `Not shown${item.reason ? `: ${item.reason}` : ""}` : STATES[item.state] ?? "Hidden"}</p>}
+      {item.comment && <p className={styles.entryComment}>{item.comment}</p>}
+      {!reply && quote && <q className={styles.entryQuote}>{quote}</q>}
+      {isPublic && <CrumbNotes crumbId={item.id} note={item.note} count={item.noteCount} own={item.own} signedIn={signedIn} open={notesOpen} onCount={setNoteCount} />}
+      <div className={styles.entryActions}>
+        <button type="button" aria-label={`Reply, ${root.threadCount} ${root.threadCount === 1 ? "crumb" : "crumbs"} on this passage`} title="Reply" onClick={onOpen}>
+          <MessageCircle size={15} strokeWidth={1.9} />{!reply && replies > 0 && <span>{replies}</span>}
+        </button>
+        {isPublic && <button type="button" aria-expanded={notesOpen} aria-label={noteCount > 0 ? `${noteCount} ${noteCount === 1 ? "note" : "notes"}` : "Add note"} title={noteCount > 0 ? "Notes" : "Add note"} onClick={() => setNotesOpen(value => !value)}>
+          <UsersRound size={15} strokeWidth={1.9} />{noteCount > 0 && <span>{noteCount}</span>}
+        </button>}
+      </div>
+      {notice && <p className={styles.notice} role="status">{notice}</p>}
+    </div>
+  </article>;
+}
+
 const STATES: Record<string, string> = { pending: "Waiting for review", reported: "Hidden after reports", hidden: "Hidden by a moderator" };
 
 function Feed({ status, fixedScope, title, onBack, right, intro, organizations = [], initialTab, initialOrg }: { status: Status; orgs: Org[]; fixedScope?: string; title?: ReactNode; onBack?: () => void; right?: ReactNode; intro?: ReactNode; organizations?: OrgFeed[]; initialTab?: "organizations"; initialOrg?: string }) {
@@ -391,16 +500,9 @@ function Feed({ status, fixedScope, title, onBack, right, intro, organizations =
       {intro}
       {error && <Problem text={error} retry={() => void load()} />}
       <div className={styles.feed} aria-live="polite">
-        {threads(items).map(([first, latest]) => {
-          const remove = (id: string) => () => setItems(previous => previous.filter(other => other.id !== id));
-          // Either row opens the whole thread: the crumb that started it, with its replies below.
-          return latest
-            ? <div key={latest.id} className={styles.slice}>
-              <Crumb item={first} thread="parent" scope={scope} signedIn={status.signedIn} track={track} onDismiss={onDismiss} onOpen={() => open(first)} onRemoved={remove(first.id)} />
-              <Crumb item={latest} thread="child" scope={scope} signedIn={status.signedIn} track={track} onDismiss={onDismiss} onOpen={() => open(first, latest)} onRemoved={remove(latest.id)} />
-            </div>
-            : <Crumb key={first.id} item={first} scope={scope} signedIn={status.signedIn} track={track} onDismiss={onDismiss} onOpen={() => open(first)} onRemoved={remove(first.id)} />;
-        })}
+        {/* Websites, each with the people who left crumbs on it; a crumb opens its whole thread. */}
+        {sites(items).map(group => <Site key={group.key} group={group} scope={scope} signedIn={status.signedIn} track={track} onDismiss={onDismiss}
+          onOpen={(root, clicked) => open(root, clicked)} onRemoved={id => setItems(previous => previous.filter(other => other.id !== id))} />)}
       </div>
       {!loading && !error && items.length === 0 && <div className={styles.emptyState}>
         <CrumbsIcon size={34} strokeWidth={1.2} />
@@ -452,12 +554,11 @@ function SignIn({ status, refresh }: { status: Status; refresh: () => Promise<St
   </section>;
 }
 
-function Account({ status, orgs, refresh }: { status: Status; orgs: Org[]; refresh: () => Promise<Status> }) {
+function Account({ status, refresh }: { status: Status; refresh: () => Promise<Status> }) {
   const [follows, setFollows] = useState<{ crumbs: Array<Person & { uri: string }>; bluesky: number } | null>(null);
   const [who, setWho] = useState("");
   const [name, setName] = useState("");
   const [handleResult, setHandleResult] = useState<{ handle: string; applied: boolean; instructions?: string } | null>(null);
-  const [servers, setServers] = useState(status.servers);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   usePageLoading(Boolean(busy));
@@ -476,15 +577,6 @@ function Account({ status, orgs, refresh }: { status: Status; orgs: Org[]; refre
         <Avatar person={me} size={48} />
         <div><h2>{nameOf(me)}</h2><p>@{shortHandle(status.handle)}</p></div>
         <button type="button" className={styles.secondary} disabled={Boolean(busy)} onClick={() => void run("out", async () => { await act({ action: "sign-out" }); await refresh(); })}><LogOut size={14} />Sign out</button>
-      </div>
-    </div>
-
-    <div className={styles.card}>
-      <h3>Default audience</h3>
-      <div className={styles.choices} role="radiogroup" aria-label="Default audience">
-        {[["private", "Only me", Lock] as const, ["public", "Public", Globe2] as const, ...orgs.map(org => [`org:${org.id}`, org.name, UsersRound] as const)].map(([value, title, Icon]) =>
-          <button key={value} type="button" role="radio" aria-checked={status.defaultVisibility === value} disabled={Boolean(busy)} onClick={() => void run("visibility", async () => { await act({ action: "visibility", value }); await refresh(); })}>
-            <Icon size={15} /><span><strong>{title}</strong></span></button>)}
       </div>
     </div>
 
@@ -509,21 +601,6 @@ function Account({ status, orgs, refresh }: { status: Status; orgs: Org[]; refre
       </form>
       {handleResult && <p className={styles.notice} role="status">{handleResult.applied ? `Your handle is now @${shortHandle(handleResult.handle)}` : handleResult.instructions}</p>}
     </div>
-
-    <details className={styles.card}>
-      <summary><h3>Servers</h3></summary>
-      <form className={styles.servers} onSubmit={event => { event.preventDefault(); void run("servers", async () => { await act({ action: "servers", indexer: servers.indexer, orgStore: servers.orgStore }); await refresh(); }); }}>
-        <label>Highlight index<input value={servers.indexer} onChange={event => setServers({ ...servers, indexer: event.target.value })} spellCheck={false} /></label>
-        <label>Organization store<input value={servers.orgStore} onChange={event => setServers({ ...servers, orgStore: event.target.value })} spellCheck={false} /></label>
-        <button type="submit" className={styles.secondary} disabled={Boolean(busy)}>Save</button>
-      </form>
-      <h3 className={styles.sub}>Public crumbs</h3>
-      <div className={styles.choices} role="radiogroup" aria-label="How public crumbs are stored">
-        {([["records", "Crumbs records", "Only in Crumbs"], ["posts", "Bluesky posts", "Also on your Bluesky profile"]] as const).map(([value, title, detail]) =>
-          <button key={value} type="button" role="radio" aria-checked={status.publicMode === value} disabled={Boolean(busy)} onClick={() => void run("mode", async () => { await act({ action: "servers", publicMode: value }); await refresh(); })}>
-            <span><strong>{title}</strong><small>{detail}</small></span></button>)}
-      </div>
-    </details>
   </section>;
 }
 
@@ -564,20 +641,27 @@ export function CrumbsAccountSection({ onStatus }: { onStatus?: (status: CrumbsS
   return <div className={styles.embedded}>
     {error && <Problem text={error} retry={() => void refresh().catch(error => setError(message(error)))} />}
     {state && <div className={styles.card}>
-      <label className={styles.feedSwitch}>Personalize the Everyone feed<input type="checkbox" role="switch" checked={pendingFeed ?? state.status.personalizeFeed} disabled={pendingFeed !== null}
-        aria-describedby="crumbs-feed-description" onChange={event => void changeFeed(event.target.checked)} /></label>
+      {/* The same switch as every other Settings toggle. */}
+      <div className={styles.feedSwitch}><span id="crumbs-feed-label">Personalize the Everyone feed</span>{(() => {
+        const on = pendingFeed ?? state.status.personalizeFeed;
+        return <button type="button" role="switch" aria-checked={on} aria-labelledby="crumbs-feed-label" aria-describedby="crumbs-feed-description"
+          disabled={pendingFeed !== null} onClick={() => void changeFeed(!on)}
+          className={`neu-inset relative h-6 w-11 shrink-0 rounded-full transition disabled:opacity-60 ${on ? "bg-[var(--botanical)]" : "bg-[var(--line-strong)]"}`}>
+          <span className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-[var(--paper-raised)] shadow transition-transform ${on ? "translate-x-5" : ""}`} />
+        </button>;
+      })()}</div>
       <p id="crumbs-feed-description" className={styles.hint}>Uses browser visits, Breadboard chat titles, follows and how you read and respond to public crumbs on this device. Turning it off clears saved feed feedback and shows newest first.</p>
     </div>}
-    {state && <Account status={state.status} orgs={state.orgs} refresh={refresh} />}
+    {state && <Account status={state.status} refresh={refresh} />}
     {state?.status.signedIn && <div className={styles.orgSection}>
       <h3>Organizations</h3>
       <p className={styles.hint}>Encrypted groups whose crumbs only members can read. Each one shows up as a feed on the Crumbs page.</p>
-      <Organizations status={state.status} orgs={state.orgs} localOrgs={state.local} refresh={refresh} />
+      <Organizations status={state.status} orgs={state.orgs} refresh={refresh} />
     </div>}
   </div>;
 }
 
-function Organizations({ status, orgs, localOrgs, refresh }: { status: Status; orgs: Org[]; localOrgs: LocalOrg[]; refresh: () => Promise<Status> }) {
+function Organizations({ status, orgs, refresh }: { status: Status; orgs: Org[]; refresh: () => Promise<Status> }) {
   const [selected, setSelected] = useState<string | null>(null);
   const [detail, setDetail] = useState<OrgDetail | null>(null);
   const [name, setName] = useState("");
@@ -641,16 +725,8 @@ function Organizations({ status, orgs, localOrgs, refresh }: { status: Status; o
     {orgs.length > 0 && <div className={styles.scopes} role="radiogroup" aria-label="Your organizations">
       {orgs.map(org => <button key={org.id} type="button" role="radio" aria-checked={org.id === current} onClick={() => setSelected(org.id)}><Lock size={11} />{org.name}</button>)}
     </div>}
-    {orgs.length === 0 && localOrgs.length === 0 && <div className={styles.emptyState}><ShieldCheck size={34} strokeWidth={1.2} /><h2>No organizations yet</h2></div>}
+    {orgs.length === 0 && <div className={styles.emptyState}><ShieldCheck size={34} strokeWidth={1.2} /><h2>No organizations yet</h2></div>}
     {body}
-    {localOrgs.length > 0 && <div className={styles.card}>
-      <h3>Your Breadboard organizations</h3>
-      <p className={styles.notice}>They stay on this machine until you connect one. Connecting makes an encrypted Crumbs twin and relays its rooms.</p>
-      <ul className={styles.people}>{localOrgs.map(org => <li key={org.id}>
-        <span><strong>{org.name}</strong></span>
-        <button type="button" className={styles.secondary} disabled={Boolean(busy)} onClick={() => void run("connect", async () => { await act({ action: "org-connect", organization: org.id }); await refresh(); })}><Plus size={14} />Connect</button>
-      </li>)}</ul>
-    </div>}
     <form className={`${styles.card} ${styles.row}`} onSubmit={event => { event.preventDefault(); void run("create", async () => { const org = await act<Org>({ action: "org-create", name }); setName(""); await refresh(); setSelected(org.id); }); }}>
       <label className={styles.field}><input aria-label="Organization name" placeholder="New organization" value={name} onChange={event => setName(event.target.value)} maxLength={80} /></label>
       <button type="submit" className={styles.primary} disabled={Boolean(busy) || !name.trim()}><Plus size={14} />Create</button>

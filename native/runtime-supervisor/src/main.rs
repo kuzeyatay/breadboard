@@ -446,6 +446,8 @@ const LOOPX_WORKER_ENVIRONMENT_NAMES: &[&str] = &[
 const RESOURCE2SKILL_WORKER_ENVIRONMENT_NAMES: &[&str] = &[
     "RESOURCE2SKILL_ROOT",
     "RESOURCE2SKILL_WORKSPACE_ROOT",
+    // Shared video-frame root; must match runtime-core service_environment.rs.
+    "RESOURCE2SKILL_FRAMES_ROOT",
     "PLAYWRIGHT_BROWSERS_PATH",
     "CHATMOCK_API_KEY",
     "HTTP_PROXY",
@@ -548,6 +550,10 @@ const OPENMONTAGE_WORKER_ENVIRONMENT_NAMES: &[&str] = &[
     "GOOGLE_APPLICATION_CREDENTIALS",
     "GOOGLE_CLOUD_PROJECT",
     "GOOGLE_CLOUD_LOCATION",
+    // Google Drive, read by the dashboard; must match runtime-core service_environment.rs.
+    "GOOGLE_DRIVE_CLIENT_ID",
+    "GOOGLE_DRIVE_CLIENT_SECRET",
+    "GOOGLE_DRIVE_API_KEY",
     "ELEVENLABS_API_KEY",
     "OPENAI_API_KEY",
     "XAI_API_KEY",
@@ -1290,6 +1296,10 @@ const SOLIDWORKS_MCP_ENVIRONMENT_NAMES: &[&str] = &[
 ];
 const DASHBOARD_ONLY_ENVIRONMENT_NAMES: &[&str] = &[
     "COMPOSIO_API_KEY",
+    // Google Drive, the carrier for files shared in organizations; read only by the dashboard.
+    "GOOGLE_DRIVE_CLIENT_ID",
+    "GOOGLE_DRIVE_CLIENT_SECRET",
+    "GOOGLE_DRIVE_API_KEY",
     "BREADBOARD_MEMORY_DIAGNOSTIC_TOKEN",
     "BREADBOARD_PACKAGED_SERVICE_EVIDENCE",
     "BREADBOARD_PACKAGED_SERVICE_EVIDENCE_ENDPOINTS",

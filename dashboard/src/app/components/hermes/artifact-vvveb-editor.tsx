@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { ArtifactLoadingMark } from "./artifact-preview-loading";
+import BreadboardLoader from "../breadboard-loader";
 import { useLoadingTextReveal } from "../loading-text-reveal";
 import type { PresentedArtifact } from "@/lib/hermes/artifact-types";
 
@@ -252,7 +252,7 @@ export default function ArtifactVvvebEditor({ artifact, onSaved }: Props) {
       <div className="flex min-h-9 items-center gap-3 border-b border-[var(--line)] bg-[var(--paper-strong)] px-4 py-2 text-xs">
         <span className="font-medium text-[var(--ink-heading)]">Visual HTML editor</span>
         <span className={`ml-auto flex items-center gap-2 ${statusTone}`} role={status.phase === "error" ? "alert" : "status"}>
-          {status.phase === "loading" && <ArtifactLoadingMark size={16} />}
+          {status.phase === "loading" && <BreadboardLoader className="h-4 w-4 shrink-0" />}
           <span ref={statusReveal}>{status.message}</span>
         </span>
         {status.phase === "error" ? (

@@ -17,6 +17,8 @@ import {
   withPhotos,
 } from "@/lib/buzz/route-helpers.ts";
 import { ApiError } from "@/lib/hermes/route-helpers.ts";
+import { readMessageContent } from "@/lib/buzz/message-attachments.ts";
+import { buzzBridge } from "@/lib/crumbs/service.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -36,7 +38,7 @@ export async function GET(
     }
     const reactions = reactionsForRoom(room.id, self.id);
     const messages = (await readRoomThread(room.id, parentId)).map(message => ({ ...presentRoomMessage(message, userId), reactions: reactions.get(message.id) ?? [] }));
-    return NextResponse.json({ room, members: withPhotos(room.id, members), root: presentRoomMessage(root, userId), replies: messages, messages, selfMemberId: self.id, permissions: roomPermissions(userId, room) });
+    return NextResponse.json({ room, members: withPhotos(room.id, members, userId), root: presentRoomMessage(root, userId), replies: messages, messages, selfMemberId: self.id, permissions: roomPermissions(userId, room), linked: buzzBridge.isLinked(room.id) });
   } catch (error) {
     return apiErrorResponse(error);
   }
@@ -59,10 +61,10 @@ export async function POST(
     }
 
     const body = await readJsonBody(request);
-    const text = requireString(body.body, "body", 12000);
+    const { text, metadata } = readMessageContent(userId, room.id, body);
     const clientMessageId = requireString(body.clientMessageId, "clientMessageId", 128);
 
-    const message = postHumanMessage(room, self, text, clientMessageId, parentId);
+    const message = postHumanMessage(room, self, text, clientMessageId, parentId, metadata);
 
     const started = [];
     for (const responder of resolveResponders(members, text)) {
@@ -75,6 +77,7 @@ export async function POST(
         request,
         model: typeof body.model === "string" && body.model.length <= 200 ? body.model : undefined,
         reasoningEffort: typeof body.reasoningEffort === "string" && body.reasoningEffort.length <= 40 ? body.reasoningEffort : undefined,
+        switches: { superAgent: body.superAgent === true, adhdMode: body.adhdMode === true, yoloMode: body.yoloMode === true },
       });
       started.push({
         memberId: responder.id,

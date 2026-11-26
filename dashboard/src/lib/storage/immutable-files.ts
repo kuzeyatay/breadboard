@@ -103,6 +103,24 @@ export async function deduplicateImmutableFile(db: Database.Database, root: stri
   return saved;
 }
 
+/**
+ * Share a just-written upload with an identical one at once, using the digest
+ * computed while its bytes streamed in. Re-attaching the same document used to
+ * write a full new copy every time (one 215 MB PDF was stored 37 times in
+ * eleven days) and the idle worker only looks at files a week old. The logical
+ * path, its bytes and its ownership rules are exactly those of the worker path;
+ * any doubt leaves the plain file as written for that worker.
+ */
+export async function shareFreshImmutableUpload(db: Database.Database, root: string, absolutePath: string, sha256: string): Promise<number> {
+  const relative = path.relative(root, absolutePath);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative) || !isImmutableUpload(relative) || !/^[a-f0-9]{64}$/u.test(sha256)) return 0;
+  const stat = await fs.promises.stat(absolutePath, { bigint: true });
+  if (!stat.isFile() || stat.nlink !== BigInt(1)) return 0;
+  return deduplicateImmutableFile(db, root, relative, {
+    verified: { hash: sha256, identity: fileIdentity(stat), modifiedMs: Number(stat.mtimeMs), bytes: Number(stat.size) },
+  });
+}
+
 export function enqueueImmutableCandidate(db: Database.Database, relative: string, stat: BigIntStats, artifactVersion = false): void {
   ensureImmutableFileSchema(db);
   if ((!isImmutableUpload(relative) && !artifactVersion) || Number(stat.mtimeMs) > Date.now()-7*DAY_MS || stat.size<BigInt(16_384)) return;

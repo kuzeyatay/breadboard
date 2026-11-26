@@ -130,6 +130,7 @@ export interface TabView {
   /** Temporary app or browser tab opened by an AI task. */
   aiOpened?: boolean;
   highlighted?: boolean;
+  terminalForward?: boolean;
   downloadsOpen?: boolean;
   generation?: number;
   find?: { matches: number; activeMatchOrdinal: number };
@@ -152,6 +153,8 @@ export interface TabView {
     pdfViewer?: string;
     uiVisited?: boolean;
     uiKey?: string;
+    terminalOrigin?: boolean;
+    backToTerminal?: boolean;
     canGoBack: boolean;
     canGoForward: boolean;
     terminalOpen: boolean;

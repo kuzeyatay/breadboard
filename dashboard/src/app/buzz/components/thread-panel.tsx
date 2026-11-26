@@ -93,7 +93,8 @@ export function ThreadPanel({ roomPublicId, rootId, userId, onClose, onChanged }
 
       <Composer key={thread.scope} draftKey={thread.scope} roomId={roomPublicId} threadId={rootId}
         messages={thread.detail?.root ? [thread.detail.root, ...thread.messages] : thread.messages}
-        members={thread.members} placeholder="Reply in thread…" disabled={!thread.detail?.permissions.canPost} onSend={thread.send} />
+        members={thread.members} placeholder="Reply in thread…" disabled={!thread.detail?.permissions.canPost} onSend={thread.send}
+        files={thread.detail?.linked ? "linked" : "local"} />
 
     </aside>
 

@@ -99,7 +99,7 @@ export default function GardenCardSettingsMenu({
           }}>
             <Pencil /> Edit garden
           </Menu.Item>
-          <Menu.Item className={styles.item} disabled={exportBusy} onSelect={onExport}>
+          <Menu.Item className={styles.item} disabled={exportBusy} onSelect={onExport} title="Download the Garden with its current private and shared uploads">
             {exporting ? <LoaderCircle {...loadingIconMotion} className={styles.spinner} /> : <Download />}
             {exporting ? "Exporting garden…" : "Export garden"}
           </Menu.Item>

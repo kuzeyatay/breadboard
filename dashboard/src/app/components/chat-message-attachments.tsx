@@ -7,6 +7,7 @@ import AttachmentPreviewDialog, {
   storedFilePreviewSource,
   type AttachmentPreviewSource,
 } from "@/app/components/attachment-preview-dialog";
+import { MessageDocumentCard } from "@/app/components/document-attachment-card";
 import ModelAttachmentViewer from "@/app/components/model-attachment-viewer";
 import { ChatVideoAttachmentCard } from "@/app/components/chat-video-link-embed";
 import {
@@ -373,20 +374,16 @@ function ChatMessageAttachments({
         ) : null}
 
         {sourceAttachments.length || fileEntries.length ? (
-          <div className="flex flex-wrap justify-end gap-1">
+          <div className="flex w-full min-w-0 flex-col items-end gap-1.5" data-testid="message-file-attachments">
             {sourceAttachments.map((source, index) => (
-              <AttachmentPreviewDialog
+              <MessageDocumentCard
                 key={`${source.kind}:${source.href}:${index}`}
+                name={source.name}
+                format={source.kind === "pdf" ? "pdf" : undefined}
                 source={source}
-                className={`${FILE_CHIP_CLASS} cursor-pointer transition-colors hover:border-[var(--botanical)] hover:text-[var(--ink)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--botanical)]`}
-                title={`Open ${source.name}`}
-              >
-                <PaperclipIcon />
-                <span className="truncate">{source.name}</span>
-              </AttachmentPreviewDialog>
+              />
             ))}
             {fileEntries.map((attachment, index) => {
-              const key = `${attachment.name}-${index}`;
               // A stored file opens in a popup over the chat: documents in
               // their reader (a workbook as a spreadsheet), ordinary files as
               // text, a grid or a rendering. A name with no stored bytes stays
@@ -397,24 +394,13 @@ function ChatMessageAttachments({
                   : attachment.type === "file" && "blobId" in attachment && typeof attachment.blobId === "string" && attachment.blobId
                     ? storedFilePreviewSource({ name: attachment.name, blobId: attachment.blobId })
                     : null;
-              if (!preview) {
-                return (
-                  <span key={key} className={FILE_CHIP_CLASS}>
-                    <PaperclipIcon />
-                    <span className="truncate">{attachment.name}</span>
-                  </span>
-                );
-              }
               return (
-                <AttachmentPreviewDialog
-                  key={key}
+                <MessageDocumentCard
+                  key={`${attachment.name}-${index}`}
+                  name={attachment.name}
+                  format={"format" in attachment && typeof attachment.format === "string" ? attachment.format : undefined}
                   source={preview}
-                  className={`${FILE_CHIP_CLASS} cursor-pointer transition-colors hover:border-[var(--botanical)] hover:text-[var(--ink)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--botanical)]`}
-                  title={`Open ${attachment.name}`}
-                >
-                  <PaperclipIcon />
-                  <span className="truncate">{attachment.name}</span>
-                </AttachmentPreviewDialog>
+                />
               );
             })}
           </div>

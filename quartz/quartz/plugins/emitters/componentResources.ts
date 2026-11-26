@@ -25,6 +25,7 @@ import {
 import { Features, transform } from "lightningcss"
 import { transform as transpile } from "esbuild"
 import { write } from "./helpers"
+import { sharedResourceFiles } from "../../util/resources"
 
 type ComponentResources = {
   css: string[]
@@ -301,8 +302,12 @@ function addGlobalPageResources(ctx: BuildCtx, componentResources: ComponentReso
 export const ComponentResources: QuartzEmitterPlugin = () => {
   return {
     name: "ComponentResources",
-    async *emit(ctx, _content, _resources) {
+    async *emit(ctx, _content, resources) {
       const cfg = ctx.cfg.configuration
+      // Shared copies of plugin scripts/styles that pages link instead of inlining.
+      for (const file of sharedResourceFiles(resources ?? { css: [], js: [] })) {
+        yield write({ ctx, slug: file.slug as FullSlug, ext: file.ext, content: file.content })
+      }
       // component specific scripts and styles
       const componentResources = getComponentResources(ctx)
       let googleFontsStyleSheet = ""

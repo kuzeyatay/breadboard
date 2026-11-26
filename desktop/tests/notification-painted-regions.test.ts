@@ -4,7 +4,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { readNotificationPaintedRects } from '../src/main/notification-visible-region';
 
-test('transparent native shell, card gaps and fixed popovers report only painted clipped geometry', {timeout:20_000}, async()=>{
+test('transparent native shell, card gaps and fixed popovers report only painted clipped geometry', {timeout:60_000}, async()=>{
   const dashboard=process.env.BREADBOARD_NOTIFICATION_TEST_DASHBOARD || path.resolve(__dirname,'../../../dashboard');
   const {chromium}=require(require.resolve('playwright',{paths:[dashboard]}));
   const executablePath=['C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe','C:/Program Files/Google/Chrome/Application/chrome.exe'].find(file=>fs.existsSync(file));

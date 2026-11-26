@@ -23,7 +23,7 @@ const iconButton = "inline-flex h-7 w-7 items-center justify-center rounded-md t
  * searchable popover: this place's chats on top, and below them the other chats the search reaches,
  * which open where they live.
  */
-export default function AssistantPanelHeader({ title, starredOpen, onToggleStarred, items, activeId, onOpen, currentLabel, searchOthers, onOpenOther, onNewChat, newChatDisabled, onClose, extra }: {
+export default function AssistantPanelHeader({ title, starredOpen, onToggleStarred, items, activeId, onOpen, currentLabel, otherLabel = "Other chats", searchOthers, onOpenOther, onNewChat, newChatDisabled, onClose, extra }: {
   title: string;
   starredOpen: boolean;
   onToggleStarred: () => void;
@@ -32,6 +32,8 @@ export default function AssistantPanelHeader({ title, starredOpen, onToggleStarr
   onOpen: (id: string) => void;
   /** Heading over `items`, e.g. "This page". */
   currentLabel: string;
+  /** Heading over the other chats, e.g. "Other websites". */
+  otherLabel?: string;
   /** Other chats: recent ones for an empty query, else search hits. Items already in `items` are dropped. */
   searchOthers?: (query: string, signal: AbortSignal) => Promise<AssistantHistoryItem[]>;
   onOpenOther?: (item: AssistantHistoryItem) => void;
@@ -85,7 +87,7 @@ export default function AssistantPanelHeader({ title, starredOpen, onToggleStarr
         {mine.length ? <ul>{mine.map(item => row(item, () => onOpen(item.id)))}</ul>
           : <p className="px-3 py-1.5 text-[12px] text-[var(--ink-muted)]">{needle ? "No matching chats here." : "No chats here yet."}</p>}
         {searchOthers && rest.length ? <>
-          <p className="mt-1 border-t border-[var(--line)] px-3 pb-1 pt-2 text-[11px] font-medium text-[var(--ink-muted)]">Other chats</p>
+          <p className="mt-1 border-t border-[var(--line)] px-3 pb-1 pt-2 text-[11px] font-medium text-[var(--ink-muted)]">{otherLabel}</p>
           <ul>{rest.map(item => row(item, () => onOpenOther?.(item)))}</ul>
         </> : null}
       </div>

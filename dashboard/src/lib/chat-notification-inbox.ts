@@ -30,6 +30,7 @@ export interface ChatNotificationTarget {
 
 export const CHAT_RESPONSE_NOTIFICATION_TITLES = [
   "Response ready",
+  "Follow-up ready",
   "Response failed",
   "Answer needed",
   "Approval needed",

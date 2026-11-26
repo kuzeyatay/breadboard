@@ -22,8 +22,10 @@ import {
   withPhotos,
 } from "@/lib/buzz/route-helpers.ts";
 import { buzzBridge, relayOrganizations } from "@/lib/crumbs/service.ts";
+import { readMessageContent } from "@/lib/buzz/message-attachments.ts";
 
 export const dynamic = "force-dynamic";
+
 
 /**
  * The room's spine, its members, and its reactions in one response.
@@ -68,7 +70,7 @@ export async function GET(
       hasOlder,
       nextCursor: hasOlder ? messages[0]?.id ?? null : null,
       linked: buzzBridge.isLinked(room.id),
-      members: withPhotos(room.id, listMembers(room.id)),
+      members: withPhotos(room.id, listMembers(room.id), userId),
       messages: messages.map((message) => ({
         ...presentRoomMessage(message, userId),
         reactions: reactions.get(message.id) ?? [],
@@ -95,10 +97,10 @@ export async function POST(
     const { room, self, members } = requireRoomAndSelf(userId, roomId, displayName);
     const body = await readJsonBody(request);
 
-    const text = requireString(body.body, "body", 12000);
+    const { text, metadata } = readMessageContent(userId, room.id, body);
     const clientMessageId = requireString(body.clientMessageId, "clientMessageId", 128);
     if (body.parentId != null) throw new ApiError(400, "use_thread", "Post replies through their thread.");
-    const message = postHumanMessage(room, self, text, clientMessageId);
+    const message = postHumanMessage(room, self, text, clientMessageId, null, metadata);
     markRoomRead(room.id, userId, message.id);
     void relayOrganizations(userId, room.id, { force: true });
 
@@ -114,6 +116,7 @@ export async function POST(
         request,
         model: typeof body.model === "string" && body.model.length <= 200 ? body.model : undefined,
         reasoningEffort: typeof body.reasoningEffort === "string" && body.reasoningEffort.length <= 40 ? body.reasoningEffort : undefined,
+        switches: { superAgent: body.superAgent === true, adhdMode: body.adhdMode === true, yoloMode: body.yoloMode === true },
       });
       started.push({
         memberId: responder.id,

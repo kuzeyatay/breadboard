@@ -269,6 +269,8 @@ export async function POST(request: Request) {
 
     if (slug === WORKSPACE_CONNECTION) {
       const { callWorkspaceTool } = await import("@/lib/hermes/workspace-tools.ts");
+      if (request.signal.aborted || getActiveRuntimeRun(session.id)?.id !== run.id)
+        throw new ApiError(409,"workspace_request_cancelled","The chat stopped before the workspace operation started.");
       const data = callWorkspaceTool(ownerId, session.conversation_id, tool, args);
       recordAuditEvent({
         eventType: "mcp.tool_completed", runtimeSessionId: session.id, userId: ownerId,
@@ -542,14 +544,14 @@ export async function POST(request: Request) {
         "That connection is not connected.",
       ), slug);
     }
-    const privateStateHost = usesAuthoredMcpHost(connection);
+    const authoredHost = usesAuthoredMcpHost(connection);
     if (tool === "__breadboard_list_tools") {
       // Read-only discovery on the selected, same-user connection. Return
       // schemas only for actions the current capability mode can call; the
       // ordinary execution path below rechecks policy and declarations.
       const available = proxyMcpTools(session.user_id, slug).filter(candidate =>
         decision.mode === "scoped_implementation" ||
-        (connectionToolAllowed(candidate.name) && (privateStateHost || candidate.annotations?.destructiveHint !== true)),
+        (connectionToolAllowed(candidate.name) && (authoredHost || candidate.annotations?.destructiveHint !== true)),
       );
       return NextResponse.json({ ok: true, data: { tools: available } });
     }
@@ -573,14 +575,14 @@ export async function POST(request: Request) {
         "This MCP operation requires scoped implementation mode.",
       );
     }
-    if (privateStateHost && declared.annotations?.readOnlyHint !== true &&
+    if (authoredHost && (declared.annotations?.readOnlyHint !== true || declared.annotations?.openWorldHint) &&
         !permissionGranted && parseRuntimeRunDispatch(run).teamApproval !== true) {
       throw new ApiError(428, "connected_app_permission_required",
-        `Allow ${tool} to change the private data saved by ${connection.displayName}?`);
+        declared.annotations?.openWorldHint ? `Allow ${connection.displayName} to call its configured API using ${tool}?` : `Allow ${tool} to change the private data saved by ${connection.displayName}?`);
     }
     if (
       declared.annotations?.destructiveHint === true &&
-      !privateStateHost &&
+      !authoredHost &&
       decision.mode !== "scoped_implementation"
     ) {
       throw new ApiError(

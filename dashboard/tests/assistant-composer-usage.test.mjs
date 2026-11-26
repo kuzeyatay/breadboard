@@ -6,7 +6,7 @@ const source = (relativePath) =>
   fs.readFileSync(new URL(relativePath, import.meta.url), "utf8");
 
 test("Usage lives in the shared Intelligence menu", () => {
-  const composerSource = source("../src/app/components/assistant-composer.tsx");
+  const composerSource = (source("../src/app/components/assistant-intelligence-menu.tsx") + source("../src/app/components/assistant-composer.tsx"));
   const intelligenceIndex = composerSource.indexOf(">Intelligence</div>");
   const modelIndex = composerSource.indexOf("<span>Model</span>", intelligenceIndex);
   const usageIndex = composerSource.indexOf("<UsageLimitsPopover", modelIndex);
@@ -21,7 +21,7 @@ test("the Usage field never shows a quota fail-over badge", () => {
   // Sol" beside a Google report showing 93% of the quota left: ChatMock's
   // short-term cooldown is not the plan's quota. The field now describes the
   // chosen model's own usage and nothing else.
-  const composerSource = source("../src/app/components/assistant-composer.tsx");
+  const composerSource = (source("../src/app/components/assistant-intelligence-menu.tsx") + source("../src/app/components/assistant-composer.tsx"));
   const usageSource = source("../src/app/components/usage-limits-popover.tsx");
   assert.doesNotMatch(usageSource, /is out of quota|usingFallback|modelFailover|formatResetWindow/);
   assert.doesNotMatch(composerSource, /modelFailover/);
@@ -29,7 +29,7 @@ test("the Usage field never shows a quota fail-over badge", () => {
 });
 
 test("Intelligence remains editable during a run and its panels do not block the menu", () => {
-  const composerSource = source("../src/app/components/assistant-composer.tsx");
+  const composerSource = (source("../src/app/components/assistant-intelligence-menu.tsx") + source("../src/app/components/assistant-composer.tsx"));
   const usageSource = source("../src/app/components/usage-limits-popover.tsx");
 
   assert.match(composerSource, /onClick=\{toggleIntelligence\}/);
@@ -61,7 +61,7 @@ test("the Intelligence popup stack paints above workspace rail dividers", () => 
 });
 
 test("every ChatMock interface gets Usage through AssistantComposer only", () => {
-  const composerSource = source("../src/app/components/assistant-composer.tsx");
+  const composerSource = (source("../src/app/components/assistant-intelligence-menu.tsx") + source("../src/app/components/assistant-composer.tsx"));
   const interfaces = [
     source("../src/app/gardens/[clusterSlug]/workspace-client.tsx"),
     source("../src/app/garden/garden-assistant.tsx"),

@@ -44,7 +44,8 @@ export default function BrowserSelectionPopover({ entry: rawEntry }: { entry: un
     {hydrated && entry && <ChatSelectionMenu embedded onSizeChange={resize} selection={{ ...entry, anchor: { left: 10, right: 10, top: 60, bottom: 60, width: 0, height: 0 } }}
       highlighted={Boolean(entry.color)} highlightColor={entry.color} note={entry.note}
       onHighlightColor={color => void act("highlight", color)} onRemoveHighlight={() => void act("remove")}
-      onSaveNote={note => void act("note", note)} onAskInChat={() => void act("chat")}
+      // A crumb left for "Only me" is the web's note, so the picker only edits notes saved before that.
+      onSaveNote={entry.note ? note => void act("note", note) : undefined} onAskInChat={() => void act("chat")}
       onAskHere={() => void act("inline")}
       onComment={SHOW_ORGANIZATION_COMMENT_ACTION && new URLSearchParams(window.location.search).get("community") === "1" ? () => {
         void sendDesktopTabsCommand({ type: "browser-organization-selection" }).then(ok => { if (!ok) setError("Couldn’t open Crumbs. Select the text again."); }).catch(() => setError("Couldn’t open Crumbs."));

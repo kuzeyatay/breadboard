@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
-import { ArrowUp, ChevronLeft, ExternalLink, Flag, Globe2, Lock, MoreHorizontal, ShieldCheck, Sparkles, Trash2, UsersRound, X } from "lucide-react";
+import { ArrowUp, ChevronLeft, ExternalLink, Flag, Globe2, Lock, MessageCircle, MoreHorizontal, ShieldCheck, Sparkles, Trash2, UsersRound, X } from "lucide-react";
 import CrumbsIcon from "@/app/components/crumbs-icon";
 import CrumbNotes from "@/app/crumbs/crumb-notes";
 import { PostAction, PostCard, PostLabel, PostMenu, PostMenuItem } from "@/app/crumbs/post-card";
@@ -12,14 +12,13 @@ import { shortHandle } from "@/lib/crumbs/handle";
 import styles from "./browser-organization-panel.module.css";
 
 type Send = (command: DesktopTabsCommand) => Promise<boolean>;
-type Rooms = { organizations: Array<{ id: number; name: string }>; rooms: Array<{ publicId: string; organizationId: number; slug: string; name: string; archived: boolean }> };
-type Account = { signedIn: boolean; needsSignIn: boolean; handle: string | null; displayName: string | null; avatar: string | null; defaultVisibility: string };
-type EncryptedOrg = { id: string; name: string; role: "admin" | "member"; ready: boolean; crumbsRoom?: string | null };
+type Account = { signedIn: boolean; needsSignIn: boolean; handle: string | null; displayName: string | null; avatar: string | null };
+type EncryptedOrg = { id: string; name: string; role: "admin" | "member"; ready: boolean };
 type Level = "private" | "org" | "public";
 type Mode = { kind: "comment" } | { kind: "flag" } | { kind: "report"; messageId: string; author: string };
 
 const empty: AnnotationResponse = { threads: [], thread: null, messages: [], flags: [] };
-const signedOut: Account = { signedIn: false, needsSignIn: false, handle: null, displayName: null, avatar: null, defaultVisibility: "private" };
+const signedOut: Account = { signedIn: false, needsSignIn: false, handle: null, displayName: null, avatar: null };
 const levelOf = (scope: string): Level => scope === "private" ? "private" : scope === "public" ? "public" : "org";
 function label(target: BrowserAnnotationTarget) {
   if (target.kind === "text") return target.quote ?? "Selected text";
@@ -42,15 +41,15 @@ function Avatar({ src, name, size = 36 }: { src?: string | null; name: string; s
   return src && failed !== src ? <img className={styles.avatar} style={box} src={src} alt="" loading="lazy" referrerPolicy="no-referrer" onError={() => setFailed(src)} /> : <span className={styles.avatar} style={box} aria-hidden="true">{name.trim().charAt(0).toUpperCase() || "?"}</span>;
 }
 
-/** The account, its encrypted organizations, and this Breadboard's rooms. */
+/** The account and its encrypted organizations. */
 async function loadAudiences(signal?: AbortSignal) {
-  const [roomData, status] = await Promise.all([
-    fetch("/api/buzz/rooms", { signal, cache: "no-store" }).then(responseJson<Rooms>).catch((): Rooms => ({ organizations: [], rooms: [] })),
-    fetch("/api/crumbs?view=status", { signal, cache: "no-store" }).then(responseJson<Account>),
-  ]);
+  const status = await fetch("/api/crumbs?view=status", { signal, cache: "no-store" }).then(responseJson<Account>);
   const encrypted = status.signedIn ? await fetch("/api/crumbs?view=orgs", { signal, cache: "no-store" }).then(responseJson<{ orgs: EncryptedOrg[] }>).then(data => data.orgs).catch((): EncryptedOrg[] => []) : [];
-  return { roomData, status, encrypted };
+  return { status, encrypted };
 }
+/** The panel opens on the audience last used, so there is nothing to set up. */
+const AUDIENCE_KEY = "breadboard:crumbs-audience";
+function rememberedAudience() { try { return window.localStorage.getItem(AUDIENCE_KEY); } catch { return null; } }
 
 const PANEL_WIDTH = 360;
 const PANEL_MIN_WIDTH = 300;
@@ -60,7 +59,6 @@ const PANEL_WIDTH_KEY = "breadboard:crumbs-panel-width";
 export default function BrowserOrganizationPanel({ url, title, target, width: nativeWidth, send, onClose }: {
   url: string; title: string; target?: BrowserAnnotationTarget; width?: number; send: Send; onClose: () => void;
 }) {
-  const [rooms, setRooms] = useState<Rooms>({ organizations: [], rooms: [] });
   const [account, setAccount] = useState<Account>(signedOut);
   const [orgs, setOrgs] = useState<EncryptedOrg[]>([]);
   const [scope, setScope] = useState<string | null>(null);
@@ -68,14 +66,16 @@ export default function BrowserOrganizationPanel({ url, title, target, width: na
   const [retry, setRetry] = useState(0);
   usePageLoading(scope === null && !error);
 
-  const apply = useCallback(({ roomData, status, encrypted }: Awaited<ReturnType<typeof loadAudiences>>) => {
-    setRooms(roomData); setAccount(status); setOrgs(encrypted); setError("");
+  const apply = useCallback(({ status, encrypted }: Awaited<ReturnType<typeof loadAudiences>>) => {
+    setAccount(status); setOrgs(encrypted); setError("");
     setScope(previous => {
       if (previous) return previous;
-      const preferred = status.defaultVisibility;
-      return preferred === "public" || (preferred.startsWith("org:") && encrypted.some(org => `org:${org.id}` === preferred)) ? preferred : "private";
+      const last = rememberedAudience();
+      if (last === "private" || (status.signedIn && (last === "public" || (last?.startsWith("org:") && encrypted.some(org => `org:${org.id}` === last))))) return last;
+      return status.signedIn ? "public" : "private";
     });
   }, []);
+  useEffect(() => { if (scope && scope !== "org:none") try { window.localStorage.setItem(AUDIENCE_KEY, scope); } catch { /* remembered for this panel only */ } }, [scope]);
   useEffect(() => {
     const controller = new AbortController();
     loadAudiences(controller.signal).then(data => { if (!controller.signal.aborted) apply(data); }).catch(error => { if (!controller.signal.aborted) setError(error.message); });
@@ -89,11 +89,7 @@ export default function BrowserOrganizationPanel({ url, title, target, width: na
   // A crumb carries its page's address and title, which on a private page can give away who you are or what is in it.
   const privatePage = looksPrivatePage(url);
   const selected = target && annotationPageUrl(target.url) === pageUrl ? target : { kind: "page" as const, url: pageUrl ?? "", title };
-  const groups = [
-    ...orgs.filter(org => !org.crumbsRoom).map(org => ({ value: `org:${org.id}`, name: org.name, detail: "Encrypted for members" })),
-    // An organization's crumbs are posts in its crumbs room, so the choice is the organization, not a room.
-    ...rooms.rooms.filter(room => !room.archived && room.slug === "crumbs").map(room => ({ value: `room:${room.publicId}`, name: rooms.organizations.find(org => org.id === room.organizationId)?.name ?? room.name, detail: "Posted in the crumbs room" })),
-  ];
+  const groups = orgs.map(org => ({ value: `org:${org.id}`, name: org.name, detail: "Encrypted for members" }));
   const level = scope ? levelOf(scope) : null;
   const group = groups.find(item => item.value === scope);
   const audience = scope === "private" ? "Only me" : scope === "public" ? "Public" : group?.name ?? "Organization";
@@ -178,7 +174,6 @@ function Discussion({ scope, audience, target: initialTarget, send, needsAccount
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
-  const [summary, setSummary] = useState<{ text?: string; error?: string; busy?: boolean } | null>(null);
   const [checks, setChecks] = useState<Record<string, { text?: string; error?: string; busy?: boolean }>>({});
   const alive = useRef(true);
   const revision = useRef(0);
@@ -232,11 +227,6 @@ function Discussion({ scope, audience, target: initialTarget, send, needsAccount
     finally { if (alive.current) setBusy(false); }
   }
   function choose(next: BrowserAnnotationTarget) { void send({ type: "browser-organization-target", target: next }); }
-  async function summarize() {
-    setSummary({ busy: true });
-    try { setSummary(await crumbsPost<{ text: string }>({ action: "ai", mode: "summary", url: target.url, scope })); }
-    catch (error) { setSummary({ error: error instanceof Error ? error.message : "Couldn’t summarize. Try again." }); }
-  }
   async function check(message: AnnotationMessage) {
     setChecks(previous => ({ ...previous, [message.id]: { busy: true } }));
     try {
@@ -267,19 +257,24 @@ function Discussion({ scope, audience, target: initialTarget, send, needsAccount
         <blockquote>{label(target)}</blockquote>
       </div>}
 
-      {network && target.kind === "page" && data.threads.length > 0 && <div className={styles.ai}>
-        {!summary && <button type="button" onClick={() => void summarize()}><Sparkles size={13} />Summarize the discussion</button>}
-        {summary?.busy && <p className={styles.thinking}><Sparkles size={13} />Summarizing</p>}
-        {summary?.text && <div className={styles.answer}><strong><Sparkles size={12} />Summary</strong><p>{summary.text}</p><button type="button" className={styles.textLink} onClick={() => setSummary(null)}>Hide</button></div>}
-        {summary?.error && <p className={styles.error} role="alert">{summary.error} <button type="button" onClick={() => void summarize()}>Try again</button></p>}
-      </div>}
-
-      {others.length > 0 && <ul className={styles.threads} aria-label="Passages with crumbs">{others.map(thread => <li key={thread.id}>
-        <button type="button" className={styles.thread} onClick={() => choose(thread.target)}>
-          <span>{label(thread.target)}</span>
-          {thread.preview && <em>{thread.preview}</em>}
-          <small>{thread.count} {thread.count === 1 ? "crumb" : "crumbs"}</small>
-        </button></li>)}</ul>}
+      {others.length > 0 && <div className={styles.threads} aria-label="Passages with crumbs">{others.map(thread => {
+        // The first crumb, drawn as a post replying to its passage.
+        const split = thread.preview?.indexOf(": ") ?? -1;
+        const author = thread.preview && split > 0 ? thread.preview.slice(0, split) : "Crumbs";
+        const text = thread.preview ? (split > 0 ? thread.preview.slice(split + 2) : thread.preview) : "";
+        const open = () => choose(thread.target);
+        return <PostCard key={thread.id} className={`${styles.message} ${styles.reply}`} role="button" tabIndex={0}
+          aria-label={`Open ${thread.count} ${thread.count === 1 ? "crumb" : "crumbs"} on “${label(thread.target)}”`}
+          onClick={open} onKeyDown={event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); open(); } }}
+          avatar={<Avatar name={author} size={40} />} name={author}
+          actions={<>
+            <PostLabel><MessageCircle size={15} />{thread.count} {thread.count === 1 ? "crumb" : "crumbs"}</PostLabel>
+            <PostLabel>{scope === "public" ? <Globe2 size={15} /> : <Lock size={15} />}{audience}</PostLabel>
+          </>}>
+          <blockquote className={styles.replyQuote}>{label(thread.target)}</blockquote>
+          {text && <p>{text}</p>}
+        </PostCard>;
+      })}</div>}
 
       {loaded && !data.messages.length && !data.flags.length && !others.length && <div className={styles.empty}><CrumbsIcon size={24} strokeWidth={1.3} /><p>{target.kind === "page" ? "No crumbs here yet" : "No crumbs on this yet"}</p>{target.kind === "page" && <small>Select text and choose Leave a crumb, or write about the whole page.</small>}</div>}
 

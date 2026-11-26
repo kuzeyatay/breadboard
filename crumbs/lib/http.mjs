@@ -28,7 +28,10 @@ async function readBody(request, limit) {
 
 /**
  * `handler({ method, path, query, host, ip, raw, body, headers })` returns a
- * plain object (sent as JSON), or `{ status, headers, text }` for anything else.
+ * plain object (sent as JSON), `{ status, headers, text }` for anything else,
+ * or `{ stream(sink) }` for server-sent events: `sink.send(data)` writes one
+ * event, `sink.ping()` a keep-alive comment, and `sink.onClose(fn)` runs when
+ * the client goes away.
  */
 export function serve({ port, host = "0.0.0.0", handler, bodyLimit = 256 * 1024, name }) {
   const server = createServer(async (request, response) => {
@@ -43,6 +46,20 @@ export function serve({ port, host = "0.0.0.0", handler, bodyLimit = 256 * 1024,
       const ip = String(request.headers["fly-client-ip"] ?? request.headers["x-forwarded-for"] ?? request.socket.remoteAddress ?? "").split(",")[0].trim();
       const result = await handler({ method: request.method, path: url.pathname, pathWithQuery: url.pathname + url.search, query: url.searchParams,
         host: String(request.headers.host ?? "").toLowerCase(), ip, raw, body, headers: request.headers });
+      if (result && typeof result.stream === "function") {
+        response.writeHead(200, { "access-control-allow-origin": "*", "x-content-type-options": "nosniff", "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-store", connection: "keep-alive", "x-accel-buffering": "no" });
+        response.flushHeaders?.();
+        request.socket.setKeepAlive?.(true);
+        const closers = [];
+        let open = true;
+        const close = () => { if (!open) return; open = false; for (const fn of closers) { try { fn(); } catch { /* one listener's failure is not the others' */ } } };
+        request.on("close", close); response.on("error", close);
+        return result.stream({
+          send: data => { if (open) response.write(`data: ${JSON.stringify(data)}\n\n`); },
+          ping: () => { if (open) response.write(": ping\n\n"); },
+          onClose: fn => closers.push(fn),
+        });
+      }
       if (result && typeof result.text === "string") return send(result.status ?? 200, result.headers ?? { "content-type": "text/plain; charset=utf-8" }, result.text);
       send(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }, JSON.stringify(result ?? {}));
     } catch (error) {

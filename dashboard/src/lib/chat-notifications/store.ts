@@ -34,6 +34,7 @@ interface NotificationRow {
   surface: "dashboard_terminal" | "garden_chat";
   legacy_chat_session_id: number | null;
   garden_slug: string | null;
+  follow_up?: number | null;
 }
 
 interface BaselineRow {
@@ -113,7 +114,36 @@ const NOTIFIABLE_SOURCES_SQL = `
     AND c.surface IN ('dashboard_terminal', 'garden_chat')
     AND COALESCE(m.client_message_id, '') NOT LIKE 'telegram-%'
 `;
-const NOTIFIABLE_MESSAGES_SQL = `${READABLE_MESSAGES_SQL}${NOTIFIABLE_SOURCES_SQL}`;
+/**
+ * A failed attempt that an automatic retry is already redoing, or has fixed,
+ * is not news: the arXiv briefing's failed scheduled run and failed first
+ * retry each raised "Response failed" above the answer that followed. The
+ * retry's own failure still notifies.
+ */
+const RETRIED_FAILURE_SQL = `
+    AND NOT (m.status = 'failed' AND EXISTS (
+      SELECT 1 FROM conversation_messages retry
+      WHERE retry.conversation_id = m.conversation_id AND retry.role = 'assistant'
+        AND retry.id > m.id AND retry.client_message_id LIKE 'recovery:%'
+        AND retry.status IN ('pending', 'complete')
+    ))
+`;
+const NOTIFIABLE_MESSAGES_SQL = `${READABLE_MESSAGES_SQL}${NOTIFIABLE_SOURCES_SQL}${RETRIED_FAILURE_SQL}`;
+
+/**
+ * A retry that follows an answer the person already received is a follow-up,
+ * not a replacement; its notice says so instead of repeating "Response ready"
+ * under the same request heading.
+ */
+const FOLLOW_UP_SQL = `
+      (COALESCE(m.client_message_id, '') LIKE 'recovery:%' AND EXISTS (
+        SELECT 1 FROM conversation_messages earlier
+        WHERE earlier.conversation_id = m.conversation_id AND earlier.role = 'assistant'
+          AND earlier.status = 'complete' AND earlier.id < m.id AND trim(earlier.content) <> ''
+          AND earlier.id > COALESCE((SELECT max(asked.id) FROM conversation_messages asked
+            WHERE asked.conversation_id = m.conversation_id AND asked.role = 'user' AND asked.id < m.id
+              AND COALESCE(json_extract(asked.metadata, '$.internalAgentContinuation'), 0) <> 1), 0)
+      )) AS follow_up`;
 
 /**
  * Every window polls the inbox every few seconds. Without this narrowing,
@@ -295,7 +325,7 @@ function notificationFromRow(row: NotificationRow): ChatNotificationRecord | nul
     id: `msg_${row.message_id}`,
     messageKeys: messageKeys(row),
     ...(inlineSelectionId ? { inlineSelectionId } : {}),
-    title: failed ? "Response failed" : "Response ready",
+    title: failed ? "Response failed" : row.follow_up ? "Follow-up ready" : "Response ready",
     type: failed ? "error" : "success",
     response,
     chatTitle: noticeHeading(row),
@@ -313,7 +343,7 @@ export function listRecentChatNotifications(database: Database.Database, userId:
       (SELECT substr(u.content, 1, 400) FROM conversation_messages u
         WHERE u.conversation_id = m.conversation_id AND u.role = 'user' AND u.id < m.id
         ORDER BY u.id DESC LIMIT 1) AS prompt,c.surface,
-      c.legacy_chat_session_id,g.slug AS garden_slug
+      c.legacy_chat_session_id,g.slug AS garden_slug,${FOLLOW_UP_SQL}
     ${NOTIFIABLE_MESSAGES_SQL}
       AND m.id IN (SELECT recent.id FROM conversation_message_reads recent
         JOIN conversations owner ON owner.id=recent.conversation_id
@@ -379,7 +409,7 @@ export function listPendingChatNotifications(
         ORDER BY u.id DESC LIMIT 1) AS prompt,
            c.surface,
            c.legacy_chat_session_id,
-           g.slug AS garden_slug
+           g.slug AS garden_slug,${FOLLOW_UP_SQL}
     ${NOTIFIABLE_MESSAGES_SQL}${UNDISMISSED_ANSWER_SQL}
       AND (m.updated_at > @afterAt OR (m.updated_at = @afterAt AND m.id > @afterId))
       ${UNDISMISSED_EQUIVALENT_SQL}

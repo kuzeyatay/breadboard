@@ -7,7 +7,7 @@ import { submitPermissionDecision } from "../src/app/components/hermes/permissio
 const source = (relativePath) =>
   fs.readFileSync(new URL(relativePath, import.meta.url), "utf8");
 
-const composer = source("../src/app/components/assistant-composer.tsx");
+const composer = (source("../src/app/components/assistant-intelligence-menu.tsx") + source("../src/app/components/assistant-composer.tsx"));
 const yoloMode = source("../src/app/components/use-yolo-mode.ts");
 const agentSession = source(
   "../src/app/components/hermes/use-agent-session.ts",

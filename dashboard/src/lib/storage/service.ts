@@ -9,15 +9,16 @@ import { StorageScanner, allocatedBytes, cleanDisposableFiles, disposablePreview
 import { classifyStoragePath, largeChats, noteChatFile, saveChatUsage, storageBudget, type ChatUsage } from "./budget.ts";
 import { acquireStorageLease, ensureStorageSchema, sqliteSpace, storageSettings } from "./store.ts";
 import { DAY_MS, STORAGE_POLICY, type StorageMaintenanceResult } from "./policy.ts";
-import { enqueueImmutableCandidate, ensureImmutableFileSchema, ImmutableFileWorker, collectImmutableFiles } from "./immutable-files.ts";
+import { enqueueImmutableCandidate, ensureImmutableFileSchema, ImmutableFileWorker, collectImmutableFiles, shareFreshImmutableUpload } from "./immutable-files.ts";
 import { deduplicatePdfRevision, ensurePdfObjectSchema } from "./pdf-revisions.ts";
 import { cleanScratch } from "./scratch.ts";
 import { indexAttachmentReferences, attachmentIndexComplete } from "./attachment-references.ts";
 import { learnWorkspaceGardenSlugs, pruneSupersededLearnBuildWorkspaces } from "../learn-build-workspace.ts";
 import { readStorageCompaction, requestStorageCompaction } from "./compaction-state.ts";
 import { WorkspaceStorageWorker, enqueueWorkspaceCandidate, workspaceStorageStatus, collectWorkspaceStorage } from "./workspace-storage.ts";
+import { ColdFileWorker, coldFileStatus, enqueueColdFile } from "./cold-files.ts";
 
-const state = globalThis as typeof globalThis & { breadboardStorageScanner?: StorageScanner; breadboardImmutableWorker?: ImmutableFileWorker; breadboardColdWorker?: ColdPayloadWorker; breadboardWorkspaceWorker?: WorkspaceStorageWorker; breadboardStoragePhase?: number; breadboardStorageGarden?: number };
+const state = globalThis as typeof globalThis & { breadboardStorageScanner?: StorageScanner; breadboardImmutableWorker?: ImmutableFileWorker; breadboardColdWorker?: ColdPayloadWorker; breadboardWorkspaceWorker?: WorkspaceStorageWorker; breadboardColdFileWorker?: ColdFileWorker; breadboardStoragePhase?: number; breadboardStorageGarden?: number };
 const workspaceScanState = globalThis as typeof globalThis & { breadboardWorkspaceScanner?: StorageScanner };
 
 const chatUsage = new WeakMap<StorageScanner, ChatUsage>();
@@ -25,6 +26,16 @@ const chatUsage = new WeakMap<StorageScanner, ChatUsage>();
 function foregroundBusy(): boolean {
   return !!db.prepare(`SELECT 1 FROM conversation_messages WHERE status='pending'
     AND updated_at>datetime('now','-2 minutes') LIMIT 1`).get();
+}
+
+/** Best effort and never in the way of an upload: a failure leaves the file
+ * exactly as written, and the idle worker still considers it after a week. */
+export async function shareFreshUpload(absolutePath: string, sha256: string): Promise<number> {
+  try {
+    return await shareFreshImmutableUpload(db, dashboardDataDir(), absolutePath, sha256);
+  } catch {
+    return 0;
+  }
 }
 
 export async function storageStatus() {
@@ -43,6 +54,7 @@ export async function storageStatus() {
     lastResult: settings.last_result ? JSON.parse(settings.last_result) : null,
     compressedPayloadBytesSaved: compression.bytes,
     workspaces: workspaceStorageStatus(db),
+    coldFiles: coldFileStatus(db),
     disposables,
     database: sqliteSpace(db),
     protected: ["Chats and attachments", "Workspace outputs and recoverable drafts", "Recall recordings", "Installed models and runtimes"],
@@ -80,7 +92,7 @@ export async function runStorageMaintenance(input: { action: "tick" | "clean" | 
     if (input.action !== "scan" && !runtime?.busy) {
       result.housekeepingAllowed = true;
       // The runtime clears a bounded batch per call; while it is finding work, come straight back.
-      if (runtime && runtime.jobsPruned + runtime.directoriesRemoved > 0) result.continueSoon = true;
+      if (runtime && runtime.jobsPruned + runtime.directoriesRemoved + (runtime.eventsArchived ?? 0) > 0) result.continueSoon = true;
       if (runtime === null) result.skipped.push("Native runtime retention requires the desktop lifecycle owner.");
       if (runtime?.protected) result.skipped.push("Some runtime records retain recovery or unrecognized result data.");
       deadline = Date.now() + STORAGE_POLICY.sliceMs;
@@ -146,6 +158,13 @@ export async function runStorageMaintenance(input: { action: "tick" | "clean" | 
       } else if (!reserved) {
         result.skipped.push("Compression is waiting for 2 GiB of free space.");
       }
+      // Warm tier: files unchanged for two weeks are compressed in place. It
+      // needs no scratch copy, so it also runs below the reserve, and it paces
+      // its own I/O, so it shares every slice instead of waiting for a turn.
+      if (!shouldYield()) {
+        state.breadboardColdFileWorker ??= new ColdFileWorker();
+        result.payloadBytesSaved += await state.breadboardColdFileWorker.step(db, root, shouldYield, input.signal);
+      }
       // Incremental vacuum never upgrades an existing database on startup.
       if (!shouldYield() && db.pragma("auto_vacuum", { simple: true }) === 2) db.pragma("incremental_vacuum(32)");
     }
@@ -169,6 +188,7 @@ export async function runStorageMaintenance(input: { action: "tick" | "clean" | 
         }
         enqueueImmutableCandidate(db,relative,stat,eligibleArtifact(relative));
         enqueueWorkspaceCandidate(db,relative,stat);
+        enqueueColdFile(db,relative,stat);
       });
       db.prepare("UPDATE storage_settings SET inventory=? WHERE id=1").run(JSON.stringify(inventory));
       result.continueSoon ||= !inventory.complete;

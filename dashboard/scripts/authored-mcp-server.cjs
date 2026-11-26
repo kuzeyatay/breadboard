@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { createHash } = require("node:crypto");
 const { DatabaseSync } = require("node:sqlite");
+const { requestJson } = require("./authored-mcp-http.cjs");
 const { Server } = require("@modelcontextprotocol/sdk/server/index.js");
 const { StdioServerTransport } = require("@modelcontextprotocol/sdk/server/stdio.js");
 const { ListToolsRequestSchema, CallToolRequestSchema } = require("@modelcontextprotocol/sdk/types.js");
@@ -20,56 +21,69 @@ async function main() {
     shouldInterrupt: shouldInterruptAfterDeadline(Date.now() + 1000), type: "global" });
   const handlers = new Map();
   for (const tool of definition.tools) {
-    const fn = "(function(args, state) { 'use strict';\n" + tool.code + "\n})";
+    const fn = "(function(args, state, response) { 'use strict';\n" + tool.code + "\n})";
     engine.evalCode("typeof " + fn, options());
     handlers.set(tool.name, { tool, fn });
   }
   const probing = process.argv[4] === "--probe";
-  const db = new DatabaseSync(probing ? ":memory:" : path.join(path.dirname(filename), "state.sqlite"));
+  let directory = path.dirname(filename);
+  if (!probing) {
+    const origin = path.join(directory, "..", "state-origin.json");
+    if (fs.existsSync(origin)) {
+      const first = createHash("sha256").update(fs.readFileSync(origin)).digest("hex");
+      directory = path.join(directory, "..", first);
+    }
+  }
+  const db = new DatabaseSync(probing ? ":memory:" : path.join(directory, "state.sqlite"));
   db.exec("PRAGMA busy_timeout=3000; CREATE TABLE IF NOT EXISTS state(id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL)");
   const read = db.prepare("SELECT value FROM state WHERE id=1");
   const write = db.prepare("INSERT INTO state VALUES(1, ?) ON CONFLICT(id) DO UPDATE SET value=excluded.value");
   const server = new Server({ name: definition.name, version: digest.slice(0, 12) }, { capabilities: { tools: {} } });
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: definition.tools.map(({ name, description, inputSchema, readOnly }) => ({
-      name, description, inputSchema, annotations: { readOnlyHint: readOnly, destructiveHint: !readOnly, openWorldHint: false },
+    tools: definition.tools.map(({ name, description, inputSchema, readOnly, http }) => ({
+      name, description, inputSchema, annotations: { readOnlyHint: readOnly, destructiveHint: !readOnly, openWorldHint: !!http },
     })),
   }));
-  server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
+  server.setRequestHandler(CallToolRequestSchema, async ({ params }, context) => {
     const handler = handlers.get(params.name);
     if (!handler) throw Error("Unknown tool.");
     const { tool, fn } = handler;
     const argsObject = params.arguments ?? {};
     for (const key of tool.inputSchema.required) {
-      if (!Object.hasOwn(argsObject, key)) throw Error("Missing argument: " + key);
+      if (!Object.hasOwn(argsObject, key)) return { isError:true, content:[{type:"text",text:"Missing required argument: " + key}] };
     }
     for (const [key, value] of Object.entries(argsObject)) {
       const type = tool.inputSchema.properties[key]?.type;
       const actual = Array.isArray(value) ? "array" : value === null ? "null" : typeof value;
-      if (type === "integer" ? !Number.isInteger(value) : actual !== type) throw Error("Unexpected argument or type: " + key);
+      if (type === "integer" ? !Number.isInteger(value) : actual !== type)
+        return { isError:true, content:[{type:"text",text:"Unexpected argument or type: " + key + ". Check the tool's input schema."}] };
     }
     // The installation probe exercises real code against an empty, disposable
     // state. A tool that normally writes can be tested without duplicating work.
-    const persist = !probing && !tool.readOnly;
-    if (persist) db.exec("BEGIN IMMEDIATE");
+    const persist = !tool.readOnly;
+    let transaction = false;
     try {
-      const state = probing ? "{}" : read.get()?.value ?? "{}";
+      const response = tool.http ? (probing ? tool.http.example : await requestJson(tool.http, argsObject,
+        AbortSignal.any([context.signal, AbortSignal.timeout(10000)]))) : null;
+      if (persist) { db.exec("BEGIN IMMEDIATE"); transaction = true; }
+      const state = read.get()?.value ?? "{}";
       const args = JSON.stringify(params.arguments ?? {});
       const expression = "(() => { const state = JSON.parse(" + JSON.stringify(state) + "); " +
-        "const result = " + fn + "(JSON.parse(" + JSON.stringify(args) + "), state); " +
+        "const result = " + fn + "(JSON.parse(" + JSON.stringify(args) + "), state, JSON.parse(" + JSON.stringify(JSON.stringify(response)) + ")); " +
         "if (result === undefined || typeof result?.then === 'function') throw Error('Return a synchronous JSON value'); " +
-        "return JSON.stringify({result" + (persist ? ",state" : "") + "}); })()";
+        "return JSON.stringify({result,state}); })()";
       const encoded = engine.evalCode(expression, options());
       if (typeof encoded !== "string" || Buffer.byteLength(encoded) > 512 * 1024) throw Error("Tool result or state exceeds 512 KiB.");
       const output = JSON.parse(encoded);
       if (!Object.hasOwn(output, "result")) throw Error("Tool did not return JSON.");
+      if (!persist && JSON.stringify(output.state) !== state) throw Error("A read-only tool changed state. Declare this tool writable to save changes.");
       if (persist) {
         write.run(JSON.stringify(output.state));
         db.exec("COMMIT");
       }
       return { content: [{ type: "text", text: JSON.stringify(output.result) }] };
     } catch (error) {
-      if (persist) db.exec("ROLLBACK");
+      if (transaction) db.exec("ROLLBACK");
       return { isError: true, content: [{ type: "text", text: String(error?.message ?? error).slice(0, 500) }] };
     }
   });

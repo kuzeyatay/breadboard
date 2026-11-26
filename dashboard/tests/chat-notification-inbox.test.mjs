@@ -830,3 +830,41 @@ test("an upload failure already shown in the dialog is not repeated in the corne
   assert.match(uploadStore, /failFile\(key, file\.name, streamError, streamRecoveryId\)/);
   assert.match(uploadStore, /failFile\(key, file\.name, message, recoveryIdFromEvent\(event\)\)/);
 });
+
+test("a retried failure is not news, and a retry after a delivered answer is a follow-up, not a replacement", () => {
+  const db = notificationDatabase();
+  try {
+    addAnswer(db, 10, "Old history", "2026-11-26 08:00:00");
+    ensureChatNotificationBaseline(db, 1);
+    const ask = (clientMessageId, internal, at) => db.prepare(`INSERT INTO conversation_messages
+      (conversation_id, client_message_id, role, content, status, updated_at, metadata) VALUES (10, ?, 'user', 'Prepare a daily AI paper briefing', 'complete', ?, ?)`)
+      .run(clientMessageId, at, internal ? '{"internalAgentContinuation":true}' : null);
+    // arXiv briefing, 2026-11-26: scheduled run failed, first retry failed, second retry answered.
+    ask("schedule-6", false, "2026-11-26 08:13:16");
+    const scheduled = addAnswer(db, 10, "", "2026-11-26 08:13:43", "failed", null, "schedule-6");
+    ask("recovery:r1", true, "2026-11-26 08:13:46");
+    const firstRetry = addAnswer(db, 10, "", "2026-11-26 08:13:50", "failed", null, "recovery:r1");
+    ask("recovery:r2", true, "2026-11-26 08:13:52");
+    const briefing = addAnswer(db, 10, "# Daily AI paper briefing", "2026-11-26 08:22:38", "complete", null, "recovery:r2");
+    let pending = listPendingChatNotifications(db, 1);
+    assert.deepEqual(pending.map(item => item.id), [`msg_${briefing}`]);
+    assert.equal(pending[0].title, "Response ready");
+    assert.ok(!pending.some(item => [scheduled, firstRetry].includes(Number(item.id.slice(4)))));
+
+    // A further retry after the delivered briefing is labelled as a follow-up.
+    ask("recovery:r3", true, "2026-11-26 08:22:43");
+    const followUp = addAnswer(db, 10, "The slide is now saved.", "2026-11-26 08:24:09", "complete", null, "recovery:r3");
+    pending = listPendingChatNotifications(db, 1);
+    assert.equal(pending.find(item => item.id === `msg_${followUp}`).title, "Follow-up ready");
+    assert.equal(pending.find(item => item.id === `msg_${briefing}`).title, "Response ready");
+
+    // A retry that fails itself still raises its failure.
+    ask("next", false, "2026-11-26 09:00:00");
+    addAnswer(db, 10, "", "2026-11-26 09:00:05", "failed", null, "next");
+    ask("recovery:r4", true, "2026-11-26 09:00:06");
+    const failedRetry = addAnswer(db, 10, "", "2026-11-26 09:00:09", "failed", null, "recovery:r4");
+    assert.equal(listPendingChatNotifications(db, 1).find(item => item.id === `msg_${failedRetry}`).title, "Response failed");
+  } finally {
+    db.close();
+  }
+});

@@ -142,7 +142,7 @@ function visibleAssistantCandidate(
  * Internal hand-backs are separate durable turns. Only a recorded handoff or
  * an empty progress row may be folded into its continuation. A finished answer
  * remains visible during Goal and team continuations; a task-recovery answer
- * (`recovery:` turn) replaces the answer it re-did.
+ * (`recovery:` turn) replaces a failed or empty attempt and follows a delivered one.
  *
  * A self-presenting worker is the exception. Its animation or globe is an
  * irreplaceable part of the answer, not an interim sentence synthesis can carry
@@ -153,10 +153,13 @@ export function supersededDelegationAssistantIndices(
 ): Set<number> {
   const superseded = new Set<number>();
   let visibleAssistantIndex = -1;
+  // Every visible attempt at the current request, oldest first.
+  let attempts: number[] = [];
   for (let index = 0; index < messages.length; index += 1) {
     const message = messages[index]!;
     if (message.role === "user" && !isDelegationPrompt(message)) {
       visibleAssistantIndex = -1;
+      attempts = [];
       continue;
     }
     if (!visibleAssistantCandidate(message)) continue;
@@ -165,16 +168,44 @@ export function supersededDelegationAssistantIndices(
       visibleAssistantIndex >= 0
     ) {
       const visibleAssistant = messages[visibleAssistantIndex]!;
-      // A task-recovery continuation re-answers the same request; once it has
-      // a usable answer it replaces the earlier one instead of stacking a
-      // second reply. A failed recovery leaves the earlier answer on screen.
+      // A task-recovery continuation finishes the same request. Once it has a
+      // usable answer it replaces an earlier attempt that failed, stopped, was
+      // empty or only handed off. An answer that was delivered stays: the
+      // person may already have read it and been notified, and the recovery
+      // is written as a follow-up to it. A failed recovery changes nothing.
       if (
         message.clientMessageId?.startsWith("recovery:") &&
         message.content.trim() && !message.failed && !message.interrupted &&
         !selfPresentingDelegation(visibleAssistant)
       ) {
+        if (visibleAssistant.failed || visibleAssistant.interrupted ||
+            !visibleAssistant.content.trim() || assistantHandoffContent(visibleAssistant)) {
+          superseded.add(visibleAssistantIndex);
+        }
+        // A run that failed and was retried more than once left its first
+        // failure ("Hermes gateway connection failed") above the answer that
+        // fixed it. The answer stands for every failed or empty earlier try.
+        for (const earlier of attempts) {
+          const attempt = messages[earlier]!;
+          if (!selfPresentingDelegation(attempt) &&
+              (attempt.failed || attempt.interrupted || !attempt.content.trim())) superseded.add(earlier);
+        }
+        visibleAssistantIndex = index;
+        attempts.push(index);
+        continue;
+      }
+      // A retry that failed too stands in for the failed or empty try before
+      // it, so one request shows one failure, the latest. A delivered answer is
+      // never hidden by a failure.
+      if (
+        message.clientMessageId?.startsWith("recovery:") &&
+        (message.failed || message.interrupted) &&
+        !selfPresentingDelegation(visibleAssistant) &&
+        (visibleAssistant.failed || visibleAssistant.interrupted || !visibleAssistant.content.trim())
+      ) {
         superseded.add(visibleAssistantIndex);
         visibleAssistantIndex = index;
+        attempts.push(index);
         continue;
       }
       if (
@@ -191,6 +222,7 @@ export function supersededDelegationAssistantIndices(
       }
     }
     visibleAssistantIndex = index;
+    attempts.push(index);
   }
   return superseded;
 }

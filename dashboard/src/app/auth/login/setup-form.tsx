@@ -4,7 +4,7 @@ import { signIn } from 'next-auth/react';
 import { useState } from 'react';
 import type { FormEvent } from 'react';
 import { authReturnPath, completeSignIn } from '@/lib/auth-client';
-import { Avatar, PasswordField, fieldClass } from './password-field';
+import { PasswordField, fieldClass } from './password-field';
 
 /** The first time Breadboard opens: a name and a password or PIN. */
 export default function SetupForm() {
@@ -46,7 +46,6 @@ export default function SetupForm() {
   return (
     <div className="min-h-screen bg-[var(--paper-surface)] flex items-center justify-center px-4">
       <div className="neu-surface-raised w-full max-w-sm rounded-2xl border border-gray-800 bg-gray-900 p-6 sm:p-7">
-        <Avatar name={name} />
         <h1 className="text-2xl font-semibold text-white text-center mb-8 tracking-tight">Welcome to Breadboard</h1>
         <form onSubmit={handleSubmit} className="space-y-4">
           <input

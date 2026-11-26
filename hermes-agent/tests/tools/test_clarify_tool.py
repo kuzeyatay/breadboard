@@ -155,6 +155,14 @@ class TestClarifyToolCallbackHandling:
 
         result = json.loads(clarify_tool("Q?", callback=mock_callback))
         assert result["user_response"] == "response with spaces"
+        assert "answered" not in result
+
+    def test_unanswered_question_tells_agent_to_continue(self):
+        """A timed-out question (empty answer) must tell the agent to proceed."""
+        result = json.loads(clarify_tool("Q?", callback=lambda q, c: ""))
+        assert result["user_response"] == ""
+        assert result["answered"] is False
+        assert "Continue" in result["note"]
 
 
 class TestCheckClarifyRequirements:

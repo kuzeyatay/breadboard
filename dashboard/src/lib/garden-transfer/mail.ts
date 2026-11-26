@@ -56,7 +56,7 @@ export async function connectedActionWithGardenAttachments(input: {
   const attachments: GmailAttachment[] = [];
   let remaining = MAX_GMAIL_ATTACHMENT_BYTES;
   for (const slug of slugs) {
-    const download = exportGardenArchive(input.userId, slug);
+    const download = exportGardenArchive(input.userId, slug, true);
     const data = await readMailAttachment(download.stream, remaining);
     remaining -= data.length;
     attachments.push({ filename: download.filename, mimeType: download.mimeType, data });

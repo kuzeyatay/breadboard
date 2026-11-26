@@ -4,7 +4,6 @@ import { redirect } from "next/navigation";
 
 import { authOptions } from "@/lib/auth-options";
 import db from "@/lib/db";
-import { getIdentity } from "@/lib/crumbs/store.ts";
 import {
   getNavbarFlowers,
   getNavbarShortcuts,
@@ -96,7 +95,6 @@ export default async function ProfilePage({
       contactTotal={contacts.countContacts(userId)}
       syncedCalendars={calendars}
       calendarVaultConfigured={caldavVaultConfigured()}
-      initialIdentity={getIdentity(db, userId)}
     />
   );
 }

@@ -147,3 +147,67 @@ test('a delivered artifact made after a failed write is not replayed as a second
   assert.ok(taskRecoveryCheckpoint({status:'idle',turn:0,completedTextAnswer:true,tools:[failed,exported]}).checkpoint);
   assert.ok(taskRecoveryCheckpoint({status:'idle',turn:0,completedTextAnswer:true,tools:[exported,failed],artifacts:['art_1:1']}).checkpoint);
 });
+
+test("a delivered answer is not re-run for a failed read, and a retry hides every failed try it fixed", async () => {
+  const { readOnlyTaskTool } = await import('../src/lib/hermes/task-recovery-policy.ts');
+  const failedRead = { toolName: 'terminal_execute_command', success: false, summary: 'Get-Content',
+    failure: { code: 'task_tool_failed', message: 'Get-Content' } };
+  // arXiv briefing, 2026-11-26: one failed Get-Content among 84 calls re-ran
+  // the finished briefing, replaced it and notified a second time.
+  assert.deepEqual(taskRecoveryCheckpoint({ status: 'completed', completedTextAnswer: true, turn: 1,
+    tools: [{ toolName: 'web_search', success: true }, failedRead] }), {});
+  for (const summary of ['Get-Content notes.md', 'git status', 'Select-String -Path x -Pattern y']) {
+    assert.equal(readOnlyTaskTool({ toolName: 'terminal_execute_command', summary }), true, summary);
+  }
+  for (const summary of ['Get-Content a > b', 'Remove-Item out.docx', 'npm run build', '']) {
+    assert.equal(readOnlyTaskTool({ toolName: 'terminal_execute_command', summary }), false, summary);
+  }
+  assert.equal(readOnlyTaskTool({ toolName: 'computer_use', summary: 'list_windows failed' }), true);
+  assert.equal(readOnlyTaskTool({ toolName: 'computer_use', summary: 'click 3' }), false);
+  // A failed write still keeps its recovery after an answer.
+  assert.ok(taskRecoveryCheckpoint({ status: 'completed', completedTextAnswer: true, turn: 1,
+    tools: [{ toolName: 'terminal_execute_command', success: false, summary: 'Set-Content out.md x',
+      failure: { code: 'task_tool_failed', message: 'Set-Content' } }] }).checkpoint);
+
+  // Retrying cannot turn a refusal into consent or grant a tool.
+  assert.equal(taskFailureCanRecover({ message: 'BLOCKED: Action timed out without user response. The user has NOT consented to this action. Do NOT retry it' }), false);
+  assert.equal(taskFailureCanRecover({ message: 'Bot memory is not authorized for this turn.' }), false);
+  assert.equal(taskFailureCanRecover({ message: 'That connection was not selected for this turn.' }), false);
+  assert.equal(taskFailureCanRecover({ message: 'Breadboard tool service is unavailable: timed out' }), true);
+
+  const user = (cid, internal) => ({ role: 'user', content: 'Prepare a daily AI paper briefing', clientMessageId: cid, internalAgentContinuation: internal });
+  const answer = (cid, content, failed) => ({ role: 'assistant', content, clientMessageId: cid, failed });
+  const chain = [user('schedule-6', false), answer('schedule-6', '', true),
+    user('recovery:r1', true), answer('recovery:r1', '', true),
+    user('recovery:r2', true), answer('recovery:r2', '# Daily AI paper briefing', false)];
+  assert.deepEqual([...supersededDelegationAssistantIndices(chain)].sort(), [1, 3]);
+  // A failed retry still leaves the earlier answer on screen.
+  assert.deepEqual([...supersededDelegationAssistantIndices([user('q', false), answer('q', 'full answer', false),
+    user('recovery:r1', true), answer('recovery:r1', '', true)])], []);
+});
+
+test("read-only detection uses the call's own action, not only its display summary", async () => {
+  const { readOnlyTaskTool, toolOperation } = await import('../src/lib/hermes/task-recovery-policy.ts');
+  assert.equal(toolOperation({ args: { action: 'list_windows' } }), 'list_windows');
+  assert.equal(toolOperation({ args: { command: 'Get-Content notes.md' } }), 'Get-Content notes.md');
+  assert.equal(toolOperation({ args: {} }), undefined);
+  // The summary is the error text; the operation says what was attempted.
+  assert.equal(readOnlyTaskTool({ toolName: 'terminal_execute_command', operation: 'Get-Content a.md', summary: 'Access is denied' }), true);
+  assert.equal(readOnlyTaskTool({ toolName: 'terminal_execute_command', operation: 'Set-Content a.md x', summary: 'Get-Content' }), false);
+  // computer_use errors lead with the action that failed.
+  const ended = 'list_windows failed: cua-driver list_windows failed: this session has ended; call start_session explicitly';
+  assert.equal(readOnlyTaskTool({ toolName: 'computer_use', failure: { message: ended } }), true);
+  assert.equal(readOnlyTaskTool({ toolName: 'computer_use', failure: { message: 'Background delivery is not available (key_combo)' } }), false);
+  // A real action that failed after an answer still gets its recovery (office_run made the slide on retry).
+  assert.ok(taskRecoveryCheckpoint({ status: 'completed', completedTextAnswer: true, turn: 1,
+    tools: [{ toolName: 'office_run', success: false, failure: { code: 'task_tool_failed', message: 'Tool failed' } }] }).checkpoint);
+});
+
+test("a failed retry shows one failure for the request, and never hides a delivered answer", () => {
+  const user = (cid, internal) => ({ role: 'user', content: 'Check my inbox', clientMessageId: cid, internalAgentContinuation: internal });
+  const answer = (cid, content, failed) => ({ role: 'assistant', content, clientMessageId: cid, failed });
+  assert.deepEqual([...supersededDelegationAssistantIndices([user('q', false), answer('q', '', true),
+    user('recovery:r1', true), answer('recovery:r1', 'The action was not approved.', true)])], [1]);
+  assert.deepEqual([...supersededDelegationAssistantIndices([user('q', false), answer('q', 'Here is your inbox.', false),
+    user('recovery:r1', true), answer('recovery:r1', 'Could not save.', true)])], []);
+});

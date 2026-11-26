@@ -27,9 +27,12 @@ primary_region = "ams"
   internal_port = 8080
   processes = ["app"]
   force_https = true
-  auto_stop_machines = "stop"
+  # Members' Breadboards keep a live connection open (GET /orgs/stream) to hear about
+  # new messages at once, so the machine stays up. Keep one machine: the live
+  # signals are fanned out in process.
+  auto_stop_machines = "off"
   auto_start_machines = true
-  min_machines_running = 0
+  min_machines_running = 1
 
   [[http_service.checks]]
     path = "/health"

@@ -55,7 +55,7 @@ import { scheduleLoopxTickForConversation } from "../loopx/conversation-tick.ts"
 import { accountGoalModeTurn, goalCanContinue, readGoalModeState, goalModeSection, goalTokensForUsage } from "../goal-mode.ts";
 import { scheduleGoalContinuation } from "../goal-continuation.ts";
 import { recordTaskRecoveryOutcome, scheduleTaskRecovery } from "./task-recovery.ts";
-import { recoveryToolFailure } from "./task-recovery-policy.ts";
+import { recoveryToolFailure, toolOperation } from "./task-recovery-policy.ts";
 import { missingRunArtifact } from "./artifact-completion.ts";
 import { scheduleDurableExtractionForConversation } from "../mem0/conversation-extraction.ts";
 import { scheduleMemoryProfileSynthesisForConversation } from "../conversations/memory-profile.ts";
@@ -685,6 +685,7 @@ function driveSessionEventPump(
           toolName: event.payload.toolName,
           success: event.payload.success,
           summary: event.payload.summary,
+          operation: toolOperation(event.payload.details),
           spotifyPlaybackPrepared: event.payload.spotifyPlaybackPrepared,
           ...(event.payload.success ? {} : { failure: recoveryToolFailure(event.payload) }),
           completedAt: event.timestamp,

@@ -31,6 +31,7 @@ export interface DesktopTabView {
   url: string;
   loading: boolean;
   pageLoading?: boolean;
+  terminalForward?: boolean;
   downloadsOpen?: boolean;
   /** A Learn worker is running in this garden workspace. */
   learnActive?: boolean;
@@ -45,6 +46,8 @@ export interface DesktopTabView {
     pdfViewer?: string;
     uiVisited?: boolean;
     uiKey?: string;
+    terminalOrigin?: boolean;
+    backToTerminal?: boolean;
     canGoBack: boolean;
     canGoForward: boolean;
     terminalOpen: boolean;

@@ -1,5 +1,7 @@
 import { readFile, stat } from "node:fs/promises";
-import path from "node:path";
+// The opaque path builtin: these joins point at the user's mutable browser state,
+// and a plain node:path join here made the startup hook trace every `config` folder.
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import type { ContextFact } from "./rank.ts";
 
 type Row = {

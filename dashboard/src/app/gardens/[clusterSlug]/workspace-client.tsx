@@ -784,6 +784,16 @@ const NO_MESSAGES: Message[] = [];
 /** Recently used chats whose transcripts stay in memory besides any with live work. */
 const WARM_TRANSCRIPTS = 5;
 
+/**
+ * The Terminal itself, for a garden chat that lives outside the workspace
+ * (Explore/PDF Assistant). Loaded only when one is opened: it is a large tree
+ * the workspace otherwise never needs.
+ */
+const EmbeddedTerminal = dynamic(
+  () => import("@/app/components/hermes/dashboard-agent-terminal"),
+  { ssr: false },
+);
+
 interface ChatSession {
   runtimeControl?: ChatRuntimeControl | null;
   id: number;
@@ -4084,6 +4094,12 @@ export default function WorkspaceClient({
   // Chat
   const [chatSessions, setChatSessions] = useState<ChatSession[]>([]);
   const [linkedChats, setLinkedChats] = useState<LinkedGardenChat[]>([]);
+  /**
+   * The Explore/PDF Assistant chat open in place of the workspace transcript,
+   * or null. It is shown through the embedded Terminal, so the workspace's own
+   * selection (and anything typed in its composer) waits underneath unchanged.
+   */
+  const [linkedChatId, setLinkedChatId] = useState<string | null>(null);
   const chatSessionsRef = useRef(chatSessions);
   chatSessionsRef.current = chatSessions;
   // Transcripts load per chat, on open or hover; the list itself is rows only.
@@ -4393,14 +4409,15 @@ export default function WorkspaceClient({
     // A temporary conversation must not leave a reload/deep-link pointer. The
     // server keeps it out of history; keeping its numeric id in the address
     // bar would create a second, accidental restore path.
-    if (activeChatId === null || temporaryChat) url.searchParams.delete("chat");
+    if (linkedChatId) url.searchParams.set("chat", linkedChatId);
+    else if (activeChatId === null || temporaryChat) url.searchParams.delete("chat");
     else url.searchParams.set("chat", String(activeChatId));
     const next = `${url.pathname}${url.search}${url.hash}`;
     const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
     if (next !== current) {
       window.history.replaceState(window.history.state, "", next);
     }
-  }, [activeChatId, loadingChats, temporaryChat]);
+  }, [activeChatId, linkedChatId, loadingChats, temporaryChat]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const handleGenerativeUiAction = useCallback(
     (action: GenerativeUiAction) => {
@@ -5435,7 +5452,7 @@ export default function WorkspaceClient({
         ...sidebarChats,
         ...linkedChats.map((chat) => ({
           id: chat.id,
-          href: `/dashboard?terminalChat=${encodeURIComponent(chat.id)}`,
+          href: `/gardens/${encodeURIComponent(clusterSlug)}?chat=${encodeURIComponent(chat.id)}`,
           title: chat.title,
           titlePrefix: chat.originLabel,
           updatedAt: chat.updated_at,
@@ -5589,8 +5606,15 @@ export default function WorkspaceClient({
 
   /** Open a chat by the id every rail control hands back. */
   const openChatById = useCallback((chatId: string) => {
+    if (isLinkedRailChat(chatId)) {
+      setProductPanel(null);
+      setSidePanel(null);
+      setLinkedChatId(chatId);
+      return;
+    }
     const id = Number(chatId);
     if (!Number.isInteger(id)) return;
+    setLinkedChatId(null);
     pendingNewChatRef.current = false;
     chatBeforeTemporary.current = null;
     setTemporaryChat(false);
@@ -7859,6 +7883,7 @@ export default function WorkspaceClient({
     // New chat never leaves empty rows in Recents.
     pendingNewChatRef.current = true;
     chatHistoryEpoch.current += 1;
+    setLinkedChatId(null);
     selectChat(null);
     setCreatedChatId(null);
     setDraftMessages(null);
@@ -8076,6 +8101,7 @@ export default function WorkspaceClient({
     if (!original) return;
     setRailError(null);
     chatHistoryEpoch.current += 1;
+    if (body.archived && linkedChatId === chat.id) setLinkedChatId(null);
     setLinkedChats((current) =>
       body.archived
         ? current.filter((item) => item.id !== chat.id)
@@ -8106,6 +8132,7 @@ export default function WorkspaceClient({
     if (chats.length === 0) return 0;
     const targets = new Set(chats.map((chat) => chat.id));
     const originals = linkedChats.filter((item) => targets.has(item.id));
+    if (linkedChatId && targets.has(linkedChatId)) setLinkedChatId(null);
     chatHistoryEpoch.current += 1;
     setLinkedChats((current) => current.filter((item) => !targets.has(item.id)));
     let failed = 0;
@@ -18856,11 +18883,12 @@ if (careerOpsAgent) {
           loading={loadingChats}
           error={railError}
           activeChatId={
-            pendingChatVisible
+            linkedChatId ??
+            (pendingChatVisible
               ? PENDING_CHAT_ROW_ID
               : activeChatId === null
                 ? null
-                : String(activeChatId)
+                : String(activeChatId))
           }
           openPanel={sidePanel}
           panels={GARDEN_PANELS}
@@ -18879,12 +18907,7 @@ if (careerOpsAgent) {
               textareaRef.current?.focus();
               return;
             }
-            // Explore/PDF Assistant chats continue in the Terminal hub, which
-            // keeps their source garden and page context.
-            if (isLinkedRailChat(chat.id)) {
-              if (chat.href) router.push(chat.href);
-              return;
-            }
+            // Explore/PDF Assistant rows open in place too (see linkedChatId).
             openChatById(chat.id);
           }}
           onRenameChat={renameChatFromRail}
@@ -19201,6 +19224,22 @@ if (careerOpsAgent) {
           style={composerInset.style}
           data-temporary-chat={temporaryChat ? "true" : undefined}
         >
+          {linkedChatId ? (
+            // The real Terminal for this one conversation, minus its bar and
+            // rail: turns, runs, artifacts and the chat's own page context (a
+            // PDF, a reader page) behave exactly as they do in the Terminal.
+            <div
+              className="absolute inset-0 z-30 overflow-hidden"
+              data-garden-linked-chat={linkedChatId}
+            >
+              <EmbeddedTerminal
+                scope="mine"
+                restoreOwnerKey={`garden-linked:${clusterSlug}`}
+                presentation="embedded"
+                initialChatId={linkedChatId}
+              />
+            </div>
+          ) : null}
           {newChatPageSelected ? (
             <button
               type="button"

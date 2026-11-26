@@ -1,12 +1,17 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { isSuperAgentEnabled } from "@/app/components/use-agent-mode";
+import { isDirectModeEnabled } from "@/app/components/use-direct-mode";
+import { isYoloModeEnabled } from "@/app/components/use-yolo-mode";
 import { mergeMessages, readStored, requestJson, transcriptKey, writeStored } from "./lib/message-state";
 import { isLive, type BuzzMessage, type RoomDetail } from "./types.ts";
 import { useAssistantIntelligence } from "@/app/components/use-assistant-intelligence";
 import { ORGANIZATION_INTELLIGENCE } from "./components/composer-intelligence";
 
 type Detail = RoomDetail & { root?: BuzzMessage };
+/** A file picked in the composer and already stored on this machine. */
+export type RoomAttachment = { name: string; blobId: string; format: string; sizeBytes: number };
 
 /** Room and thread share durable delivery, so a failed send behaves identically. */
 export function useRoom(roomPublicId: string | null, userId = 0, parentId: number | null = null) {
@@ -89,7 +94,10 @@ export function useRoom(roomPublicId: string | null, userId = 0, parentId: numbe
     try {
       const result = await requestJson<{ message: BuzzMessage }>(endpoint, {
         method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ body: message.body, clientMessageId: message.clientMessageId, ...choice.current }),
+        // The composer switches, read as the message goes, exactly as the Terminal sends them.
+        body: JSON.stringify({ body: message.body, clientMessageId: message.clientMessageId, ...choice.current,
+          superAgent: isSuperAgentEnabled(), adhdMode: isDirectModeEnabled(), yoloMode: isYoloModeEnabled(),
+          ...(Array.isArray(message.metadata?.attachments) ? { attachments: message.metadata.attachments } : {}) }),
       });
       saveOutbox(messages => messages.filter(row => row.clientMessageId !== message.clientMessageId));
       if (currentScope.current === scope) {
@@ -101,14 +109,15 @@ export function useRoom(roomPublicId: string | null, userId = 0, parentId: numbe
     } finally { inFlight.current.delete(message.clientMessageId); }
   }, [endpoint, load, saveOutbox, scope]);
 
-  const send = useCallback((body: string) => {
-    if (!endpoint || !detail || !body.trim() || detail.permissions?.canPost === false) return false;
+  /** `attachments` are files already stored through the chat upload route. */
+  const send = useCallback((body: string, attachments: RoomAttachment[] = []) => {
+    if (!endpoint || !detail || (!body.trim() && !attachments.length) || detail.permissions?.canPost === false) return false;
     const self = detail?.members.find(member => member.id === detail.selfMemberId);
     const message: BuzzMessage = {
       id: -Date.now(), roomId: -1, clientMessageId: `buzz_${crypto.randomUUID()}`,
       memberId: detail?.selfMemberId ?? null, authorKind: "human", authorName: self?.displayName ?? "you",
       authorHandle: self?.handle ?? "", personaSlug: null, body: body.trim(), parentId,
-      status: "complete", runId: null, metadata: null, editedAt: null, deletedAt: null,
+      status: "complete", runId: null, metadata: attachments.length ? { attachments: attachments.map(file => ({ type: "file", ...file })) } : null, editedAt: null, deletedAt: null,
       createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), delivery: "sending",
     };
     saveOutbox(messages => [...messages, message]);

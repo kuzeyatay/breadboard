@@ -8,6 +8,7 @@ import { ChevronLeft, ChevronRight, Plus, UserMinus, X } from "lucide-react";
 
 import { cn } from "@/app/buzz/lib/cn";
 import { UserAvatar } from "@/app/buzz/ui/UserAvatar";
+import BotAvatar from "@/app/components/bots/bot-avatar";
 
 import { BREAD_PERSONA, BREAD_SLUG } from "@/lib/buzz/bread.ts";
 
@@ -43,7 +44,8 @@ export function MembersPanel({ members, personas, roomPublicId, rosterReady, sel
 
   onAddPersona: (slug: string) => Promise<AddPersonOutcome> | AddPersonOutcome | void;
 
-  onAddPerson: (userId: number) => Promise<AddPersonOutcome> | AddPersonOutcome;
+  /** `did` is set for a Crumbs account, offered in rooms of an organization on Crumbs. */
+  onAddPerson: (person: { userId: number; did?: string }) => Promise<AddPersonOutcome> | AddPersonOutcome;
 
   onRemove: (memberId: number) => Promise<void> | void;
 
@@ -57,7 +59,7 @@ export function MembersPanel({ members, personas, roomPublicId, rosterReady, sel
 
   const [query, setQuery] = useState("");
 
-  const [results, setResults] = useState<Array<{ userId: number; username: string }>>([]);
+  const [results, setResults] = useState<Array<{ userId: number; username: string; did?: string }>>([]);
 
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -171,7 +173,7 @@ export function MembersPanel({ members, personas, roomPublicId, rosterReady, sel
 
         <div className="buzz-content-scrollbar max-h-72 overflow-y-auto">
 
-          {picker === "people" ? query.trim().length < 3 ? <p className="px-1 py-2 text-xs leading-relaxed text-muted-foreground">Type at least 3 letters of a name or email address.</p> : searching ? null : results.length ? results.map(person => <button key={person.userId} disabled={busy} onClick={() => void add(() => onAddPerson(person.userId))} className="w-full rounded-lg px-2 py-2 text-left text-xs hover:bg-muted">{person.username}</button>) : <p className="p-2 text-xs text-muted-foreground">Nobody matching “{query.trim()}”.</p> : <>
+          {picker === "people" ? query.trim().length < 3 ? <p className="px-1 py-2 text-xs leading-relaxed text-muted-foreground">Type at least 3 letters of a name or email address.</p> : searching ? null : results.length ? results.map(person => <button key={person.did ?? person.userId} disabled={busy} onClick={() => void add(() => onAddPerson(person))} className="w-full rounded-lg px-2 py-2 text-left text-xs hover:bg-muted">{person.username}</button>) : <p className="p-2 text-xs text-muted-foreground">Nobody matching “{query.trim()}”.</p> : <>
 
             {choices.map(agent => <button key={agent.slug} disabled={busy} onClick={() => void add(() => onAddPersona(agent.slug))} className="block w-full rounded-xl px-2 py-2.5 text-left hover:bg-muted">
 
@@ -207,7 +209,7 @@ export function MembersPanel({ members, personas, roomPublicId, rosterReady, sel
 
           {agents.map(member => <div key={member.id} className="buzz-member-card mb-3 rounded-2xl p-3">
 
-            <div className="flex items-start justify-between gap-2"><div className="min-w-0"><p className="truncate text-xs font-semibold">{member.displayName}</p><p className="mt-0.5 truncate text-[11px] text-muted-foreground">@{member.handle}</p></div>{canManage ? <button disabled={busy} aria-label={`Remove ${member.displayName}`} onClick={() => void action(() => onRemove(member.id))} className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-destructive"><UserMinus className="size-3.5" /></button> : null}</div>
+            <div className="flex items-start justify-between gap-2"><div className="flex min-w-0 items-center gap-2">{member.botAvatar ? <BotAvatar avatar={member.botAvatar} name={member.displayName} size={28} paused /> : <UserAvatar avatarUrl={member.avatarUrl ?? null} displayName={member.displayName} size="md" className="!h-7 !w-7" />}<div className="min-w-0"><p className="truncate text-xs font-semibold">{member.displayName}</p><p className="mt-0.5 truncate text-[11px] text-muted-foreground">@{member.handle}</p></div></div>{canManage ? <button disabled={busy} aria-label={`Remove ${member.displayName}`} onClick={() => void action(() => onRemove(member.id))} className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-destructive"><UserMinus className="size-3.5" /></button> : null}</div>
 
             <p className="mb-1.5 mt-3 text-[11px] text-muted-foreground">Replies</p>
 

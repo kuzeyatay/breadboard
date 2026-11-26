@@ -80,7 +80,8 @@ export async function POST(request: Request) {
     const claim = (name: unknown, self?: BotDefinition) => {
       const handle = botHandle(String(name ?? ""));
       const holder = botByHandle(roster, handle);
-      if (!handle || handle === BREAD_BOT_HANDLE || (holder && holder.id !== self?.id)) {
+      if (!handle) throw new ApiError(400, "bot_manage_invalid_name", "Include a letter or number in the bot's name so it can be mentioned.");
+      if (handle === BREAD_BOT_HANDLE || (holder && holder.id !== self?.id)) {
         throw new ApiError(409, "bot_manage_name_taken", `@${handle || "?"} is already taken on this team; choose a different name.`);
       }
     };

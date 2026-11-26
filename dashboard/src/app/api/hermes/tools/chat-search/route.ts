@@ -306,7 +306,8 @@ export async function POST(request: Request) {
     }
     // The first call already produced the navigation card. Repeating it on the
     // transcript-read call would render the same result list twice in one turn.
-    const uiResource = requestedReferenceIds.length === 0 && results.length > 0
+    const uiResource = requestedReferenceIds.length === 0 && results.length > 0 &&
+      userAskedForChats(conversation.id)
       ? chatSearchResourceFromHits({
           id: `chat-search:${session.id}:${Date.now()}`,
           query,
@@ -357,3 +358,23 @@ export async function POST(request: Request) {
     return apiErrorResponse(error);
   }
 }
+
+/**
+ * Show the "Chats found" card only when the person asked for chats. An agent
+ * looking something up on its own (a goal turn checking old messages for a
+ * group number) still gets the results, but the card in the transcript is
+ * noise there. Goal continuations are never the person asking.
+ */
+function userAskedForChats(conversationId: number): boolean {
+  const latest = db.prepare(
+    `SELECT substr(content, 1, 2000) AS content, client_message_id AS clientMessageId,
+            json_extract(CASE WHEN json_valid(metadata) THEN metadata END, '$.internalAgentContinuation') AS internal
+       FROM conversation_messages
+      WHERE conversation_id = ? AND role = 'user'
+      ORDER BY order_index DESC LIMIT 1`,
+  ).get(conversationId) as { content: string | null; clientMessageId: string | null; internal: unknown } | undefined;
+  if (!latest || latest.internal || latest.clientMessageId?.startsWith("goal:")) return false;
+  return CHAT_REQUEST.test(latest.content ?? "");
+}
+
+const CHAT_REQUEST = /\b(chats?|conversations?|threads?)\b/iu;

@@ -18,11 +18,35 @@ import { buzzBridge } from "@/lib/crumbs/service.ts";
 import { getIdentity } from "@/lib/crumbs/store.ts";
 import db from "@/lib/db";
 import { BREAD_AVATAR, BREAD_SLUG } from "./bread.ts";
+import { botsStore } from "@/lib/bots/server.ts";
+import { botHandle } from "@/lib/bots/mentions.ts";
+import { BOT_PERSONA_PREFIX } from "@/lib/bots/team.ts";
+import { DEFAULT_BOT_AVATAR, type BotAvatarConfig } from "@/lib/bots/types.ts";
 
-/** Members with their profile photo, when they have linked an account or sent one. */
-export function withPhotos(roomId: number, members: BuzzMember[]): Array<BuzzMember & { avatarUrl: string | null }> {
+/**
+ * Members with their profile photo, when they have linked an account or sent one.
+ * A bot has no photo: its face is drawn from its shape, colour and expression, so
+ * bot members carry that instead. A bot this machine does not know (seated from
+ * another machine) keeps the colour it was seated with on the default shape.
+ */
+export function withPhotos(roomId: number, members: BuzzMember[], userId?: number): Array<BuzzMember & { avatarUrl: string | null; botAvatar: BotAvatarConfig | null }> {
   const photos = buzzBridge.memberAvatars(roomId);
-  return members.map(member => ({ ...member, avatarUrl: photos[member.id] ?? (member.personaSlug === BREAD_SLUG ? BREAD_AVATAR : null) }));
+  let bots: Map<string, BotAvatarConfig> | null = null;
+  const botAvatar = (member: BuzzMember): BotAvatarConfig | null => {
+    if (!member.personaSlug?.startsWith(BOT_PERSONA_PREFIX)) return null;
+    if (!bots) {
+      bots = new Map();
+      try {
+        if (userId !== undefined) for (const bot of botsStore().list(userId)) bots.set(botHandle(bot.name), bot.avatar);
+      } catch { /* a missing bot table leaves the default face */ }
+    }
+    return bots.get(member.personaSlug.slice(BOT_PERSONA_PREFIX.length)) ?? { ...DEFAULT_BOT_AVATAR, color: member.accent || DEFAULT_BOT_AVATAR.color };
+  };
+  return members.map(member => ({
+    ...member,
+    avatarUrl: photos[member.id] ?? (member.personaSlug === BREAD_SLUG ? BREAD_AVATAR : null),
+    botAvatar: botAvatar(member),
+  }));
 }
 
 /**
@@ -86,7 +110,7 @@ export function requireWritableRoom(room: BuzzRoom): void {
 }
 
 /** A lost HTTP response may be retried, but an id cannot claim another send. */
-export function postHumanMessage(room: BuzzRoom, self: BuzzMember, body: string, clientMessageId: string, parentId: number | null = null) {
+export function postHumanMessage(room: BuzzRoom, self: BuzzMember, body: string, clientMessageId: string, parentId: number | null = null, metadata?: Record<string, unknown>) {
   requireWritableRoom(room);
   if (/^buzz_(reply|regen)_/.test(clientMessageId)) throw new ApiError(400, "reserved_message_id", "That message identifier is reserved for agent responses.");
   const previous = getMessageByClientId(room.id, clientMessageId);
@@ -96,7 +120,7 @@ export function postHumanMessage(room: BuzzRoom, self: BuzzMember, body: string,
   }
   return postMessage(room.id, {
     clientMessageId, memberId: self.id, authorKind: "human", authorName: self.displayName,
-    authorHandle: self.handle, body, parentId,
+    authorHandle: self.handle, body, parentId, ...(metadata ? { metadata } : {}),
   });
 }
 

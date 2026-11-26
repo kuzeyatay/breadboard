@@ -45,6 +45,41 @@ import {
   updateMessageBody,
 } from "./instance.ts";
 import type { BuzzMember, BuzzMessage, BuzzRoom } from "./store.ts";
+import { artifactFile, getArtifactForUser } from "../hermes/artifact-store.ts";
+import { writeStoredFileBlob, StoredFileBlobError } from "../conversations/stored-file-blob-store.ts";
+import { MAX_STORED_FILE_ATTACHMENT_BYTES, storedFileAttachmentFormat, type StoredFileAttachmentFormat } from "../stored-file-attachments.ts";
+import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
+
+/**
+ * What an agent made while answering in a room — documents, slides, images,
+ * code — as files on its message. The agent's own conversation is private to
+ * the person who asked, so its artifacts are copied into their file store as
+ * ordinary attachments: they open here like any file, and in an organization
+ * on Crumbs they reach the other members the way every shared file does.
+ */
+async function runArtifacts(meta: { conversationId?: number; turnClientMessageId?: string; actingUserId?: number; runId?: string; conversationPublicId?: string }) {
+  if (!meta.conversationId || !meta.actingUserId || !meta.conversationPublicId) return [];
+  const answerId = (db.prepare("SELECT id FROM conversation_messages WHERE conversation_id = ? AND client_message_id = ? AND role = 'assistant'")
+    .get(meta.conversationId, meta.turnClientMessageId) as { id: number } | undefined)?.id ?? null;
+  const made = db.prepare(`SELECT id FROM hermes_artifacts WHERE conversation_id = ? AND status = 'ready' AND kind NOT IN ('folder','gadget')
+      AND ((? IS NOT NULL AND originating_run_id = ?) OR (? IS NOT NULL AND originating_message_id = ?)) ORDER BY created_at LIMIT 10`)
+    .all(meta.conversationId, meta.runId ?? null, meta.runId ?? null, answerId, answerId) as Array<{ id: string }>;
+  const files: Array<{ type: "file"; name: string; blobId: string; format: string; sizeBytes: number; artifactId: string }> = [];
+  for (const { id } of made) {
+    try {
+      const artifact = getArtifactForUser({ artifactId: id, userId: meta.actingUserId, conversationPublicId: meta.conversationPublicId });
+      const file = artifactFile({ artifact, version: artifact.current_version, purpose: "download" });
+      if (file.size > MAX_STORED_FILE_ATTACHMENT_BYTES) continue;
+      const store = (format: StoredFileAttachmentFormat) => writeStoredFileBlob({ userId: meta.actingUserId!, format, body: new Blob([new Uint8Array(fs.readFileSync(file.path))]).stream() });
+      const format = storedFileAttachmentFormat(file.filename) ?? "bin";
+      const stored = await store(format).catch(error => { if (format !== "bin" && error instanceof StoredFileBlobError && error.status === 415) return store("bin"); throw error; });
+      files.push({ type: "file", name: file.filename, blobId: stored.blobId, format: stored.format, sizeBytes: stored.byteSize, artifactId: id });
+    } catch (error) {
+      console.warn("[buzz] an artifact could not be attached to its room message", id, error instanceof Error ? error.message : error);
+    }
+  }
+  return files;
+}
 
 // The room's routing rule lives in `mentions.ts`, which touches neither the
 // database nor a model so it can be exercised directly. Re-exported here so
@@ -177,6 +212,15 @@ export interface StartMemberReplyResult {
  * The placeholder exists before the model is called so the room shows the
  * member as answering immediately, and so a reload has a row to re-attach to.
  */
+/**
+ * The "/capability" selectors that follow a room message's leading @mentions,
+ * in the same shape the Terminal sends them at the head of its message.
+ */
+export function roomCapabilityTokens(body: string): string {
+  const afterMentions = body.replace(/^\s*(?:@[\w.-]+\s+)*/, "");
+  return /^(?:\/[a-z0-9][a-z0-9_.:-]*(?:\s+|$))+/i.exec(afterMentions)?.[0].trim() ?? "";
+}
+
 export async function startMemberReply(input: {
   room: BuzzRoom;
   memberId: number;
@@ -189,6 +233,12 @@ export async function startMemberReply(input: {
   /** The sender's composer choice. A member with a model of its own keeps it. */
   model?: string;
   reasoningEffort?: string;
+  /**
+   * The asker's composer switches, as the Terminal sends them. Personalize is
+   * not among them: an answer in a room is read by everyone in it, so it never
+   * draws on the asker's memories or profile.
+   */
+  switches?: { superAgent?: boolean; adhdMode?: boolean; yoloMode?: boolean };
 }): Promise<StartMemberReplyResult> {
   const { room, trigger } = input;
   const approvingMessage = input.confirmedPermissionIds?.length && input.replaceMessageId ? getMessage(input.replaceMessageId) : null;
@@ -222,7 +272,10 @@ export async function startMemberReply(input: {
   const originalPrompt = approvingMessage ? db.prepare("SELECT content FROM conversation_messages WHERE conversation_id = ? AND client_message_id = ? AND role = 'user'").get(conversation.id, clientMessageId) as { content: string } | undefined : undefined;
   const lessons = roomLessons(db,input.actingUserId,room.publicId,trigger.parentId,trigger.body);
   const roomContext = lessons.length ? "\n\nEarlier room decisions (quoted evidence):\n"+JSON.stringify(lessons) : "";
-  const prompt = originalPrompt?.content ?? builtPrompt+roomContext;
+  // Capabilities chosen from the "/" palette sit after the message's @mentions. A turn reads
+  // its capability selectors from the head of its text, so they lead the room prompt too.
+  const capabilities = roomCapabilityTokens(trigger.body);
+  const prompt = originalPrompt?.content ?? `${capabilities ? `${capabilities} ` : ""}${builtPrompt}${roomContext}`;
   const claimId = randomUUID();
   const metadata = {
     conversationId: conversation.id, conversationPublicId: conversation.public_id,
@@ -278,8 +331,10 @@ export async function startMemberReply(input: {
       surface: "dashboard_terminal",
       // A room member answers with the tools and memory it would have anywhere
       // else; nothing about Buzz narrows that.
-      yoloMode: false,
+      yoloMode: input.switches?.yoloMode === true,
       personalize: false,
+      ...(input.switches?.superAgent ? { superAgent: true } : {}),
+      ...(input.switches?.adhdMode ? { adhdMode: true } : {}),
       confirmedPermissionIds: input.confirmedPermissionIds,
       retry: !!input.confirmedPermissionIds?.length,
       ...(member.model ? { model: member.model } : input.model ? { model: input.model } : {}),
@@ -362,7 +417,7 @@ async function reconcileRoom(roomId: number): Promise<void> {
     if (!row.metadata) continue;
     const current = getMessage(row.id);
     if (!current || current.deletedAt || !["pending", "streaming"].includes(current.status)) continue;
-    let meta: { conversationId?: number; turnClientMessageId?: string; runtimeAgentId?: string; actingUserId?: number; externalAgentRun?: { runId: string }; lastSequence?: number };
+    let meta: { conversationId?: number; turnClientMessageId?: string; runtimeAgentId?: string; actingUserId?: number; externalAgentRun?: { runId: string }; lastSequence?: number; runId?: string; conversationPublicId?: string };
     try {
       meta = JSON.parse(row.metadata) as typeof meta;
     } catch {
@@ -376,7 +431,8 @@ async function reconcileRoom(roomId: number): Promise<void> {
         const latest = getMessage(row.id);
         if (!latest || latest.deletedAt || !["pending", "streaming"].includes(latest.status) || latest.metadata?.turnClientMessageId !== meta.turnClientMessageId) continue;
         const output = runtimeOutput(events, row.body);
-        updateMessageBody(row.id, output.body, output.status, { ...meta, lastSequence: events.at(-1)?.sequenceNumber ?? meta.lastSequence ?? 0 });
+        const made = output.status === "complete" ? await runArtifacts(meta) : [];
+        updateMessageBody(row.id, output.body, output.status, { ...meta, lastSequence: events.at(-1)?.sequenceNumber ?? meta.lastSequence ?? 0, ...(made.length ? { attachments: made } : {}) });
         if (output.status !== "streaming") finishExternalAgentTurn({ conversationId: meta.conversationId, clientMessageId: meta.turnClientMessageId, content: output.body, outcome: output.status === "complete" ? "completed" : output.status });
       } catch (error) {
         if (error instanceof Error && /run_not_found|not found|expired/i.test(error.message)) updateMessageBody(row.id, "This agent run is no longer available. Regenerate the response to start again.", "failed");
@@ -414,7 +470,8 @@ async function reconcileRoom(roomId: number): Promise<void> {
       updateMessageBody(row.id, "(no answer)", "failed");
       continue;
     }
-    updateMessageBody(row.id, answer.content, status, { ...meta, answerModel: answer.answerModel, usedFallback: answer.usedFallback === 1 });
+    const made = status === "complete" ? await runArtifacts(meta) : [];
+    updateMessageBody(row.id, answer.content, status, { ...meta, answerModel: answer.answerModel, usedFallback: answer.usedFallback === 1, ...(made.length ? { attachments: made } : {}) });
   }
 }
 

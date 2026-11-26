@@ -2052,7 +2052,7 @@ export async function cancelRuntimeJob(
 }
 
 export async function maintainRuntimeStorage(env: NodeJS.ProcessEnv = process.env): Promise<{
-  busy: boolean; inspected: number; jobsPruned: number; directoriesRemoved: number; protected: number;
+  busy: boolean; inspected: number; jobsPruned: number; directoriesRemoved: number; protected: number; eventsArchived?: number;
 } | null> {
   return control("/v1/internal/storage/maintenance", {}, env, 5_000);
 }

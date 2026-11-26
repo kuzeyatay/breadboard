@@ -22,7 +22,7 @@ function source(relativePath) {
 }
 
 const MANIFEST = "../hermes-skills/prebuilt/i-have-adhd/SKILL.md";
-const composer = source("src/app/components/assistant-composer.tsx");
+const composer = (source("src/app/components/assistant-intelligence-menu.tsx") + source("src/app/components/assistant-composer.tsx"));
 
 const KNOWLEDGE_DECISION = {
   mode: "knowledge",
@@ -206,7 +206,7 @@ test("both turn pipelines and both legacy chat routes carry the switch", () => {
 });
 
 test("the composer offers the switch above YOLO mode", () => {
-  const composer = source("src/app/components/assistant-composer.tsx");
+  const composer = (source("src/app/components/assistant-intelligence-menu.tsx") + source("src/app/components/assistant-composer.tsx"));
   assert.match(composer, /useDirectMode/);
   assert.match(composer, /<span className="block">Concise<\/span>/);
   assert.ok(

@@ -57,7 +57,6 @@ const {
   resolveBrowserAgentDebuggingPort,
 } = require(${JSON.stringify(browserAgentSession)});
 const { IPC_CHANNELS, isTabsCommand } = require(${JSON.stringify(ipcContract)});
-const { REVEAL_FRAME_PROBE } = require(path.join(path.dirname(${JSON.stringify(windowManager)}), "first-paint.js"));
 const resultFile = ${JSON.stringify(resultFile)};
 const browserAgentRunId = "job_" + "a".repeat(64);
 const browserAgentTargetUrl = browserAgentBootstrapUrl(browserAgentRunId);
@@ -91,31 +90,7 @@ app.whenReady().then(async () => {
   let releaseShellResponse;
   let releaseNewTabResponse;
   let holdNewTab = false;
-  let releaseShellFrame;
-  const shellFrameGate = new Promise((resolve) => { releaseShellFrame = resolve; });
-  let shellFrameWaiting = false;
-  app.on("web-contents-created", (_event, contents) => {
-    created.push(contents);
-    const execute = contents.executeJavaScript.bind(contents);
-    contents.executeJavaScript = async (code, ...args) => {
-      if (code === REVEAL_FRAME_PROBE && contents.getURL().endsWith("/browser")) {
-        shellFrameWaiting = true;
-        await shellFrameGate;
-      }
-      return execute(code, ...args);
-    };
-    contents.on("dom-ready", () => {
-      const frame = contents.mainFrame;
-      const executeFrame = frame.executeJavaScript.bind(frame);
-      frame.executeJavaScript = async (code, ...args) => {
-        if (code === REVEAL_FRAME_PROBE && contents.getURL().endsWith("/browser")) {
-          shellFrameWaiting = true;
-          await shellFrameGate;
-        }
-        return executeFrame(code, ...args);
-      };
-    });
-  });
+  app.on("web-contents-created", (_event, contents) => created.push(contents));
   let holdFirstBrowserShell = true;
   const shellServer = http.createServer((request, response) => {
     const title = request.url === "/browser" ? "Browser shell" : "Dashboard";
@@ -180,31 +155,27 @@ app.whenReady().then(async () => {
   manager.tabs.setBrowserUrl(shellOrigin + "/browser");
   manager.tabs.setNewTabUrl(shellOrigin + "/new-tab");
   const window = manager.createMainWindow();
-  await window.loadURL(shellOrigin + "/dashboard");
-  window.show();
-  const base = window.webContents;
+  const base = manager.page(window);
+  await base.loadURL(shellOrigin + "/dashboard");
+  window.showInactive();
   const stateIn = (contents) => contents.executeJavaScript("window.breadboardDesktop.getTabsState()");
   const command = (contents, value) =>
     contents.executeJavaScript("window.breadboardDesktop.tabs(" + JSON.stringify(value) + ")");
 
+  const host = manager.tabs.hosts.get(window.id);
+  await until(() => host.shellEnabled, "persistent tab strip ready");
   const opened = await command(base, { type: "browser", url: webOrigin + "/one" });
   await until(() => releaseShellResponse, "held browser shell request");
   const loadingViewInWindow = () => window.contentView.children.find((view) =>
     view.webContents?.getURL().includes("loading.html"));
   const coldLoadingVisible = Boolean(loadingViewInWindow());
-  releaseShellResponse();
-  await until(() => shellFrameWaiting, "DOM-ready browser shell awaiting its compositor frame");
-  // Website navigation retains the outgoing page even when a resize lays out
-  // the arriving shell after its DOM is ready but before its frame is ready.
+  // The persistent tab strip presents the selected tab immediately, even
+  // when its content shell is still loading. It also owns the toolbar.
+  const shellWhileLoading = host.shell.view.getBounds();
   const [loadingWidth, loadingHeight] = window.getContentSize();
-  const loadingResize = new Promise((resolve) => window.once("resize", resolve));
   window.setContentSize(loadingWidth - 10, loadingHeight - 10);
-  await loadingResize;
   const domReadyLoadingVisible = Boolean(loadingViewInWindow());
-  const loadingShellView = window.contentView.children.find((view) =>
-    view.webContents?.getURL().endsWith("/browser"));
-  const loadingShellStillOffscreen = loadingShellView.getBounds().y < 0;
-  releaseShellFrame();
+  releaseShellResponse();
   const first = await until(async () => {
     const state = await stateIn(base);
     return state.tabs.length === 2 && state.tabs[1].browser && !state.tabs[1].loading ? state : null;
@@ -213,7 +184,7 @@ app.whenReady().then(async () => {
     !contents.isDestroyed() && contents.getURL() === shellOrigin + "/browser"), "trusted browser shell");
   const webContents = await until(() => created.find((contents) =>
     !contents.isDestroyed() && contents.getURL() === webOrigin + "/one"), "sandboxed web page");
-  await sleep(100);
+  await until(() => !host.pending && host.presentedId === first.activeId, "website presented before geometry check");
   const afterSubframeNavigation = await stateIn(base);
   await until(() => window.contentView.children.some((view) => view.webContents === webContents), "web view attachment");
   const webView = window.contentView.children.find((view) => view.webContents === webContents);
@@ -221,25 +192,17 @@ app.whenReady().then(async () => {
   const webBounds = webView && webView.getBounds();
   const shellBounds = shellView && shellView.getBounds();
 
-  // Use the exact plus-button command, keeping the new route cold. The old
-  // shell is still visible and must receive its own browser state, not lose
-  // its toolbar because the selected tab is now the internal new-tab page.
+  // Open a cold Terminal with the plus button. The persistent strip remains
+  // available while the new document arrives and identifies the selection.
   holdNewTab = true;
   const plusOpened = await command(shellContents, { type: "new" });
   await until(() => releaseNewTabResponse, "held plus-button new tab");
-  const loadingView = await until(loadingViewInWindow, "explicit cold new-tab scene");
-  const retainedShellState = await stateIn(shellContents);
-  const retainedShellPush = await until(async () => {
-    const state = await shellContents.executeJavaScript("window.__states.at(-1)");
-    return state?.activeId === retainedShellState.activeId ? state : null;
-  }, "outgoing browser receives new selection");
-  const plusLoadingTop = loadingView.getBounds().y;
-  const retainedShellVisible = window.contentView.children.includes(shellView) &&
-    shellView.getBounds().y === 0;
+  const plusState = await stateIn(base);
+  const stripVisible = window.contentView.children.includes(host.shell.view) && host.shell.view.getBounds().y === 0;
   holdNewTab = false;
   releaseNewTabResponse();
-  await command(shellContents, { type: "close", id: retainedShellState.activeId });
-  await until(() => !window.contentView.children.includes(loadingView), "return to browser after plus");
+  await command(base, { type: "close", id: plusState.activeId });
+  await until(() => host.activeId === first.tabs[1].id && !host.pending, "return to browser after plus");
 
   const noBridge = await webContents.executeJavaScript("typeof window.breadboardDesktop");
   const browserPartition = webContents.session === session.fromPartition("persist:breadboard-browser");
@@ -274,9 +237,7 @@ app.whenReady().then(async () => {
     () => !window.contentView.children.some((view) => view.webContents === webContents),
     "browser page detachment",
   );
-  const browserViewsAfterLeaving = window.contentView.children.filter(
-    (view) => view.webContents === webContents || view.webContents === shellContents,
-  ).length;
+  const webAttachedAfterLeaving = window.contentView.children.includes(webView);
   const closed = await command(base, { type: "close", id: first.tabs[1].id });
   await until(async () => (await stateIn(base)).tabs.length === 2, "browser tab close");
   const reopened = await command(base, { type: "reopen" });
@@ -291,8 +252,7 @@ app.whenReady().then(async () => {
   });
   const browserAgentState = await until(async () => {
     const state = await stateIn(base);
-    const active = state.tabs.find((tab) => tab.id === state.activeId);
-    return state.tabs.length === 4 && active && active.title === "Agent Browser" && active.browser
+    return state.tabs.length === 4 && state.tabs.some(tab => tab.aiOpened && tab.title === "Agent Browser")
       ? state
       : null;
   }, "browser-agent tab");
@@ -334,35 +294,19 @@ app.whenReady().then(async () => {
       ? state
       : null;
   }, "browser replacing new-tab page");
-  const newTabRetired = await until(
-    () => newTabContents.isDestroyed(),
-    "replaced new-tab renderer disposal",
-  );
-  const knownBrowserShellIds = new Set(created
-    .filter((contents) => !contents.isDestroyed() && contents.getURL() === shellOrigin + "/browser")
-    .map((contents) => contents.id));
-  const blankBrowserPagesBeforeHome = created.filter((contents) =>
-    !contents.isDestroyed() &&
-    contents.session === session.fromPartition("persist:breadboard-browser") &&
-    contents.getURL() === ""
-  ).length;
+  const terminalPreserved = !newTabContents.isDestroyed() &&
+    newTabContents.getURL() === shellOrigin + "/new-tab" &&
+    replacedState.activeId === beforeReplace.activeId;
   const homeTabOpened = await command(base, { type: "browser" });
-  const homeShellContents = await until(() => created.find((contents) =>
-    !contents.isDestroyed() &&
-    contents.getURL() === shellOrigin + "/browser" &&
-    !knownBrowserShellIds.has(contents.id)), "fresh browser home shell");
+  const homeShellContents = host.browserChrome.contents;
   const browserHomeState = await until(async () => {
     const state = await stateIn(base);
     const active = state.tabs.find((tab) => tab.id === state.activeId);
     return active && active.browser && active.browser.address === "" ? state : null;
   }, "fresh browser home state");
-  const blankBrowserPagesAfterHome = created.filter((contents) =>
-    !contents.isDestroyed() &&
-    contents.session === session.fromPartition("persist:breadboard-browser") &&
-    contents.getURL() === ""
-  ).length;
-  const homeUsesOnlyTrustedRenderer =
-    blankBrowserPagesAfterHome === blankBrowserPagesBeforeHome;
+  const home = host.tabs.find(tab => tab.id === browserHomeState.activeId);
+  const homeUsesOnlyTrustedRenderer = home.contents === homeShellContents &&
+    home.browser.contents === null && home.browser.view === null;
   const homeNavigated = await command(homeShellContents, {
     type: "browser-navigate",
     input: webOrigin + "/from-home",
@@ -422,12 +366,10 @@ app.whenReady().then(async () => {
     opened,
     coldLoadingVisible,
     domReadyLoadingVisible,
-    loadingShellStillOffscreen,
+    shellWhileLoading,
     plusOpened,
-    retainedShellState,
-    retainedShellPush,
-    plusLoadingTop,
-    retainedShellVisible,
+    plusState,
+    stripVisible,
     first,
     afterSubframeNavigation,
     noBridge,
@@ -438,7 +380,7 @@ app.whenReady().then(async () => {
     shellBounds,
     webBounds,
     popupState,
-    browserViewsAfterLeaving,
+    webAttachedAfterLeaving,
     closed,
     reopened,
     reopenedState,
@@ -450,7 +392,7 @@ app.whenReady().then(async () => {
     beforeReplace,
     replaced,
     replacedState,
-    newTabRetired,
+    terminalPreserved,
     homeTabOpened,
     browserHomeState,
     homeUsesOnlyTrustedRenderer,
@@ -492,22 +434,14 @@ app.whenReady().then(async () => {
     assert.equal(run.status, 0, result.error ?? `${run.stdout}\n${run.stderr}`);
     assert.equal(result.error, undefined, result.error);
     assert.equal(result.opened, true);
-    assert.equal(result.loadingShellStillOffscreen, true);
-    assert.equal(result.coldLoadingVisible, false, "website navigation uses the outgoing page's top bar");
+    assert.equal(result.shellWhileLoading.y, 0, "the tab strip remains visible during navigation");
+    assert.equal(result.coldLoadingVisible, false);
+    assert.equal(result.domReadyLoadingVisible, false);
     assert.equal(result.plusOpened, true);
-    assert.equal(result.retainedShellVisible, true, "the outgoing navbar remains onscreen during plus loading");
-    assert.equal(result.plusLoadingTop, 101, "the plus loader meets the retained navbar");
-    for (const state of [result.retainedShellState, result.retainedShellPush] as TabsState[]) {
-      assert.notEqual(state.selfId, state.activeId);
-      assert.equal(state.selfId, result.first.tabs[1].id, "reads and pushes identify the owning browser tab");
-      assert.equal(state.tabs.find((tab) => tab.id === state.selfId)?.browser?.address.endsWith("/one"), true);
-      assert.equal(state.tabs.find((tab) => tab.id === state.activeId)?.browser, undefined);
-    }
-    assert.equal(
-      result.domReadyLoadingVisible,
-      false,
-      "DOM-ready must not introduce a loading scene while the browser chrome is still offscreen",
-    );
+    assert.equal(result.stripVisible, true);
+    const plusState: TabsState = result.plusState;
+    assert.notEqual(plusState.activeId, result.first.activeId);
+    assert.equal(plusState.tabs.find(tab => tab.id === plusState.activeId)?.browser, undefined);
     assert.equal(result.noBridge, "undefined", "untrusted pages never receive the desktop bridge");
     assert.equal(result.browserPartition, true, "browser storage is isolated from the dashboard");
     assert.equal(result.startsWithLightScheme, true, "browser pages start in Breadboard light mode");
@@ -519,9 +453,9 @@ app.whenReady().then(async () => {
       true,
       "an iframe pushState must not replace the top-level browser address",
     );
-    assert.equal(result.first.tabs[1].browser.canGoBack, false);
+    assert.equal(result.first.tabs[1].browser.backToTerminal, true);
     assert.equal(result.first.tabs[1].title, "Web one");
-    assert.equal(result.shellBounds.y, 0);
+    assert.equal(result.shellBounds.y, 32, "shared panels start below the native tab strip");
     assert.equal(
       result.webBounds.y,
       135,
@@ -534,11 +468,7 @@ app.whenReady().then(async () => {
       "the sandboxed page cannot cover the trusted browser rail",
     );
     assert.equal(result.popupState.tabs[2].browser.address.endsWith("/popup"), true);
-    assert.equal(
-      result.browserViewsAfterLeaving,
-      0,
-      "both browser views detach when its tab leaves",
-    );
+    assert.equal(result.webAttachedAfterLeaving, false, "the website detaches when its tab leaves");
     assert.equal(result.closed, true);
     assert.equal(result.reopened, true);
     const reopenedTab = result.reopenedState.tabs.find(
@@ -555,8 +485,9 @@ app.whenReady().then(async () => {
     assert.equal(Number.isInteger(result.browserAgentReady.cdpPort), true);
     assert.equal(result.browserAgentReady.cdpPort >= 1_024, true);
     const browserAgentTab = result.browserAgentState.tabs.find(
-      (tab: { id: number }) => tab.id === result.browserAgentState.activeId,
+      (tab: { aiOpened: boolean }) => tab.aiOpened,
     );
+    assert.notEqual(browserAgentTab.id, result.browserAgentState.activeId);
     assert.equal(browserAgentTab.title, "Agent Browser");
     assert.equal(browserAgentTab.browser.address, "");
     assert.equal(result.newTabOpened, true);
@@ -576,7 +507,7 @@ app.whenReady().then(async () => {
       (tab: { id: number }) => tab.id === result.replacedState.activeId,
     );
     assert.equal(replacementBrowserTab.browser.address.endsWith("/replacement"), true);
-    assert.equal(result.newTabRetired, true);
+    assert.equal(result.terminalPreserved, true);
     assert.equal(result.homeTabOpened, true);
     const browserHomeTab = result.browserHomeState.tabs.find(
       (tab: { id: number }) => tab.id === result.browserHomeState.activeId,

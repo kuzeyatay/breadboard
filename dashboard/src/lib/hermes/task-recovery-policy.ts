@@ -6,7 +6,11 @@ export const MAX_IDENTICAL_TASK_FAILURES = 3;
 export const MAX_PROVIDER_RECOVERY_WAIT_MS = 2 * 60 * 60_000;
 
 export interface RecoveryFailure { code?: string; message?: string; recoverable?: boolean }
-export interface RecoveryToolResult { toolName?: unknown; success?: unknown; summary?: unknown; failure?: RecoveryFailure }
+export interface RecoveryToolResult {
+  toolName?: unknown; success?: unknown; summary?: unknown; failure?: RecoveryFailure;
+  /** What the call asked for (a computer_use action, a terminal command), when the runtime sent it. */
+  operation?: unknown;
+}
 
 // Only evidence lookups can be superseded by another lookup. Unknown tools,
 // commands, delegated work and artifact writers keep their recovery contract.
@@ -18,6 +22,18 @@ const EVIDENCE_LOOKUPS = new Set([
   'memory_query', 'gbrain_search', 'gbrain_retrieve', 'image_search',
   'browser_terminal', 'tool_search', 'tool_describe', 'capability_search',
 ]);
+
+/** The action or command a tool call asked for, read from its arguments. */
+export function toolOperation(details: unknown): string | undefined {
+  const args = details && typeof details === "object" ? (details as Record<string, unknown>).args : undefined;
+  if (!args || typeof args !== "object") return undefined;
+  const record = args as Record<string, unknown>;
+  for (const key of ["action", "command", "cmd"]) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) return value.trim().slice(0, 500);
+  }
+  return undefined;
+}
 
 /** Preserve actual tool diagnostics even when the display summary is generic. */
 export function recoveryToolFailure(tool: RecoveryToolResult & { details?: Record<string, unknown> }): RecoveryFailure {
@@ -33,6 +49,31 @@ export function recoveryToolFailure(tool: RecoveryToolResult & { details?: Recor
     ...(typeof error.recoverable === "boolean" ? { recoverable: error.recoverable } : {}) };
 }
 
+// Reading never leaves a job half done, so a failed read is not unfinished
+// work once the answer is written: a file read (`Get-Content`), a window list
+// or screenshot, a skill lookup. Re-running a delivered answer for one replaced
+// what the person had already read and notified them twice (arXiv briefing,
+// 2026-11-26: one failed `Get-Content` among 84 tool calls).
+const READ_ONLY_TOOLS = new Set(['skill_open', 'skill_search', 'skill_list', 'tool_describe']);
+const READ_ONLY_COMPUTER_USE = /^(?:list_windows|list_apps|capture|screenshot|get_[a-z_]+|read_[a-z_]+|find_[a-z_]+)\b/i;
+const READ_ONLY_COMMAND = /^(?:Get-Content|gc|cat|type|more|head|tail|Get-ChildItem|gci|ls|dir|Get-Item|gi|Test-Path|Resolve-Path|Select-String|sls|findstr|grep|rg|find|where(?:\.exe)?|which|wc|Measure-Object|Get-Location|pwd|echo|Write-Output|Get-Date|Get-Process|Get-Command|git (?:status|log|diff|show|branch|rev-parse|ls-files))\b/i;
+const COMMAND_SIDE_EFFECT = /[>]|\b(?:Set-Content|Add-Content|Out-File|New-Item|Remove-Item|Move-Item|Copy-Item|Rename-Item|Start-Process|Invoke-WebRequest|Invoke-RestMethod|Stop-Process|rm|del|mv|cp|mkdir|curl|wget)\b/i;
+
+export function readOnlyTaskTool(tool: RecoveryToolResult): boolean {
+  const name = String(tool.toolName ?? '');
+  if (EVIDENCE_LOOKUPS.has(name) || READ_ONLY_TOOLS.has(name)) return true;
+  // The display summary can be the error text, so the call's own action or
+  // command comes first; computer_use errors also lead with the action name.
+  const operation = [tool.operation, tool.summary, tool.failure?.message]
+    .map(value => (typeof value === 'string' ? value.trim() : ''))
+    .find(Boolean) ?? '';
+  if (name === 'computer_use') return READ_ONLY_COMPUTER_USE.test(operation);
+  if (name === 'terminal_execute_command') {
+    return READ_ONLY_COMMAND.test(operation) && !COMMAND_SIDE_EFFECT.test(operation);
+  }
+  return false;
+}
+
 /** These failures need a person or changed external conditions, not another run. */
 export function taskFailureCanRecover(failure: RecoveryFailure): boolean {
   if (failure.recoverable === false) return false;
@@ -41,7 +82,7 @@ export function taskFailureCanRecover(failure: RecoveryFailure): boolean {
   if (failure.code === 'browser_not_linked' ||
       /Send a message from the Terminal beside the browser page to connect it\./i.test(failure.message ?? '')) return false;
   const text = `${failure.code ?? ""} ${failure.message ?? ""}`;
-  return !/(?:cancel(?:led|ed|lation)|abort(?:ed)?|permission[_ -]denied|access[_ -]denied|forbidden|unauthori[sz]ed|approval[_ -](?:denied|required)|requires? (?:user )?approval|quota|usage[_ -]limit|insufficient[_ -](?:quota|credits)|rate[_ -]limit|resource[_ -]exhausted|out of memory|enospc|disk (?:is )?full|authentication|invalid[_ -](?:api[_ -])?key|sign[ -]?in required|budget[_ -](?:limit|exhaust)|HTTP\s*(?:401|403|429))/i.test(text);
+  return !/(?:cancel(?:led|ed|lation)|abort(?:ed)?|permission[_ -]denied|access[_ -]denied|forbidden|unauthori[sz]ed|approval[_ -](?:denied|required)|requires? (?:user )?approval|quota|usage[_ -]limit|insufficient[_ -](?:quota|credits)|rate[_ -]limit|resource[_ -]exhausted|out of memory|enospc|disk (?:is )?full|authentication|invalid[_ -](?:api[_ -])?key|sign[ -]?in required|budget[_ -](?:limit|exhaust)|HTTP\s*(?:401|403|429)|not consented|do not retry|not authori[sz]ed for this turn|not (?:selected|available|granted) for this turn)/i.test(text);
 }
 
 /** A later success from the same tool resolves an earlier failed attempt. */
@@ -105,7 +146,7 @@ export function taskRecoveryCheckpoint(input: {
     input.tools.every(tool => EVIDENCE_LOOKUPS.has(String(tool.toolName)));
   if ((input.completedTextAnswer || lookupOnlyVoice) && !input.failure &&
       (input.status === "idle" || input.status === "completed") &&
-      unresolved.every(tool => EVIDENCE_LOOKUPS.has(String(tool.toolName)))) return {};
+      unresolved.every(readOnlyTaskTool)) return {};
   const failure = input.status === "idle" || input.status === "completed"
     ? unresolved.length ? { code: "task_tool_failed", message: unresolved.map(t => `${t.toolName}: ${t.failure?.message ?? String(t.summary ?? "failed")}`).join("; ") } : undefined
     : input.failure ?? { code: "runtime_interrupted", message: "The runtime ended before completing the task." };

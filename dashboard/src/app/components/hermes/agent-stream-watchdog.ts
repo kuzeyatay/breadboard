@@ -137,6 +137,15 @@ export function isAgentStreamTimeoutError(
 
 export function isRecoverableAgentStreamDisconnect(value: unknown): boolean {
   if (value instanceof AgentStreamDisconnectedError) return true;
+  // A slow (re)connect is a transport problem, not a dead turn. Retrying keeps
+  // the run alive; stopping it here once cancelled an overnight goal turn that
+  // was only waiting for the user's answer.
+  // Silence is a transport problem too. A tool can run for more than five
+  // minutes without a turn event, and a sleeping PC freezes the stream; the
+  // browser stopping the server turn for either cancelled a healthy overnight
+  // goal after 4h 46m. Reconnect instead; the server's own supervisor is what
+  // reaps a runtime that really went away.
+  if (value instanceof AgentStreamTimeoutError) return true;
   if (!(value instanceof Error) || value.name === "AbortError") return false;
   // `AbortSignal.timeout()` rejects fetch with a TimeoutError. Treat that like
   // the browser's other transport failures; the caller still owns the bounded

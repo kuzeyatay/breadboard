@@ -51,7 +51,7 @@ test('Quartz menus fit clipped panels while Garden workspace keeps its original 
     } }],
   });
   const stylesheet = path.join(root, 'src/app/globals.css');
-  const cssInput = fs.readFileSync(stylesheet, 'utf8').replace('@source "../**/*.{js,mjs,cjs,ts,tsx,jsx,mdx}";', '@source "./components/assistant-composer.tsx"; @source "./components/settings-dialog.tsx"; @source "./components/usage-limits-popover.tsx";');
+  const cssInput = fs.readFileSync(stylesheet, 'utf8').replace('@source "../**/*.{js,mjs,cjs,ts,tsx,jsx,mdx}";', '@source "./components/assistant-composer.tsx"; @source "./components/assistant-intelligence-menu.tsx"; @source "./components/settings-dialog.tsx"; @source "./components/usage-limits-popover.tsx";');
   const css = (await postcss([tailwind({ base: root })]).process(cssInput, { from: stylesheet })).css;
   const server = http.createServer((request, response) => {
     const js = request.url === '/app.js';

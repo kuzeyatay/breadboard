@@ -2418,10 +2418,8 @@ export default function ProfileClient({
   contactTotal,
   syncedCalendars,
   calendarVaultConfigured,
-  initialIdentity = null,
 }: {
   /** The linked Crumbs account. Its photo and name are Breadboard's own. */
-  initialIdentity?: { handle: string | null; displayName: string | null; avatar: string | null } | null;
   stats: ProfileStats;
   returnTo?: string;
   initialThoughtTopologyAutoUpdate?: boolean;
@@ -2440,13 +2438,6 @@ export default function ProfileClient({
 }) {
   const { account, totals, streaks, habit, surfaces, gardens, artifactKinds, agents } = stats;
   const [showNavbarFlowers, setShowNavbarFlowers] = useState(initialNavbarFlowers);
-  // The heading is the name when there is one, because that is the thing this
-  // page is about. The username does not disappear — it moves down a line, to
-  // sit with the email as the other piece of account plumbing.
-  const fullName = [account.firstName, account.lastName].filter(Boolean).join(" ");
-  const [identity, setIdentity] = useState(initialIdentity);
-  const [photoFailed, setPhotoFailed] = useState<string | null>(null);
-  const shownName = identity?.displayName || fullName || account.username;
 
   const surfaceMax = surfaces.reduce((best, entry) => Math.max(best, entry.count), 0);
   const gardenMax = gardens.reduce((best, entry) => Math.max(best, entry.prompts), 0);
@@ -2467,34 +2458,9 @@ export default function ProfileClient({
       </header>
 
       <main className="mx-auto w-full max-w-5xl flex-1 px-6 py-8">
-        {/* ------------------------------------------------------ identity */}
-        <section className="neu-surface-raised flex flex-wrap items-center gap-5 rounded-2xl border border-gray-800 p-5">
-          {/* The profile photo is the linked Crumbs account's; without one, an initial stands in. */}
-          {identity?.avatar && photoFailed !== identity.avatar ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={identity.avatar} alt="" referrerPolicy="no-referrer" onError={() => setPhotoFailed(identity.avatar)} className="h-16 w-16 shrink-0 rounded-full object-cover" />
-          ) : (
-            <a href="#crumbs" title="Add a photo by signing in to Crumbs" className="grid h-16 w-16 shrink-0 place-items-center rounded-full bg-[color-mix(in_srgb,var(--botanical)_18%,var(--paper-surface))] text-2xl font-bold text-[var(--botanical)] no-underline">
-              {shownName.charAt(0).toUpperCase()}
-            </a>
-          )}
-          <div className="min-w-0 flex-1">
-            <h2 className="truncate text-xl font-semibold text-white">
-              {shownName}
-            </h2>
-            <p className="flex flex-wrap gap-x-3 text-sm text-gray-400">
-              <span className="truncate">{identity?.handle ? `@${identity.handle.replace(/\.bsky\.social$/i, "")}` : account.username}</span>
-              <span className="truncate">{account.email}</span>
-            </p>
-            <p className="mt-1 text-xs text-gray-600">
-              Here since {formatLongDate(dateOnly(account.joinedAt))}
-              {account.daysSinceJoined > 0 && `, ${formatCount(account.daysSinceJoined)} days`}
-              {stats.firstConversation && (
-                <>, first chat was “{stats.firstConversation.title}”</>
-              )}
-            </p>
-          </div>
-
+        {/* ------------------------------------------------------ app actions */}
+        {/* No profile here: the Crumbs account below is the one profile. */}
+        <section className="neu-surface-raised flex flex-wrap items-center justify-end gap-5 rounded-2xl border border-gray-800 p-4">
           <div className="flex shrink-0 items-center gap-2">
             <ExportDiagnosticsButton />
             <RestartBreadboardButton />
@@ -2522,11 +2488,7 @@ export default function ProfileClient({
         {/* --------------------------------------------------- crumbs account */}
         <div id="crumbs" className="mt-4 scroll-mt-6">
           <Card title="Crumbs account">
-            <CrumbsAccountSection
-              onStatus={(status) =>
-                setIdentity(status.did ? { handle: status.handle, displayName: status.displayName, avatar: status.avatar } : null)
-              }
-            />
+            <CrumbsAccountSection />
           </Card>
         </div>
 

@@ -16,6 +16,7 @@ import { BOT_PERSONA_PREFIX, botByHandle } from "@/lib/bots/team.ts";
 import { botHandle } from "@/lib/bots/mentions.ts";
 import { addMember, ensureBreadMember, listMembers } from "@/lib/buzz/instance.ts";
 import { requireBuzzUser, requireRoom, requireRoomManager, requireString, withPhotos } from "@/lib/buzz/route-helpers.ts";
+import { buzzBridge, CrumbsError } from "@/lib/crumbs/service.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -27,7 +28,7 @@ export async function GET(
     const { userId } = await requireBuzzUser();
     const { roomId } = await params;
     const room = requireRoom(userId, roomId);
-    return NextResponse.json({ members: withPhotos(room.id, listMembers(room.id)) });
+    return NextResponse.json({ members: withPhotos(room.id, listMembers(room.id), userId) });
   } catch (error) {
     return apiErrorResponse(error);
   }
@@ -57,6 +58,23 @@ export async function POST(
     const body = await readJsonBody(request);
     requireRoomManager(userId, room);
     const existing = listMembers(room.id);
+
+    // ── a Crumbs account, in an organization on Crumbs ─────────────────────
+    // Members of such an organization are on other machines, so they are added
+    // by their Crumbs account. Crumbs makes them a member at once and their
+    // Breadboard lists the organization on its next sync.
+    if (typeof body.did === "string") {
+      if (!/^did:[a-z]+:[a-zA-Z0-9._:%-]{1,2000}$/.test(body.did)) {
+        throw new ApiError(400, "invalid_request", "That is not a Crumbs account.");
+      }
+      try {
+        const member = await buzzBridge.addPerson(userId, room.id, body.did);
+        return NextResponse.json({ member }, { status: 201 });
+      } catch (error) {
+        if (error instanceof CrumbsError) throw new ApiError(error.status, "crumbs_error", error.message);
+        throw error;
+      }
+    }
 
     // ── a colleague ────────────────────────────────────────────────────────
     if (body.userId !== undefined) {

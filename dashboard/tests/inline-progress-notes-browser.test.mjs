@@ -69,7 +69,7 @@ test('live notes type in, keep their place when sealed, pulse, and show a dot fo
   ], true), sentence);
   const waiting = page.locator('[data-progress-waiting]');
   await expect(waiting).toBeVisible();
-  await expect(waiting).toContainText('Reading your message');
+  await expect(waiting).toHaveText('Reading your message');
   await expect(waiting.locator('span[aria-hidden]')).toHaveClass(/animate-pulse/);
   await expect(notes.nth(1).locator('span[aria-hidden]')).not.toHaveClass(/animate-pulse/);
   assert.deepEqual(errors, []);

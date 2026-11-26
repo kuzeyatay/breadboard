@@ -189,7 +189,15 @@ test('the feed: people you follow on Crumbs and on Bluesky, newest first, with a
   assert.equal(feed.items[2].url, 'https://example.com/article#:~:text=the%20exact%20passage');
   assert.equal(feed.items[2].threadCount, 2);
   assert.equal((await people.guest.crumbs.feed(1, 'everyone')).items.length, 3, 'everyone is readable without an account');
+  // While browsing, the passages people you follow left on the open page, matched here from their recent crumbs.
+  const other = await people.alice.crumbs.followedOnPage(1, 'https://example.com/other#:~:text=a%20much');
+  assert.deepEqual(other.highlights.map(item => [item.target.quote.slice(0, 13), item.people.map(person => [person.name, person.comment])]), [['a much longer', [['carol', 'Carol on another page']]]]);
+  const article = await people.alice.crumbs.followedOnPage(1, 'https://example.com/article');
+  assert.deepEqual(article.highlights.flatMap(item => item.people.map(person => person.handle)), ['bob.test'], 'your own crumbs are not painted as someone else’s');
+  assert.deepEqual((await people.alice.crumbs.followedOnPage(1, 'https://example.com/unseen')).highlights, []);
+  assert.deepEqual((await people.guest.crumbs.followedOnPage(1, 'https://example.com/other')).highlights, [], 'no account, no follows');
   assert.deepEqual((await people.alice.crumbs.follow(1, B, false)).crumbs, []);
+  assert.deepEqual((await people.alice.crumbs.followedOnPage(1, 'https://example.com/article')).highlights, [], 'unfollowing takes effect at once');
   await assert.rejects(people.alice.crumbs.follow(1, 'alice.test', true), { status: 400 });
 });
 

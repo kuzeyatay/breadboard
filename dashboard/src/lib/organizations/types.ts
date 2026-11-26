@@ -24,6 +24,8 @@ export interface Organization {
   /** Opaque identifier used by private Knowledge Map deep links. */
   brainScopeId?: string;
   name: string;
+  /** The organization's picture as a data URL, or null for its initials. */
+  image?: string | null;
   createdAt: string;
   role: OrganizationRole;
   members: OrganizationMember[];

@@ -230,7 +230,7 @@ export default function BrowserClient(props: BrowserClientProps) {
   return <BrowserTabPanes state={tabs}>{tab => <BrowserContent {...props} tab={tab} />}</BrowserTabPanes>;
 }
 
-function BrowserContent({
+export function BrowserContent({
   tab,
   showFlowers,
   restoreOwnerKey,
@@ -240,7 +240,7 @@ function BrowserContent({
   tab?: DesktopTabView;
   showFlowers: boolean;
   restoreOwnerKey: string;
-  initialGreetingSignals: ChatGreetingSignals;
+  initialGreetingSignals?: ChatGreetingSignals;
   home?: ReactNode;
 }) {
   const tabs = useDesktopTabs();
@@ -842,7 +842,6 @@ function BrowserContent({
         data-panel={activePanel}
         style={{ "--browser-terminal-width": `${terminalWidth}px` } as CSSProperties}
       >
-        {activePanel === "terminal" ? closePanelButton : null}
         <div className="browser-tool-panel browser-tool-panel-terminal" data-active={activePanel === "terminal"} aria-hidden={activePanel !== "terminal"} inert={activePanel !== "terminal" ? true : undefined}>
           {/* Ask here owns a live chat even while this drawer is covered. A
               covered native renderer may not receive the animation frame
@@ -865,6 +864,10 @@ function BrowserContent({
               viewingWebsite={hasNativePage && /^https?:\/\//iu.test(browser?.address ?? "")
                 ? pageBookmarkTitle(pageTab?.title, browser?.address ?? "")
                 : null}
+              viewingWebsiteUrl={hasNativePage && /^https?:\/\//iu.test(browser?.address ?? "")
+                ? browser?.address ?? null
+                : null}
+              onClose={() => setBrowserPanelOpen(false)}
             />
           ) : null}
         </div>

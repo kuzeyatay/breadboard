@@ -3,12 +3,14 @@ import type { WebTextHighlight } from "../shared/web-text-selection";
 /** Runs inside the sandboxed page. No product preload, cookies, network, or DOM wrapping. */
 /** What the page receives: anchors and a has-note flag, never the note's text. */
 type PaintedHighlight = Omit<WebTextHighlight, "note" | "conversationId"> & { noted?: true };
+/** A passage someone you follow left a crumb on: its anchor, a short id and a color, never who. */
+type FollowedPassage = { id: string; quote: string; prefix: string; suffix: string; tone: number };
 
 function installBrowserTextHighlights() {
   type Entry = PaintedHighlight;
   type HighlightWindow = Window & typeof globalThis & {
     Highlight: new (...ranges: Range[]) => unknown;
-    __breadboardHighlights?: { update: (entries: Entry[], error?: string | null) => void; track: (id: string | null) => void; dispose: () => void };
+    __breadboardHighlights?: { update: (entries: Entry[], error?: string | null, follows?: FollowedPassage[]) => void; track: (id: string | null) => void; dispose: () => void };
   };
   const page = window as HighlightWindow;
   page.__breadboardHighlights?.dispose();
@@ -20,12 +22,16 @@ function installBrowserTextHighlights() {
   // Pair the pastel fill with dark ink: a dark website's inherited white text
   // is otherwise almost invisible inside a saved highlight.
   // Hover deepens the fill as chat marks do; a noted passage is a dotted underline, as in chat.
+  const tones = [["#f8b878", "#f3a35a"], ["#82d6cd", "#63c9be"], ["#f2938a", "#ec7a6f"], ["#cbe17f", "#bbd662"], ["#d9c2a3", "#cdb08a"]];
   const colors = [["blue", "#8fc3eb", "#75b2e0"], ["green", "#8ed09e", "#72c386"], ["pink", "#e99abb", "#df7fa6"],
     ["purple", "#b79be9", "#a482df"], ["answer", "#f4e7ad", "#edda8f"]];
   style.textContent = [
     ...colors.map(([name, color]) => `::highlight(breadboard-web-${name}) { background-color:${color}; color:#13201b; }`),
     ...colors.map(([name, , hover]) => `::highlight(breadboard-web-hover-${name}) { background-color:${hover}; color:#13201b; }`),
     "::highlight(breadboard-web-note) { background-color:transparent; text-decoration:underline dotted 1.5px; text-underline-offset:0.2em; }",
+    // People you follow: colors you cannot highlight with, one per person. Kept in step with FOLLOWED_TONES.
+    ...tones.map(([color], tone) => `::highlight(breadboard-web-follow-${tone}) { background-color:${color}; color:#13201b; }`),
+    ...tones.map(([, hover], tone) => `::highlight(breadboard-web-follow-hover-${tone}) { background-color:${hover}; color:#13201b; }`),
   ].join("\n");
   const names = ["blue", "green", "pink", "purple", "answer", "note"];
   const groupName = (entry: Entry) => entry.mode === "inline" ? "answer" : entry.noted ? "note" : entry.color ?? "blue";
@@ -33,6 +39,17 @@ function installBrowserTextHighlights() {
   document.documentElement.append(style);
   const skip = "script,style,noscript,template,textarea,input,select,[contenteditable]:not([contenteditable='false']),[data-breadboard-selection]";
   let entries: Entry[] = [];
+  let follows: FollowedPassage[] = [];
+  let followLocated: Array<{ entry: FollowedPassage; range: Range }> = [];
+  // The passage whose hover card is showing; the card itself is drawn by the app.
+  let tipped: string | null = null;
+  const tip = (id: string | null, kind: "note" | "follow", range?: Range) => {
+    if (id === tipped) return;
+    tipped = id;
+    const box = range?.getClientRects()[0] ?? range?.getBoundingClientRect();
+    const rect = box ? { x: box.left, y: box.top, width: box.width, height: box.height } : { x: 0, y: 0, width: 0, height: 0 };
+    location.href = "breadboard-selection://hover?data=" + encodeURIComponent(JSON.stringify({ id, kind, rect }));
+  };
   let selected: Entry | null = null;
   let selectedAnchor = { x: 0, y: 0 };
   let index: { text: string; nodes: Array<{ node: Text; start: number; end: number }> } | null = null;
@@ -127,9 +144,38 @@ function installBrowserTextHighlights() {
       const ranges = groups.get(name);
       if (ranges?.length) registry.set(key, new page.Highlight(...ranges)); else registry.delete(key);
     }
+    followLocated = [];
+    const toned = new Map<number, Range[]>();
+    if (follows.length) {
+      const text = textIndex().text;
+      for (const entry of follows) {
+        const start = resolve({ ...entry, start: 0, end: entry.quote.length } as unknown as Entry, text);
+        if (start < 0) continue;
+        const range = rangeAt(start, start + entry.quote.length);
+        if (!range) continue;
+        followLocated.push({ entry, range });
+        const ranges = toned.get(entry.tone) ?? []; ranges.push(range); toned.set(entry.tone, ranges);
+      }
+    }
+    for (let tone = 0; tone < tones.length; tone++) {
+      const ranges = toned.get(tone);
+      // Under your own highlights where the two overlap.
+      if (ranges?.length) { const highlight = new page.Highlight(...ranges) as { priority: number }; highlight.priority = -1; registry.set("breadboard-web-follow-" + tone, highlight); }
+      else registry.delete("breadboard-web-follow-" + tone);
+    }
+    if (tipped && !followLocated.some(item => item.entry.id === tipped) && !located.some(item => item.entry.id === tipped)) tip(null, "follow");
     const stillHovered = hovered && located.find(item => item.entry.id === hovered!.id);
     paintHover(stillHovered);
     reportPosition();
+  }
+  let followHovered: string | null = null;
+  function paintFollowHover(item: { entry: FollowedPassage; range: Range } | null | undefined) {
+    for (let tone = 0; tone < tones.length; tone++) registry.delete("breadboard-web-follow-hover-" + tone);
+    followHovered = item?.entry.id ?? null;
+    if (!item) return;
+    const highlight = new page.Highlight(item.range) as { priority: number };
+    highlight.priority = 1;
+    registry.set("breadboard-web-follow-hover-" + item.entry.tone, highlight);
   }
   function paintHover(item: { entry: Entry; range: Range } | null | undefined) {
     for (const name of names) registry.delete("breadboard-web-hover-" + name);
@@ -143,17 +189,24 @@ function installBrowserTextHighlights() {
   }
   let hoverFrame = 0;
   document.addEventListener("pointermove", event => {
-    if ((!located.length && !hovered) || hoverFrame) return;
+    if ((!located.length && !followLocated.length && !hovered && !followHovered) || hoverFrame) return;
     const { clientX, clientY } = event;
     hoverFrame = requestAnimationFrame(() => {
       hoverFrame = 0;
       // A caret lands on the nearest text even beside it; require the pointer to be over the passage.
-      const item = located.find(item => Array.from(item.range.getClientRects())
-        .some(rect => clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom));
+      const over = (range: Range) => Array.from(range.getClientRects())
+        .some(rect => clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom);
+      const item = located.find(item => over(item.range));
       if ((item?.entry.id ?? null) !== (hovered?.id ?? null)) paintHover(item);
+      // Your own highlight wins where it overlaps one from someone you follow.
+      const followed = item ? undefined : followLocated.find(item => over(item.range));
+      if ((followed?.entry.id ?? null) !== followHovered) paintFollowHover(followed);
+      if (item?.entry.noted) tip(item.entry.id, "note", item.range);
+      else if (followed) tip(followed.entry.id, "follow", followed.range);
+      else if (tipped) tip(null, "note");
     });
   }, { passive: true, signal: abort.signal });
-  document.documentElement.addEventListener("pointerleave", () => { if (hovered) paintHover(null); }, { signal: abort.signal });
+  document.documentElement.addEventListener("pointerleave", () => { if (hovered) paintHover(null); if (followHovered) paintFollowHover(null); if (tipped) tip(null, "note"); }, { signal: abort.signal });
   function show(entry: Entry, range: Range, action: "select" | "open" = "select") {
     const rect = range.getBoundingClientRect();
     if (!rect.width && !rect.height) return;
@@ -188,28 +241,33 @@ function installBrowserTextHighlights() {
     } else if (event) {
       const point = document.caretRangeFromPoint(event.clientX, event.clientY);
       const saved = point && located.find(item => item.range.isPointInRange(point.startContainer, point.startOffset));
-      if (saved) show(saved.entry, saved.range, "open"); else hide();
+      const followed = !saved && point ? followLocated.find(item => item.range.isPointInRange(point.startContainer, point.startOffset)) : undefined;
+      if (saved) show(saved.entry, saved.range, "open");
+      else if (followed) { hide(); if (tipped) tip(null, "follow"); location.href = "breadboard-selection://follow?data=" + encodeURIComponent(JSON.stringify({ id: followed.entry.id })); }
+      else hide();
     }
   }
   document.addEventListener("pointerup", event => place(event), { capture: true, signal: abort.signal });
   document.addEventListener("keyup", event => { if (event.key === "Escape") hide(); else if (event.shiftKey || event.key.startsWith("Arrow")) place(); }, { signal: abort.signal });
   document.addEventListener("pointerdown", hide, { capture: true, signal: abort.signal });
-  addEventListener("scroll", () => { hide(); reportPosition(); }, { capture: true, signal: abort.signal });
-  addEventListener("resize", () => { hide(); reportPosition(); }, { signal: abort.signal });
+  addEventListener("scroll", () => { hide(); reportPosition(); if (tipped) tip(null, "note"); }, { capture: true, signal: abort.signal });
+  addEventListener("resize", () => { hide(); reportPosition(); if (tipped) tip(null, "note"); }, { signal: abort.signal });
   const observer = new MutationObserver(records => {
     // Editors are excluded from the text index. Typing (including IME changes
     // to Text nodes) must not invalidate it or rescan a long conversation.
     if (records.every(record => excluded(record.target))) return;
     index = null;
     // No idle page scan. Active pages rebuild one cached text index per batch.
-    if (!entries.length || timer) return;
+    if ((!entries.length && !follows.length) || timer) return;
     timer = setTimeout(() => { timer = undefined; paint(); }, 350);
   });
   observer.observe(document.body, { childList: true, characterData: true, subtree: true });
   page.__breadboardHighlights = {
     track(id) { tracked = id; lastPosition = ""; reportPosition(); },
-    update(next, error) {
-      entries = next; paint();
+    update(next, error, nextFollows) {
+      entries = next;
+      if (nextFollows) follows = nextFollows;
+      paint();
       if (!error) {
         const selection = window.getSelection();
         // A delayed load/save may finish after the person starts typing or
@@ -225,6 +283,8 @@ function installBrowserTextHighlights() {
     dispose() {
       abort.abort(); observer.disconnect(); clearTimeout(timer); clearTimeout(positionTimer); cancelAnimationFrame(hoverFrame); style.remove();
       for (const name of names) { registry.delete("breadboard-web-" + name); registry.delete("breadboard-web-hover-" + name); }
+      for (let tone = 0; tone < tones.length; tone++) { registry.delete("breadboard-web-follow-" + tone); registry.delete("breadboard-web-follow-hover-" + tone); }
+      if (tipped) tip(null, "note");
     },
   };
 }
@@ -233,6 +293,6 @@ export function browserTextHighlightsBootstrapScript(): string {
   return `(${installBrowserTextHighlights.toString()})()`;
 }
 
-export function browserTextHighlightsUpdateScript(entries: readonly PaintedHighlight[], error: string | null = null): string {
-  return `window.__breadboardHighlights?.update(${JSON.stringify(entries)}, ${JSON.stringify(error)})`;
+export function browserTextHighlightsUpdateScript(entries: readonly PaintedHighlight[], error: string | null = null, follows?: readonly FollowedPassage[]): string {
+  return `window.__breadboardHighlights?.update(${JSON.stringify(entries)}, ${JSON.stringify(error)}${follows ? `, ${JSON.stringify(follows)}` : ""})`;
 }

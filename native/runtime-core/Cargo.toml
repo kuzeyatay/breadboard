@@ -12,6 +12,7 @@ environment-contract-tests = []
 
 [dependencies]
 breadboard-runtime-protocol = { path = "../runtime-protocol" }
+flate2 = { version = "1.1.11", default-features = false, features = ["rust_backend"] }
 getrandom = "0.2"
 rusqlite = { version = "0.32", features = ["bundled", "hooks"] }
 serde.workspace = true

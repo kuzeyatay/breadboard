@@ -38,25 +38,54 @@ function paintAnnotations(items: Array<{ id: string; target: BrowserAnnotationTa
   const page = window as Window & { __breadboardCommunityDispose?: () => void; Highlight?: new (...ranges: Range[]) => unknown };
   page.__breadboardCommunityDispose?.();
   const registry = (CSS as unknown as { highlights?: Map<string, unknown> }).highlights;
-  registry?.delete("breadboard-community");
+  registry?.delete("breadboard-community");registry?.delete("breadboard-community-hover");
   if (!items.length) return;
   const host = document.createElement("div");
   host.setAttribute("data-breadboard-selection", "community");
   const shadow = host.attachShadow({ mode: "closed" });
   const style = document.createElement("style");
   style.textContent = "button{position:fixed;z-index:2147483647;display:inline-flex;align-items:center;gap:4px;border:1px solid #99ac9f;border-radius:12px;background:#faf7ef;color:#19392b;padding:2px 7px;font:600 11px system-ui;cursor:pointer;box-shadow:0 1px 4px #0002}button:hover{border-color:#4f6f68}button:focus-visible{outline:2px solid #4f6f68}"
-    + "svg{width:12px;height:12px;color:#4f6f68}"
-    + "span{position:fixed;z-index:2147483647;max-width:280px;padding:7px 10px;border:1px solid #bccfc2;border-radius:10px;background:#fffefb;color:#13201b;font:12px/1.45 system-ui;box-shadow:0 6px 20px #0003;pointer-events:none;overflow-wrap:anywhere}";
+    + "svg{width:12px;height:12px;color:#4f6f68}";
   shadow.append(style);
   const highlightStyle = document.createElement("style");
-  highlightStyle.textContent = "::highlight(breadboard-community){background-color:#dce9d7;color:#19392b;}";
+  // Crumbed passages use a slate tint with a solid underline: no highlight color you can pick, or a followed person's tone, looks like it.
+  highlightStyle.textContent = "::highlight(breadboard-community){background-color:#dde3ec;color:#13201b;text-decoration:underline solid 2px #5b6f8f;text-underline-offset:0.22em;}"
+    + "::highlight(breadboard-community-hover){background-color:#c3cede;color:#13201b;text-decoration:underline solid 2px #3f5577;text-underline-offset:0.22em;}";
   document.documentElement.append(host, highlightStyle);
   const abort = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   let disposed = false;
+  // Hovering a crumbed passage, or its marker, shows its first crumb in the app's note card.
+  let located: Array<{ id: string; range: Range; preview?: string }> = [];
+  let tipFor: string | undefined;
+  let hovering: string | undefined;
+  const hideTip = () => {
+    hovering = undefined;
+    registry?.delete("breadboard-community-hover");
+    if (tipFor === undefined) return;
+    tipFor = undefined;
+    location.href = "breadboard-selection://hover?data=" + encodeURIComponent(JSON.stringify({ id: null, kind: "crumb", rect: { x: 0, y: 0, width: 0, height: 0 } }));
+  };
+  const showTip = (id: string, range: Range | undefined, preview: string | undefined, box: DOMRect) => {
+    if (hovering === id) return;
+    hideTip();
+    hovering = id;
+    if (range && registry && page.Highlight) registry.set("breadboard-community-hover", new page.Highlight(range));
+    if (!preview) return;
+    tipFor = id;
+    location.href = "breadboard-selection://hover?data=" + encodeURIComponent(JSON.stringify({ id, kind: "crumb", rect: { x: box.left, y: box.top, width: box.width, height: box.height } }));
+  };
+  document.addEventListener("pointermove", event => {
+    if (event.target === host) return; // The marker handles its own hover.
+    const hit = located.find(({ range }) => Array.from(range.getClientRects()).some(rect => event.clientX >= rect.left && event.clientX <= rect.right && event.clientY >= rect.top && event.clientY <= rect.bottom));
+    if (hit) showTip(hit.id, hit.range, hit.preview, hit.range.getClientRects()[0] ?? hit.range.getBoundingClientRect());
+    else if (hovering !== undefined) hideTip();
+  }, { passive: true, signal: abort.signal });
+  document.documentElement.addEventListener("pointerleave", hideTip, { signal: abort.signal });
   function paint() {
     if (disposed) return;
-    shadow.querySelectorAll("button,span").forEach(node => node.remove());
+    located = [];
+    shadow.querySelectorAll("button").forEach(node => node.remove());
     const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, { acceptNode: node => node.parentElement?.closest("script,style,input,textarea,select,[contenteditable],[data-breadboard-selection]") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT });
     const nodes: Array<{node: Text; start: number; end: number}> = [];
     let text = "";
@@ -64,6 +93,7 @@ function paintAnnotations(items: Array<{ id: string; target: BrowserAnnotationTa
     const ranges: Range[] = [];
     for (const { id, target, count, preview } of items) {
       let rect: DOMRect | undefined;
+      const found=located.length;
       if (target.kind === "text" && target.quote) {
         const matches: number[] = [];
         for (let index=text.indexOf(target.quote);index>=0 && matches.length<2;index=text.indexOf(target.quote,index+1)) {
@@ -73,7 +103,7 @@ function paintAnnotations(items: Array<{ id: string; target: BrowserAnnotationTa
         const start=matches[0]!,end=start+target.quote.length;
         const first=nodes.find(node=>node.start<=start&&node.end>start),last=nodes.find(node=>node.start<end&&node.end>=end);
         if (!first||!last) continue;
-        const range=document.createRange();range.setStart(first.node,start-first.start);range.setEnd(last.node,end-last.start);ranges.push(range);rect=range.getBoundingClientRect();
+        const range=document.createRange();range.setStart(first.node,start-first.start);range.setEnd(last.node,end-last.start);ranges.push(range);located.push({ id, range, preview });rect=range.getBoundingClientRect();
       } else if (target.kind === "image" || target.kind === "video") {
         // A URL match wins over a CSS path after a page redesign.
         let element: Element | undefined=target.mediaUrl ? Array.from(document.querySelectorAll(target.kind === "image" ? "img" : "video")).find(node => (node as HTMLImageElement).currentSrc===target.mediaUrl || (node as HTMLImageElement).src===target.mediaUrl) : undefined;
@@ -91,19 +121,24 @@ function paintAnnotations(items: Array<{ id: string; target: BrowserAnnotationTa
       const left=Math.max(0,Math.min(innerWidth-80,rect.right-12)),top=Math.max(0,rect.top-22);
       button.style.left=left+"px";button.style.top=top+"px";
       if (preview) {
-        let tip: HTMLSpanElement | undefined;
-        const show=()=>{if(tip)return;tip=document.createElement("span");tip.textContent=preview;tip.style.left=Math.max(4,Math.min(innerWidth-290,left-120))+"px";tip.style.bottom=(innerHeight-top+6)+"px";shadow.append(tip);};
-        const hide=()=>{tip?.remove();tip=undefined;};
-        button.addEventListener("mouseenter",show);button.addEventListener("focus",show);button.addEventListener("mouseleave",hide);button.addEventListener("blur",hide);
+        const range=located.length>found?located[found]!.range:undefined;
+        const show=()=>showTip(id,range,preview,button.getBoundingClientRect());
+        button.addEventListener("mouseenter",show);button.addEventListener("focus",show);button.addEventListener("mouseleave",hideTip);button.addEventListener("blur",hideTip);
       }
       button.addEventListener("click",()=>{location.href="breadboard-annotation://open?id="+encodeURIComponent(id);});shadow.append(button);
     }
     if (registry && page.Highlight) registry.set("breadboard-community",new page.Highlight(...ranges));
+    // Pages repaint often; keep the card for a passage that is still there.
+    if (hovering !== undefined) {
+      const still = located.find(item => item.id === hovering);
+      if (still && registry && page.Highlight) registry.set("breadboard-community-hover", new page.Highlight(still.range));
+      else if (!still) hideTip();
+    }
   }
   const schedule=()=>{if(timer)clearTimeout(timer);timer=setTimeout(paint,120);};
   window.addEventListener("scroll",schedule,{capture:true,passive:true,signal:abort.signal});window.addEventListener("resize",schedule,{signal:abort.signal});
   const observer=new MutationObserver(schedule);observer.observe(document.body,{childList:true,subtree:true,characterData:true});
-  page.__breadboardCommunityDispose=()=>{disposed=true;abort.abort();observer.disconnect();clearTimeout(timer);host.remove();highlightStyle.remove();registry?.delete("breadboard-community");};
+  page.__breadboardCommunityDispose=()=>{disposed=true;abort.abort();observer.disconnect();clearTimeout(timer);host.remove();highlightStyle.remove();registry?.delete("breadboard-community");registry?.delete("breadboard-community-hover");};
   paint();
 }
 export function browserAnnotationPaintScript(items: Array<{id: string; target: BrowserAnnotationTarget; count?: number; preview?: string}>) {

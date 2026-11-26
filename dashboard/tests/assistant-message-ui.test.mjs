@@ -558,7 +558,9 @@ test("stalled agent turns render a recoverable in-chat error", () => {
   assert.doesNotMatch(runtime, />\s*Response interrupted\s*</);
   assert.doesNotMatch(activity, /Response stopped/);
   assert.match(agentSession, /agentStreamTimeout/);
-  assert.match(agentSession, /isAgentStreamTimeoutError/);
+  // A browser timeout reconnects; it never stops the server turn (an overnight
+  // goal was cancelled that way after 4h 46m).
+  assert.doesNotMatch(agentSession, /isAgentStreamTimeoutError\(streamError\)/);
   assert.match(agentSession, /\/abort/);
   assert.ok(
     agentSession.indexOf('name === "AbortError"') <
@@ -604,4 +606,11 @@ test("external-agent branch navigation is supplied through the shared action slo
     runtime,
     /branch=\{branchNavigationForAssistant\(message, index\)\}/,
   );
+});
+
+test("every browser stream timeout reconnects instead of failing the turn", async () => {
+  const w = await import("../src/app/components/hermes/agent-stream-watchdog.ts");
+  for (const kind of ["connect_timeout", "first_activity_timeout", "inactivity_timeout"]) {
+    assert.equal(w.isRecoverableAgentStreamDisconnect(new w.AgentStreamTimeoutError(kind)), true, kind);
+  }
 });

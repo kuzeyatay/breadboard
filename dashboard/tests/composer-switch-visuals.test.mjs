@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
 
+// The Intelligence menu lives in its own module, shared by the Terminal and Organization composers.
 const composer = fs.readFileSync(
-  new URL("../src/app/components/assistant-composer.tsx", import.meta.url),
+  new URL("../src/app/components/assistant-intelligence-menu.tsx", import.meta.url),
   "utf8",
 );
 

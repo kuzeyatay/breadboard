@@ -79,7 +79,54 @@ export function stripEchoedAskHereWrapper(text: string): string {
 }
 
 /** The assistant's prose and any result stored in its inline agent card. */
-export function conversationMessageText(message: ContextMessage): string {
+/** Where an attached file's original is saved, or null when it is not on disk. */
+export type AttachmentLocator = (attachment: {
+  type: string;
+  name: string;
+  blobId?: string;
+  format?: string;
+}) => string | null;
+
+const ATTACHMENT_KINDS: Record<string, string> = {
+  document: "document", image: "image", video: "video", audio: "audio recording",
+  text: "text file", file: "file", model: "3D model", product: "product",
+};
+
+/**
+ * A replayed user turn carries only its words, so after a restart the agent
+ * no longer knew a PDF had been uploaded with it and went searching other
+ * chats for it. Name the files that came with the message, and where the
+ * original is saved when it still is. Reader context (page screenshots,
+ * workspace views) is automatic, not something the person attached.
+ */
+function attachmentNote(metadata: Record<string, unknown>, locate?: AttachmentLocator): string | null {
+  if (!Array.isArray(metadata.attachments)) return null;
+  const lines = metadata.attachments.flatMap((value) => {
+    if (!value || typeof value !== "object") return [];
+    const item = value as { type?: unknown; name?: unknown; blobId?: unknown; format?: unknown; context?: unknown };
+    if (typeof item.type !== "string" || typeof item.name !== "string" || !item.name.trim() || item.context !== undefined) return [];
+    const attachment = {
+      type: item.type,
+      name: item.name.slice(0, 300),
+      ...(typeof item.blobId === "string" ? { blobId: item.blobId } : {}),
+      ...(typeof item.format === "string" ? { format: item.format } : {}),
+    };
+    const kind = attachment.format && item.type === "document"
+      ? `${attachment.format.toUpperCase()} document`
+      : ATTACHMENT_KINDS[item.type] ?? "file";
+    let location: string | null = null;
+    try { location = locate?.(attachment) ?? null; } catch { location = null; }
+    return [`- ${JSON.stringify(attachment.name)} (${kind})${location ? `, original saved at ${location}` : ""}`];
+  });
+  if (!lines.length) return null;
+  return [
+    "[Files the user attached to this message. They are part of this chat and their contents were provided when it was sent; reopen a saved original from the path given rather than searching other chats for it:",
+    ...lines,
+    "]",
+  ].join(NEWLINE);
+}
+
+export function conversationMessageText(message: ContextMessage, locate?: AttachmentLocator): string {
   const metadata = messageMetadata(message);
   let content = message.content;
   const fields = externalAgentMessageFields(metadata);
@@ -90,8 +137,10 @@ export function conversationMessageText(message: ContextMessage): string {
       ? visible
       : [visible, `Delegated agent result:${NEWLINE}${result}`].filter(Boolean).join(NEWLINE + NEWLINE);
   }
-  if (message.role !== "user" || !content.trim()) return content;
+  if (message.role !== "user") return content;
+  const note = attachmentNote(metadata, locate);
+  if (!content.trim()) return note ?? content;
   const excerpt = inlineExcerpt(metadata);
-  if (excerpt === null) return content;
-  return `${askHereNote(excerpt)}${NEWLINE}${content}`;
+  const text = excerpt === null ? content : `${askHereNote(excerpt)}${NEWLINE}${content}`;
+  return note ? `${text}${NEWLINE}${NEWLINE}${note}` : text;
 }

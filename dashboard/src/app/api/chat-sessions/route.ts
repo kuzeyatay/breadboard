@@ -874,7 +874,7 @@ function readSessionSummaries(
 /**
  * The garden's chats that live outside its workspace: the Quartz reader's
  * Explore Assistant and the PDF Assistant of this garden's PDFs. The Terminal
- * already lists them as "<Garden>: Explore Assistant: ..." and "PDF Assistant:
+ * already lists them as "<Garden>: Explore: ..." and "PDF Assistant:
  * ..."; the garden rail shows the same chats with the same prefixes. They are
  * canonical conversations addressed by their public id, so they open in the
  * Terminal hub that can continue any surface's chat.

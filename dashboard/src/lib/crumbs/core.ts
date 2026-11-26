@@ -33,18 +33,24 @@ export interface CrumbsNote { uri: string; handle: string | null; displayName: s
 export interface AiFlagState { site: string | null; count: number; mine: boolean; level: "yellow" | "red" | null; signedIn: boolean }
 export interface CrumbsOrg { id: string; name: string; role: "admin" | "member"; ready: boolean }
 export interface CrumbsRoom { id: string; name: string; own: boolean; fixed: boolean }
-export interface CrumbsChatMessage { id: string; author: string; handle: string | null; avatar: string | null; did: string; body: string; createdAt: string; own: boolean; agent?: boolean; parent?: string; unverified?: boolean; /** Set when the message is a crumb: what it is about. */ crumb?: ChatCrumb }
+export interface CrumbsChatMessage { id: string; author: string; handle: string | null; avatar: string | null; did: string; body: string; createdAt: string; own: boolean; agent?: boolean; parent?: string; unverified?: boolean; /** Set when the message is a crumb: what it is about. */ crumb?: ChatCrumb; /** Files shared with it, each encrypted in the sender's Google Drive. */ files?: ChatFile[] }
+/** Where a shared file's ciphertext is in Google Drive, and the key that opens it. Only ever sent inside an encrypted message. */
+export interface ChatFile { drive: string; key: string; name: string; size: number }
 export interface ChatCrumb { target: BrowserAnnotationTarget; body: string; source: string | null }
+/** What the organization store's live stream says: never content, only that something changed and where. */
+export type OrgSignal = { kind: "ready" } | { kind: "message"; org: string; index: string; id: string } | { kind: "membership" | "keys"; org: string };
+/** A change to a message already sent, relayed like a message. `target` is that message's id. */
+export type ChatEvent = { id: string; did: string; target: string; createdAt: string } & ({ kind: "edit"; body: string } | { kind: "delete" } | { kind: "react"; emoji: string; on: boolean });
 export interface CrumbsStatus {
   personalizeFeed: boolean;
   signedIn: boolean; needsSignIn: boolean; did: string | null; handle: string | null; displayName: string | null; avatar: string | null;
   defaultVisibility: CrumbsVisibility; servers: { indexer: string; orgStore: string };
-  /** "records": Crumbs' own record type through the index. "posts": the fallback, ordinary Bluesky posts. */
-  publicMode: "records" | "posts";
 }
 
 export { passageLink };
 
+/** A passage on the open page that people you follow left crumbs on, newest first. */
+export interface FollowedHighlight { id: string; target: BrowserAnnotationTarget; people: Array<{ did: string; handle: string | null; name: string; comment: string }> }
 interface IndexerItem { uri: string; did: string; handle: string | null; displayName: string | null; avatar: string | null; url: string; target: BrowserAnnotationTarget; targetKey: string; comment: string; source: string | null; createdAt: string; threadCount?: number; state?: string; reason?: string | null; note?: { uri: string; body: string; source: string | null }; noteCount?: number; parent?: IndexerItem }
 interface OrgDetail { id: string; epoch: number; nameCt: string; role: "admin" | "member"; needsRotation: boolean; members: Array<{ did: string; role: "admin" | "member" }>;
   envelopeIndex: Array<{ epoch: number; did: string; device: string }>; keyRequests: Array<{ did: string; device: string }> }
@@ -99,7 +105,7 @@ export function createCrumbs({ db, fetcher = fetch as Fetcher, complete, ensureS
   function status(userId: number): CrumbsStatus {
     const value = store.getAccount(db, userId);
     return { personalizeFeed: feedEnabled(db, userId), signedIn: Boolean(value && !value.needsSignIn), needsSignIn: Boolean(value?.needsSignIn), did: value?.did ?? null, handle: value?.handle ?? null,
-      displayName: value?.displayName ?? null, avatar: value?.avatar ?? null, defaultVisibility: value?.defaultVisibility ?? "private", servers: servers(), publicMode: publicMode() };
+      displayName: value?.displayName ?? null, avatar: value?.avatar ?? null, defaultVisibility: value?.defaultVisibility ?? "private", servers: servers() };
   }
 
   async function profiles(dids: string[]): Promise<Map<string, CrumbsPerson>> {
@@ -224,7 +230,6 @@ export function createCrumbs({ db, fetcher = fetch as Fetcher, complete, ensureS
   async function readPublic(userId: number, pageUrl: unknown, threadId?: string | null, notice?: string): Promise<AnnotationResponse> {
     const url = annotationPageUrl(pageUrl);
     if (!url) throw new CrumbsError(400, "Open a web page first.");
-    if (publicMode() === "posts") return readPosts(userId, url, threadId, notice);
     const me = store.getAccount(db, userId)?.did ?? null;
     const data = await indexer<{ threads: Array<{ targetKey: string; target: BrowserAnnotationTarget; items: IndexerItem[] }> }>(`/highlights?url=${encodeURIComponent(url)}`);
     const threads: AnnotationThread[] = data.threads.map(thread => ({ id: thread.targetKey, target: thread.target, roomPublicId: null, rootMessageId: null, count: thread.items.length,
@@ -251,7 +256,6 @@ export function createCrumbs({ db, fetcher = fetch as Fetcher, complete, ensureS
     const target = normalizeAnnotationTarget(input.target);
     if (!target) throw new CrumbsError(400, "Select content on the current page.");
     const me = account(userId);
-    if (publicMode() === "posts") return writePosts(userId, target, input);
     const action = String(input.action);
     let notice: string | undefined;
     if (action === "comment") {
@@ -292,137 +296,44 @@ export function createCrumbs({ db, fetcher = fetch as Fetcher, complete, ensureS
     return thread ? readPublic(userId, target.url, threadId, notice) : result;
   }
 
-  // ---- Fallback: public crumbs as ordinary Bluesky posts ---------------------
-  // The plan's way out if moderating our own record type becomes a burden:
-  // a crumb is a normal post whose link carries the passage as a text
-  // fragment, Bluesky moderates it, and pages are read back through Bluesky's
-  // own search. No Crumbs server is involved in this mode.
-
-  const publicMode = (): "records" | "posts" => (env("CRUMBS_PUBLIC_MODE") ?? store.getSetting(db, "public_mode")) === "posts" ? "posts" : "records";
-  const searchApi = () => env("CRUMBS_SEARCH_URL") ?? "https://api.bsky.app";
-  const HIDDEN_LABELS = new Set(["!hide", "!warn", "!takedown", "spam", "porn", "sexual", "nudity", "graphic-media"]);
-  interface BskyPost {
-    uri: string; cid: string; labels?: Array<{ val: string }>;
-    author: { did: string; handle?: string; displayName?: string; avatar?: string; labels?: Array<{ val: string }> };
-    record: { text?: string; createdAt?: string; facets?: Array<{ features?: Array<{ uri?: string }> }>; embed?: { external?: { uri?: string; title?: string; description?: string } } };
-  }
-  // Search takes a few seconds to learn about a new or deleted post, so remember our own for a while.
-  const recentPosts = new Map<string, { post: BskyPost; until: number }>();
-  const recentlyDeleted = new Map<string, number>();
-
-  /** The passage a post links to (on `pageUrl`, when given), or null when it links elsewhere. */
-  function postTarget(post: BskyPost, pageUrl?: string): BrowserAnnotationTarget | null {
-    const links = [post.record.embed?.external?.uri, ...(post.record.facets ?? []).flatMap(facet => (facet.features ?? []).map(feature => feature.uri))].filter((link): link is string => typeof link === "string");
-    for (const link of links) {
-      const url = annotationPageUrl(link);
-      if (!url || (pageUrl && url !== pageUrl)) continue;
-      const title = post.record.embed?.external?.title || new URL(url).hostname;
-      const fragment = link.split(":~:text=")[1]?.split("&")[0];
-      if (!fragment) { if (pageUrl) return { kind: "page", url, title }; continue; }
-      const parts = fragment.split(",").map(part => { try { return decodeURIComponent(part); } catch { return part; } });
-      const prefix = parts.length > 1 && parts[0]!.endsWith("-") ? parts.shift()!.slice(0, -1) : "";
-      const suffix = parts.length > 1 && parts.at(-1)!.startsWith("-") ? parts.pop()!.slice(1) : "";
-      const described = post.record.embed?.external?.description ?? "";
-      // "start,end" names a range. Posts made here carry the whole passage in their link card.
-      const quote = parts.length === 1 ? parts[0]! : described.startsWith(parts[0]!) && described.endsWith(parts[1]!) ? described : `${parts[0]} … ${parts[1]}`;
-      const target = normalizeAnnotationTarget({ kind: "text", url, title, quote, prefix, suffix });
-      if (target) return target;
-    }
-    return null;
-  }
-  function postBody(post: BskyPost, target: BrowserAnnotationTarget) {
-    const text = String(post.record.text ?? "");
-    const tail = `\n\n${new URL(target.url).hostname}`;
-    return (text.endsWith(tail) ? text.slice(0, -tail.length) : text).trim();
-  }
-  async function searchPosts(params: Record<string, string>): Promise<BskyPost[]> {
-    let response: Response;
-    try { response = await fetcher(`${searchApi()}/xrpc/app.bsky.feed.searchPosts?${new URLSearchParams({ limit: "100", sort: "latest", ...params })}`, { signal: AbortSignal.timeout(15000) }); }
-    catch { throw new CrumbsError(503, "Bluesky search did not answer. Try again shortly."); }
-    const data = await readJson<{ posts?: BskyPost[] }>(response, "Bluesky search had a problem. Try again shortly.");
-    const now = Date.now();
-    for (const [uri, entry] of recentPosts) if (entry.until < now) recentPosts.delete(uri);
-    for (const [uri, until] of recentlyDeleted) if (until < now) recentlyDeleted.delete(uri);
-    const found = (data.posts ?? []).filter(post => !recentlyDeleted.has(post.uri) && ![...(post.labels ?? []), ...(post.author?.labels ?? [])].some(label => HIDDEN_LABELS.has(label.val)));
-    return [...found, ...[...recentPosts.values()].map(entry => entry.post).filter(post => !found.some(other => other.uri === post.uri))];
-  }
-
-  async function readPosts(userId: number, url: string, threadId?: string | null, notice?: string): Promise<AnnotationResponse> {
-    const me = store.getAccount(db, userId)?.did ?? null;
-    const groups = new Map<string, { target: BrowserAnnotationTarget; items: Array<{ post: BskyPost; target: BrowserAnnotationTarget }> }>();
-    const posts = (await searchPosts({ q: "*", url })).sort((a, b) => String(a.record.createdAt).localeCompare(String(b.record.createdAt)));
-    for (const post of posts) {
-      const target = postTarget(post, url);
-      if (!target) continue;
-      const id = targetId(target);
-      if (!groups.has(id)) groups.set(id, { target, items: [] });
-      groups.get(id)!.items.push({ post, target });
-    }
-    const threads: AnnotationThread[] = [...groups].map(([id, group]) => ({ id, target: group.target, roomPublicId: null, rootMessageId: null, count: group.items.length,
-      preview: `${group.items[0]!.post.author.displayName || shortHandle(group.items[0]!.post.author.handle) || "Someone"}: ${postBody(group.items[0]!.post, group.target)}`.slice(0, 160) }));
-    const selected = threadId ? groups.get(threadId) : undefined;
-    return { threads, thread: selected ? threads.find(thread => thread.id === threadId)! : null, flags: [], ...(notice ? { notice } : {}),
-      messages: (selected?.items ?? []).map(({ post, target }) => ({ id: post.uri, author: post.author.displayName || shortHandle(post.author.handle) || "Someone", handle: post.author.handle ?? null, avatar: post.author.avatar ?? null,
-        did: post.author.did, body: postBody(post, target), source: null, createdAt: post.record.createdAt ?? new Date().toISOString(), own: post.author.did === me })) };
-  }
-
-  async function writePosts(userId: number, target: BrowserAnnotationTarget, input: Record<string, unknown>): Promise<AnnotationResponse> {
-    const me = account(userId);
-    const action = String(input.action);
-    let notice: string | undefined;
-    if (action === "comment") {
-      const comment = typeof input.body === "string" ? input.body.trim() : "";
-      const source = input.source ? annotationPageUrl(input.source) : null;
-      if (input.source && !source) throw new CrumbsError(400, "Use an http or https source link.");
-      const body = source ? `${comment}\n${source}` : comment;
-      const host = new URL(target.url).hostname;
-      const text = `${body}\n\n${host}`;
-      const room = 300 - [...`\n\n${host}`].length;
-      if (!comment || [...body].length > room) throw new CrumbsError(400, `A Bluesky post holds 300 characters. Write between 1 and ${room}.`);
-      const link = passageLink(target);
-      const start = Buffer.byteLength(`${body}\n\n`);
-      const record = { text, createdAt: new Date().toISOString(), facets: [{ index: { byteStart: start, byteEnd: start + Buffer.byteLength(host) }, features: [{ $type: "app.bsky.richtext.facet#link", uri: link }] }],
-        embed: { $type: "app.bsky.embed.external", external: { uri: link, title: target.title || host, description: (target.kind === "text" ? target.quote ?? "" : "").slice(0, 1000) } } };
-      const created = await createRecord(userId, "app.bsky.feed.post", record);
-      recentPosts.set(created.uri, { until: Date.now() + 3 * 60_000, post: { uri: created.uri, cid: created.cid, author: { did: me.did, handle: me.handle ?? undefined, displayName: me.displayName ?? undefined, avatar: me.avatar ?? undefined }, record } });
-    } else if (action === "delete-comment") {
-      const uri = String(input.messageId);
-      await deleteRecord(userId, "app.bsky.feed.post", ownRecord(userId, uri, "app.bsky.feed.post"));
-      recentPosts.delete(uri); recentlyDeleted.set(uri, Date.now() + 3 * 60_000);
-    } else if (action === "flag") {
-      const uri = String(input.messageId ?? "");
-      if (uri.startsWith(`at://${me.did}/`)) throw new CrumbsError(400, "You can delete your own crumb instead of reporting it.");
-      const found = await fetcher(`${searchApi()}/xrpc/app.bsky.feed.getPosts?uris=${encodeURIComponent(uri)}`, { signal: AbortSignal.timeout(10000) }).then(response => response.json() as Promise<{ posts?: BskyPost[] }>).catch(() => ({ posts: [] }));
-      const post = found.posts?.[0];
-      if (!post) throw new CrumbsError(404, "That post is gone.");
-      await xrpc(userId, "POST", "com.atproto.moderation.createReport", { body: { reasonType: "com.atproto.moderation.defs#reasonOther", reason: String(input.body ?? "").trim().slice(0, 1000), subject: { $type: "com.atproto.repo.strongRef", uri: post.uri, cid: post.cid } } });
-      notice = "Reported to Bluesky’s moderators.";
-    } else throw new CrumbsError(400, action === "withdraw-flag" ? "A report to Bluesky can’t be withdrawn from here." : "Unknown action.");
-    const threadId = targetId(target);
-    const result = await readPosts(userId, target.url, undefined, notice);
-    return result.threads.some(thread => thread.id === threadId) ? readPosts(userId, target.url, threadId, notice) : result;
-  }
-
-  async function feedPosts(userId: number, scope: string): Promise<{ items: CrumbsFeedItem[]; before: string | null; empty?: string }> {
+  /**
+   * Crumbs that people you follow left on one page, so the browser can paint
+   * their passages as you read. Their recent crumbs are fetched in one batch
+   * and matched here: the page you are on never leaves this machine, and
+   * browsing costs no request to the network per page.
+   */
+  async function followedOnPage(userId: number, pageUrl: unknown): Promise<{ highlights: FollowedHighlight[] }> {
+    const url = annotationPageUrl(pageUrl);
     const me = store.getAccount(db, userId);
-    const signedIn = me && !me.needsSignIn ? me : null;
-    if (scope !== "everyone" && !signedIn) return { items: [], before: null, empty: scope === "mine" ? "Sign in to see your crumbs" : "Sign in to see people you follow" };
-    // Bluesky's search finds passage links by this exact marker (checked against the live index).
-    const posts = await searchPosts({ q: "#:~:text=", ...(scope === "mine" ? { author: signedIn!.did } : {}) });
-    const following = scope === "following" ? new Set([signedIn!.did, ...(await blueskyFollows(signedIn!.did))]) : null;
-    const items: CrumbsFeedItem[] = [];
-    for (const post of posts.sort((a, b) => String(b.record.createdAt).localeCompare(String(a.record.createdAt)))) {
-      const target = postTarget(post);
-      if (!target || (following && !following.has(post.author.did))) continue;
-      items.push({ id: post.uri, author: { did: post.author.did, handle: post.author.handle ?? null, displayName: post.author.displayName ?? null, avatar: post.author.avatar ?? null }, url: passageLink(target), title: target.title, target,
-        comment: postBody(post, target), source: null, createdAt: post.record.createdAt ?? new Date().toISOString(), threadCount: 1, own: post.author.did === signedIn?.did, audience: "Bluesky" });
+    if (!url || !me || me.needsSignIn) return { highlights: [] };
+    const recent = await cached(`followed-crumbs:${servers().indexer}:${me.did}`, 3 * 60_000, async () => {
+      const [bluesky, crumbsFollows] = await Promise.all([blueskyFollows(me.did),
+        indexer<{ follows: Array<{ did: string }> }>(`/actor?did=${encodeURIComponent(me.did)}&view=follows`).then(data => data.follows.map(row => row.did)).catch(() => [] as string[])]);
+      const actors = [...new Set([...bluesky, ...crumbsFollows])].filter(did => did !== me.did);
+      if (!actors.length) return [];
+      const items: IndexerItem[] = [];
+      let before: string | null = null;
+      for (let page = 0; page < 4; page++) {
+        const data: { items: IndexerItem[]; before: string | null } = await indexer("/feed", { actors, before: before ?? undefined, limit: 50 });
+        items.push(...data.items);
+        before = data.before;
+        if (!before) break;
+      }
+      return items.filter(item => item.target.kind === "text" && item.target.quote && (!item.state || item.state === "visible"));
+    });
+    const byPassage = new Map<string, FollowedHighlight>();
+    for (const item of recent) {
+      if (annotationPageUrl(item.target.url) !== url) continue;
+      const key = item.targetKey || annotationTargetKey(item.target);
+      const entry = byPassage.get(key) ?? { id: key, target: item.target, people: [] };
+      if (!entry.people.some(person => person.did === item.did)) entry.people.push({ did: item.did, handle: item.handle, name: item.displayName || shortHandle(item.handle) || "Someone", comment: item.comment.slice(0, 280) });
+      byPassage.set(key, entry);
     }
-    return { items, before: null };
+    return { highlights: [...byPassage.values()].slice(0, 100) };
   }
 
   async function follows(userId: number): Promise<{ crumbs: Array<CrumbsPerson & { uri: string }>; bluesky: number }> {
     const me = account(userId);
-    if (publicMode() === "posts") return { crumbs: [], bluesky: (await blueskyFollows(me.did)).length };
     const actor = await indexer<{ follows: Array<CrumbsPerson & { uri: string }> }>(`/actor?did=${encodeURIComponent(me.did)}`);
     return { crumbs: actor.follows, bluesky: (await blueskyFollows(me.did)).length };
   }
@@ -445,7 +356,6 @@ export function createCrumbs({ db, fetcher = fetch as Fetcher, complete, ensureS
   }
   async function follow(userId: number, who: unknown, on: boolean) {
     const me = account(userId);
-    if (publicMode() === "posts") throw new CrumbsError(409, "Following on Crumbs needs the Crumbs index. The people you follow on Bluesky already appear in your feed.");
     let did = String(who ?? "");
     if (!isDid(did)) {
       const handle = normalizeHandle(who);
@@ -458,6 +368,7 @@ export function createCrumbs({ db, fetcher = fetch as Fetcher, complete, ensureS
     else await deleteRecord(userId, NS.follow, rkey);
     await indexer("/notify", { uri: `at://${me.did}/${NS.follow}/${rkey}` });
     cache.delete("ranking-follows:" + servers().indexer + ":" + me.did);
+    cache.delete("followed-crumbs:" + servers().indexer + ":" + me.did);
     return follows(userId);
   }
 
@@ -494,8 +405,6 @@ export function createCrumbs({ db, fetcher = fetch as Fetcher, complete, ensureS
     const me = store.getAccount(db, userId);
     if (scope.startsWith("org:")) return orgFeed(userId, scope.slice(4), before);
     const personalized = scope === "everyone" && feedEnabled(db, userId);
-    const posts = publicMode() === "posts";
-    if (posts && !personalized) return feedPosts(userId, scope);
     if (scope === "mine") {
       const mine = account(userId);
       const actor = await indexer<{ items: IndexerItem[] }>(`/actor?did=${encodeURIComponent(mine.did)}&all=1`);
@@ -507,21 +416,21 @@ export function createCrumbs({ db, fetcher = fetch as Fetcher, complete, ensureS
       const mine = await indexer<{ follows: Array<{ did: string }> }>(`/actor?did=${encodeURIComponent(me.did)}`);
       actors = [...new Set([me.did, ...mine.follows.map(item => item.did), ...(await blueskyFollows(me.did))])];
     }
-    const page = posts ? await feedPosts(userId, scope) : await indexer<{ items: IndexerItem[]; before: string | null }>("/feed",
+    const page = await indexer<{ items: IndexerItem[]; before: string | null }>("/feed",
       { actors, before: before ?? undefined, limit: personalized ? 50 : 30 }).then(data => ({
         items: data.items.map(item => feedItem(item, me?.did ?? null, "Public")), before: data.before,
       }));
     if (!personalized || !page.items.length || !feedEnabled(db, userId)) return page;
     const [history, followed] = await Promise.all([
       readFeedHistory?.(userId).catch(() => []) ?? [],
-      me && !me.needsSignIn ? rankingFollows(me.did, posts) : [],
+      me && !me.needsSignIn ? rankingFollows(me.did) : [],
     ]);
     return { ...page, items: rankFeed(db, userId, page.items, history, new Set(followed)) };
   }
 
   // A slow optional social graph must not hold up an otherwise ready feed.
-  async function rankingFollows(did: string, posts: boolean): Promise<string[]> {
-    const graph = Promise.all([blueskyFollows(did), posts ? [] : cached("ranking-follows:" + servers().indexer + ":" + did, 600_000,
+  async function rankingFollows(did: string): Promise<string[]> {
+    const graph = Promise.all([blueskyFollows(did), cached("ranking-follows:" + servers().indexer + ":" + did, 600_000,
       () => indexer<{ follows: Array<{ did: string }> }>(`/actor?did=${encodeURIComponent(did)}&view=follows`).then(data => data.follows.map(row => row.did))).catch(() => [])])
       .then(([bluesky, local]) => [...bluesky, ...local]);
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -535,10 +444,8 @@ export function createCrumbs({ db, fetcher = fetch as Fetcher, complete, ensureS
 
   const CRUMB_URI = /^at:\/\/did:[^/]+\/com\.breadboard\.highlight\/[^/]+$/;
   const NOTE_URI = /^at:\/\/did:[^/]+\/com\.breadboard\.note\/[^/]+$/;
-  function needIndex() { if (publicMode() === "posts") throw new CrumbsError(409, "Community notes need the Crumbs index."); }
 
   async function listNotes(userId: number, crumb: unknown): Promise<{ notes: CrumbsNote[] }> {
-    needIndex();
     if (!CRUMB_URI.test(String(crumb))) throw new CrumbsError(400, "Choose a crumb.");
     const me = store.getAccount(db, userId);
     const viewer = me && !me.needsSignIn ? `&viewer=${encodeURIComponent(me.did)}` : "";
@@ -546,7 +453,6 @@ export function createCrumbs({ db, fetcher = fetch as Fetcher, complete, ensureS
     return { notes: data.notes.map(note => ({ ...note, own: note.did === me?.did })) };
   }
   async function addNote(userId: number, crumb: unknown, text: unknown, link: unknown) {
-    needIndex();
     const me = account(userId);
     const subject = String(crumb);
     if (!CRUMB_URI.test(subject)) throw new CrumbsError(400, "Choose a crumb.");
@@ -564,14 +470,12 @@ export function createCrumbs({ db, fetcher = fetch as Fetcher, complete, ensureS
     return listNotes(userId, subject);
   }
   async function deleteNote(userId: number, crumb: unknown, note: unknown) {
-    needIndex();
     await deleteRecord(userId, NS.note, ownRecord(userId, note, NS.note));
     await indexer("/notify", { uri: note });
     return listNotes(userId, crumb);
   }
   /** `helpful` true or false rates the note; null withdraws the rating. */
   async function rateNote(userId: number, crumb: unknown, note: unknown, helpful: unknown) {
-    needIndex();
     const me = account(userId);
     const subject = String(note);
     if (!NOTE_URI.test(subject)) throw new CrumbsError(400, "Choose a note.");
@@ -584,11 +488,6 @@ export function createCrumbs({ db, fetcher = fetch as Fetcher, complete, ensureS
   }
 
   async function deleteMine(userId: number, uri: unknown) {
-    if (publicMode() === "posts") {
-      await deleteRecord(userId, "app.bsky.feed.post", ownRecord(userId, uri, "app.bsky.feed.post"));
-      recentPosts.delete(String(uri)); recentlyDeleted.set(String(uri), Date.now() + 3 * 60_000);
-      return;
-    }
     const rkey = ownRecord(userId, uri, NS.highlight);
     await deleteRecord(userId, NS.highlight, rkey);
     await indexer("/notify", { uri });
@@ -834,9 +733,15 @@ export function createCrumbs({ db, fetcher = fetch as Fetcher, complete, ensureS
   // cannot tell a chat room from a web page, let alone read either.
 
   const ROOMS_CHANNEL = "crumbs:rooms";
+  /** The organization's own settings (its name and picture), as a log of admin-signed records; the newest wins. */
+  const PROFILE_CHANNEL = "crumbs:profile";
   const roomChannel = (roomId: string) => `crumbs:room:${roomId}`;
   const GENERAL: CrumbsRoom = { id: "general", name: "General", own: false, fixed: true };
-  interface ChatPlain { kind: "chat" | "room"; body?: string; name?: string; agent?: boolean; parent?: string; crumb?: ChatCrumb; author?: { handle: string | null; displayName: string | null; avatar: string | null } }
+  interface ChatPlain { kind: "chat" | "room" | "profile" | ChatEvent["kind"]; body?: string; name?: string;
+    /** Profile records only: the organization's picture as a data URL, or null to clear it. */
+    image?: string | null; agent?: boolean; parent?: string; crumb?: ChatCrumb; author?: { handle: string | null; displayName: string | null; avatar: string | null }; files?: ChatFile[];
+    /** Events only: the message an edit, deletion or reaction is about. */
+    target?: string; emoji?: string; on?: boolean }
 
   async function channelMessages(userId: number, orgId: string, keys: Map<number, Buffer>, channel: string, query = "") {
     const indexes = [...keys.values()].map(key => crypto.pageIndex(key, channel));
@@ -864,6 +769,29 @@ export function createCrumbs({ db, fetcher = fetch as Fetcher, complete, ensureS
       .map(item => ({ id: item.message.id, name: item.plain.name!.slice(0, 60), own: item.message.sender === me.did, fixed: false }));
     return [GENERAL, ...rooms];
   }
+  /**
+   * The organization's name and picture as its admins last set them, or nulls
+   * when no admin has. A record signed by anyone who is not an admin now is
+   * ignored, so a member cannot change what everyone sees.
+   */
+  async function readOrgProfile(userId: number, orgId: string): Promise<{ name: string | null; image: string | null }> {
+    const { detail, keys } = await readyOrg(userId, orgId);
+    const admins = new Set(detail.members.filter(member => member.role === "admin").map(member => member.did));
+    const latest = (await channelMessages(userId, orgId, keys, PROFILE_CHANNEL, "&latest=50"))
+      .filter(item => item.verified && item.plain.kind === "profile" && admins.has(item.message.sender)).at(-1)?.plain;
+    const image = typeof latest?.image === "string" && latest.image.length <= 64_000 && /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/]+=*$/.test(latest.image) ? latest.image : null;
+    const name = typeof latest?.name === "string" && latest.name.trim() ? latest.name.trim().slice(0, 80) : null;
+    return { name, image };
+  }
+  /** Set the name, the picture, or both, for every member. Admins only. */
+  async function writeOrgProfile(userId: number, orgId: string, input: { name?: string; image?: string | null }): Promise<{ name: string | null; image: string | null }> {
+    const { detail, key } = await readyOrg(userId, orgId);
+    if (detail.role !== "admin") throw new CrumbsError(403, "Only the organization's admins can change its settings.");
+    const current = await readOrgProfile(userId, orgId);
+    const next = { name: input.name === undefined ? current.name : input.name.trim().slice(0, 80) || null, image: input.image === undefined ? current.image : input.image };
+    await postToChannel(userId, orgId, detail.epoch, key, PROFILE_CHANNEL, { kind: "profile", ...(next.name ? { name: next.name } : {}), image: next.image });
+    return next;
+  }
   async function createRoom(userId: number, orgId: string, name: unknown): Promise<CrumbsRoom[]> {
     const label = String(name ?? "").trim().slice(0, 60);
     if (!label) throw new CrumbsError(400, "Give the room a name.");
@@ -878,16 +806,88 @@ export function createCrumbs({ db, fetcher = fetch as Fetcher, complete, ensureS
     return listRooms(userId, orgId);
   }
 
-  /** The newest messages of a room, or only those after `after` when polling. */
-  async function readChat(userId: number, orgId: string, roomId: unknown, after?: string | null): Promise<{ messages: CrumbsChatMessage[]; admin: boolean }> {
+  /**
+   * The newest messages of a room, or only those after `after` when polling.
+   * `events` are the edits, deletions and reactions in the same span. They
+   * change state, so only ones whose signature checks out are returned.
+   */
+  async function readChat(userId: number, orgId: string, roomId: unknown, after?: string | null): Promise<{ messages: CrumbsChatMessage[]; events: ChatEvent[]; admin: boolean }> {
     const room = String(roomId ?? GENERAL.id);
     if (!/^[a-zA-Z0-9-]{1,64}$/.test(room)) throw new CrumbsError(404, "Room not found.");
     const me = account(userId);
     const { detail, keys } = await readyOrg(userId, orgId);
     const opened = await channelMessages(userId, orgId, keys, roomChannel(room), after ? `&after=${encodeURIComponent(after)}` : "&latest=200");
-    return { admin: detail.role === "admin", messages: opened.filter(item => item.plain.kind === "chat" && typeof item.plain.body === "string").map(({ message, plain, verified }) => ({
+    const events = opened.flatMap(({ message, plain, verified }): ChatEvent[] => {
+      if (!verified || typeof plain.target !== "string" || !/^[a-zA-Z0-9-]{8,64}$/.test(plain.target)) return [];
+      const base = { id: message.id, did: message.sender, target: plain.target, createdAt: message.createdAt };
+      if (plain.kind === "edit" && typeof plain.body === "string" && plain.body.trim() && plain.body.length <= 12000) return [{ ...base, kind: "edit", body: plain.body }];
+      if (plain.kind === "delete") return [{ ...base, kind: "delete" }];
+      if (plain.kind === "react" && typeof plain.emoji === "string" && plain.emoji && plain.emoji.length <= 16) return [{ ...base, kind: "react", emoji: plain.emoji, on: plain.on !== false }];
+      return [];
+    });
+    return { admin: detail.role === "admin", events, messages: opened.filter(item => item.plain.kind === "chat" && typeof item.plain.body === "string" && (item.plain.body !== "" || filesOf(item.plain.files).files)).map(({ message, plain, verified }) => ({
       id: message.id, author: plain.author?.displayName || shortHandle(plain.author?.handle) || "A member", handle: plain.author?.handle ?? null, avatar: plain.author?.avatar ?? null, did: message.sender,
-      body: plain.body!, createdAt: message.createdAt, own: message.sender === me.did, ...(plain.agent ? { agent: true } : {}), ...(typeof plain.parent === "string" ? { parent: plain.parent } : {}), ...crumbOf(plain.crumb), ...(verified ? {} : { unverified: true }) })) };
+      body: plain.body!, createdAt: message.createdAt, own: message.sender === me.did, ...(plain.agent ? { agent: true } : {}), ...(typeof plain.parent === "string" ? { parent: plain.parent } : {}), ...crumbOf(plain.crumb), ...filesOf(plain.files), ...(verified ? {} : { unverified: true }) })) };
+  }
+  /** File references another member sent, checked like anything typed here. */
+  function filesOf(value: unknown): { files?: ChatFile[] } {
+    if (!Array.isArray(value)) return {};
+    const files = value.slice(0, 10).flatMap((raw): ChatFile[] => {
+      const item = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+      return typeof item.drive === "string" && /^[a-zA-Z0-9_-]{10,200}$/.test(item.drive) && typeof item.key === "string" && /^[A-Za-z0-9_-]{43}$/.test(item.key)
+        && typeof item.name === "string" && item.name.trim() && typeof item.size === "number" && Number.isFinite(item.size) && item.size >= 0
+        ? [{ drive: item.drive, key: item.key, name: item.name.slice(0, 240), size: Math.floor(item.size) }] : [];
+    });
+    return files.length ? { files } : {};
+  }
+  /**
+   * The page indexes a room's messages are filed under, one per key this
+   * device holds, worked out locally. A live signal names an index; this is how
+   * it is matched to a room. `"rooms"` is the list of rooms itself.
+   */
+  function chatIndexes(userId: number, orgId: string, roomId: string): string[] {
+    const channel = roomId === "rooms" ? ROOMS_CHANNEL : roomChannel(roomId);
+    return [...store.getOrgKeys(db, userId, orgId).values()].map(key => crypto.pageIndex(key, channel));
+  }
+
+  /**
+   * Hold the organization store's live stream open until it ends or `signal`
+   * aborts, calling `onEvent` for each signal. It resolves when the stream
+   * closes and throws when it cannot be opened; reconnecting is the caller's.
+   */
+  async function streamOrgEvents(userId: number, onEvent: (event: OrgSignal) => void, signal: AbortSignal): Promise<void> {
+    const me = account(userId);
+    const keys = await ensureDevice(userId);
+    const path = "/orgs/stream";
+    const open = () => fetcher(servers().orgStore + path, { method: "GET", signal, headers: { accept: "text/event-stream", authorization: crypto.signRequest(keys, me.did, "GET", path, "") } });
+    const response = await open().catch(async error => { if (!ensureServers || signal.aborted) throw error; await ensureServers(servers()); return open(); });
+    if (!response.ok || !response.body) throw new CrumbsError(response.status >= 500 ? 503 : response.status, "The organization server refused the live connection.");
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) return;
+      buffer += decoder.decode(value, { stream: true });
+      let end: number;
+      while ((end = buffer.indexOf("\n\n")) >= 0) {
+        const block = buffer.slice(0, end); buffer = buffer.slice(end + 2);
+        const data = block.split("\n").filter(line => line.startsWith("data:")).map(line => line.slice(5).trim()).join("\n");
+        if (!data) continue; // a keep-alive comment
+        try {
+          const event = JSON.parse(data) as OrgSignal;
+          if (event && typeof event === "object" && typeof event.kind === "string") onEvent(event);
+        } catch { /* not ours */ }
+      }
+    }
+  }
+
+  /** Tell the other members about an edit, a deletion or a reaction on a message already sent. */
+  async function sendChatEvent(userId: number, orgId: string, roomId: unknown, event: { kind: "edit"; target: string; body: string } | { kind: "delete"; target: string } | { kind: "react"; target: string; emoji: string; on: boolean }) {
+    const room = String(roomId ?? GENERAL.id);
+    if (!/^[a-zA-Z0-9-]{1,64}$/.test(room)) throw new CrumbsError(404, "Room not found.");
+    const { detail, key } = await readyOrg(userId, orgId);
+    return { id: await postToChannel(userId, orgId, detail.epoch, key, roomChannel(room), event) };
   }
   /** What another member sent is checked like anything typed here. */
   function crumbOf(value: unknown): { crumb?: ChatCrumb } {
@@ -895,14 +895,15 @@ export function createCrumbs({ db, fetcher = fetch as Fetcher, complete, ensureS
     const target = normalizeAnnotationTarget(raw.target);
     return target && typeof raw.body === "string" ? { crumb: { target, body: raw.body.slice(0, 4000), source: annotationPageUrl(raw.source) } } : {};
   }
-  async function sendChat(userId: number, orgId: string, roomId: unknown, text: unknown, extra: { agent?: boolean; parent?: string; crumb?: ChatCrumb; author?: ChatPlain["author"] } = {}) {
+  async function sendChat(userId: number, orgId: string, roomId: unknown, text: unknown, extra: { agent?: boolean; parent?: string; crumb?: ChatCrumb; author?: ChatPlain["author"]; files?: ChatFile[] } = {}) {
     const body = typeof text === "string" ? text.trim() : "";
-    if (!body || body.length > 12000) throw new CrumbsError(400, "Write between 1 and 12,000 characters.");
+    const files = filesOf(extra.files).files;
+    if ((!body && !files) || body.length > 12000) throw new CrumbsError(400, "Write between 1 and 12,000 characters.");
     const room = String(roomId ?? GENERAL.id);
     if (!/^[a-zA-Z0-9-]{1,64}$/.test(room)) throw new CrumbsError(404, "Room not found.");
     const me = account(userId);
     const { detail, key } = await readyOrg(userId, orgId);
-    return { id: await postToChannel(userId, orgId, detail.epoch, key, roomChannel(room), { kind: "chat", body, author: extra.author ?? { handle: me.handle, displayName: me.displayName, avatar: me.avatar }, ...(extra.agent ? { agent: true } : {}), ...(extra.parent ? { parent: extra.parent } : {}), ...(extra.crumb ? { crumb: extra.crumb } : {}) }) };
+    return { id: await postToChannel(userId, orgId, detail.epoch, key, roomChannel(room), { kind: "chat", body, author: extra.author ?? { handle: me.handle, displayName: me.displayName, avatar: me.avatar }, ...(extra.agent ? { agent: true } : {}), ...(extra.parent ? { parent: extra.parent } : {}), ...(extra.crumb ? { crumb: extra.crumb } : {}), ...(files ? { files } : {}) }) };
   }
   async function deleteChat(userId: number, orgId: string, messageId: unknown) { await orgStore(userId, "DELETE", `/orgs/${orgId}/messages/${encodeURIComponent(String(messageId))}`); }
   async function reportChat(userId: number, orgId: string, messageId: unknown, reason: unknown) {
@@ -1029,7 +1030,7 @@ export function createCrumbs({ db, fetcher = fetch as Fetcher, complete, ensureS
       `Page: ${url}\n\nPage text (for context):\n${page.slice(0, 8000)}\n\nComments by passage:\n${lines.join("\n").slice(0, 16_000)}`) };
   }
 
-  return { status, startSignIn, finishSignIn, signOut, typeahead, aiFlags, aiFlag, readPublic, writePublic, feed, follows, follow, deleteMine, claimHandle,
+  return { status, startSignIn, finishSignIn, signOut, typeahead, aiFlags, aiFlag, readPublic, writePublic, feed, followedOnPage, follows, follow, deleteMine, claimHandle,
     setFeedPreference(userId: number, value: unknown) {
       if (typeof value !== "boolean") throw new CrumbsError(400, "Choose a feed preference.");
       setFeedEnabled(db, userId, value);
@@ -1042,17 +1043,13 @@ export function createCrumbs({ db, fetcher = fetch as Fetcher, complete, ensureS
         throw new CrumbsError(400, "Invalid feed activity.");
       recordFeedAction(db, userId, { id, kind, title: title.slice(0, 300), url, text: text.slice(0, 1200), author: id.split("/")[2]! });
     },
-    listNotes, addNote, deleteNote, rateNote, listRooms, createRoom, deleteRoom, readChat, sendChat, deleteChat, reportChat, listOrgs, createOrg, orgDetail, addOrgMember, removeOrgMember, leaveOrg, deleteOrg, dismissOrgReport, readOrg, writeOrg, ai,
+    listNotes, addNote, deleteNote, rateNote, listRooms, createRoom, deleteRoom, readOrgProfile, writeOrgProfile, readChat, sendChat, sendChatEvent, chatIndexes, streamOrgEvents, deleteChat, reportChat, listOrgs, createOrg, orgDetail, addOrgMember, removeOrgMember, leaveOrg, deleteOrg, dismissOrgReport, readOrg, writeOrg, ai,
     setDefaultVisibility(userId: number, value: unknown) {
       const visibility = String(value);
       if (visibility !== "private" && visibility !== "public" && !/^org:[a-zA-Z0-9-]{8,64}$/.test(visibility)) throw new CrumbsError(400, "Choose who sees your crumbs by default.");
       account(userId); store.setDefaultVisibility(db, userId, visibility as CrumbsVisibility);
     },
-    setServers(input: { indexer?: unknown; orgStore?: unknown; publicMode?: unknown }) {
-      if (input.publicMode !== undefined) {
-        if (input.publicMode !== "records" && input.publicMode !== "posts") throw new CrumbsError(400, "Choose how public crumbs are stored.");
-        store.setSetting(db, "public_mode", input.publicMode);
-      }
+    setServers(input: { indexer?: unknown; orgStore?: unknown }) {
       for (const [key, value] of [["indexer_url", input.indexer], ["org_store_url", input.orgStore]] as const) {
         if (value === undefined) continue;
         const text = String(value ?? "").trim().replace(/\/+$/, "");

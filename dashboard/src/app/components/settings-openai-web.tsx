@@ -29,7 +29,7 @@ const SITES = {
     sessionUrl: "/api/chatmock/googleweb",
     label: "Google (web)",
     host: "gemini.google.com",
-    page: "A Gemini page (Google's sign-in opens in Edge or Chrome)",
+    page: "A Gemini page",
     blurb: "Gemini through gemini.google.com itself, in Breadboard's browser - the website's own modes and limits. Works signed out on Auto.",
   },
 } as const;
@@ -97,7 +97,7 @@ export default function SettingsOpenaiWeb({ site: siteId = "openai" }: { site?: 
         return null;
       }
     },
-    [apply, SESSION_URL],
+    [apply, SESSION_URL, site.host],
   );
 
   useEffect(() => {
@@ -268,7 +268,9 @@ export default function SettingsOpenaiWeb({ site: siteId = "openai" }: { site?: 
         <li className="neu-inset rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] p-3">
           <p className="text-xs font-medium text-[var(--ink-heading)]">Sign in on {site.host}</p>
           <p className="mt-1 text-[11px] leading-5 text-[var(--ink-muted)]">
-            {inDesktop
+            {inDesktop && siteId === "google"
+              ? "Continue Google sign-in in your default browser. The signed-in Gemini session stays there. Breadboard can use Gemini in Auto mode while signed out."
+              : inDesktop
               ? `${site.page} just opened in Breadboard's browser. Sign in there as you normally would; this updates as soon as the page is signed in. Leave the tab open afterwards - it is the page your ${site.label} requests go through.`
               : `A browser window just opened on ${site.host}. Sign in there as you normally would; this updates as soon as the page is signed in. The window stays open in the background afterwards - it is the page your ${site.label} requests go through.`}
           </p>

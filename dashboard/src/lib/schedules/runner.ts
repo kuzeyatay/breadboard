@@ -36,6 +36,7 @@ import {
   resolveConversationRuntime,
 } from "../hermes/session-service.ts";
 import type { ScheduledChatJobRow } from "./store.ts";
+import { scheduledBotPrompt } from "./bot.ts";
 import { scheduledReminderText } from "./types.ts";
 import db from "../db.ts";
 import {
@@ -296,6 +297,7 @@ export async function runScheduledChatJob(
 
     // A recurring task keeps one chat: each run continues where the last left
     // off. Private objective checks always start clean.
+    const prompt = scheduledBotPrompt(db, job);
     const previous = waitsForObjective ? null : previousRunConversation(job);
     const conversation = previous ?? createConversation({
       userId: job.user_id,
@@ -325,8 +327,8 @@ export async function runScheduledChatJob(
       conversation,
       clientMessageId,
       text: waitsForObjective
-        ? scheduledObjectiveEvaluationPrompt(job.prompt)
-        : job.prompt,
+        ? scheduledObjectiveEvaluationPrompt(prompt)
+        : prompt,
       surface: job.surface,
       surfaceContext: garden ? { activeGardenSlug: garden.slug } : undefined,
       model: job.model,

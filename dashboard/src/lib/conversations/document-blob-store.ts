@@ -49,6 +49,8 @@ export interface StoredDocumentBlob {
   format: DocumentAttachmentFormat;
   byteSize: number;
   path: string;
+  /** Present on a fresh upload: the digest of exactly the bytes written. */
+  sha256?: string;
 }
 
 export function documentBlobRoot(configured?: string): string {
@@ -138,9 +140,11 @@ export async function writeDocumentBlob(input: {
   const temporaryPath = `${finalPath}.part`;
 
   let written = 0;
+  const digest = crypto.createHash("sha256");
   const cap = new TransformStream<Uint8Array, Uint8Array>({
     transform(chunk, controller) {
       written += chunk.byteLength;
+      digest.update(chunk);
       if (written > MAX_DOCUMENT_ATTACHMENT_BYTES) {
         controller.error(
           new DocumentBlobError(
@@ -176,7 +180,7 @@ export async function writeDocumentBlob(input: {
     );
   }
 
-  return { blobId, format: input.format, byteSize: written, path: finalPath };
+  return { blobId, format: input.format, byteSize: written, path: finalPath, sha256: digest.digest("hex") };
 }
 
 /**

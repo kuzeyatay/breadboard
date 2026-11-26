@@ -17,7 +17,7 @@ db.exec(`
   );
   CREATE TABLE conversation_messages (
     conversation_id INTEGER, role TEXT, content TEXT, created_at TEXT,
-    status TEXT, order_index INTEGER
+    status TEXT, order_index INTEGER, client_message_id TEXT, metadata TEXT
   );
 `);
 const state = globalThis.__chatSearchRouteTest = { db, audit: [] };
@@ -83,9 +83,12 @@ beforeEach(() => {
     [52, "conv_room_agent", 7, null, 0, "dashboard_terminal", null, 1],
   ]) {
     insert.run(id, publicId, userId, "EM 1 exam: Coulomb integral in spherical coordinates", legacyId, temporary, surface, garden, room ?? null);
-    db.prepare("INSERT INTO conversation_messages VALUES (?, 'assistant', ?, '2026-11-06T10:00:00Z', 'complete', 1)")
+    db.prepare("INSERT INTO conversation_messages (conversation_id, role, content, created_at, status, order_index) VALUES (?, 'assistant', ?, '2026-11-06T10:00:00Z', 'complete', 1)")
       .run(id, `Source ${publicId}: with origin (0,0,h), the perpendicular distance is r sin(theta).`);
   }
+  // The person asked for a chat, so the "Chats found" card is shown.
+  db.prepare("INSERT INTO conversation_messages (conversation_id, role, content, created_at, status, order_index) VALUES (44, 'user', ?, '2026-11-06T10:01:00Z', 'complete', 2)")
+    .run("Find my earlier chat about the Coulomb integral.");
   state.session = { id: 33, user_id: 7, conversation_id: 44, surface: "garden_chat",
     cluster_id: 3028, garden_id: "electromagnetism-1", hermes_session_id: "runtime" };
   state.decision = { allowedTools: ["chat_search"] };
@@ -163,6 +166,20 @@ test("Terminal search remains available without a Garden and reads its own resul
   assert.deepEqual(body.data.results.map(hit => hit.referenceId).sort(), ["conv_exam", "conv_other_garden", "conv_terminal"]);
   assert.equal(body.data.uiResources[0].data.surface, "dashboard_terminal");
   assert.equal((await call({ reference_ids: ["conv_terminal"] })).status, 200);
+});
+
+test("an agent's own lookup returns results without the Chats found card", async () => {
+  state.token = token();
+  for (const [content, clientId, metadata] of [
+    ["Continue working toward the active conversation goal.", "goal:1", '{"internalAgentContinuation":true}'],
+    ["leave the retake group number empty", "steer:1", null],
+  ]) {
+    db.prepare("INSERT INTO conversation_messages (conversation_id, role, content, created_at, status, order_index, client_message_id, metadata) VALUES (44, 'user', ?, '2026-11-06T11:00:00Z', 'complete', (SELECT max(order_index) + 1 FROM conversation_messages WHERE conversation_id = 44), ?, ?)")
+      .run(content, clientId, metadata);
+    const body = await (await call()).json();
+    assert.ok(body.data.results.length > 0, content);
+    assert.deepEqual(body.data.uiResources, [], content);
+  }
 });
 
 test("chat search still rejects invalid capabilities, revoked tools and foreign conversations", async () => {

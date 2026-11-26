@@ -77,7 +77,7 @@ test("the garden and Terminal rails keep their green surface", () => {
 test("the rail's panel buttons are the Terminal's, minus the artifact archive", () => {
   assert.match(
     workspace,
-    /const GARDEN_PANELS: readonly TerminalPanel\[\] = \[\s*"uploads",\s*"scheduled",\s*"hooks",\s*"starred",\s*"processes",\s*\]/,
+    /const GARDEN_PANELS: readonly TerminalPanel\[\] = \[\s*"uploads",\s*"scheduled",\s*"hooks",\s*"starred",\s*"archived",\s*"processes",\s*\]/,
   );
   assert.match(workspace, /panels=\{GARDEN_PANELS\}/);
 

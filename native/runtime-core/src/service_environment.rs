@@ -186,6 +186,10 @@ const OPTIONAL_ELECTRON_GATED_PRODUCT_ENVIRONMENT_NAMES: &[&str] = &[
     "GOOGLE_APPLICATION_CREDENTIALS",
     "GOOGLE_CLOUD_PROJECT",
     "GOOGLE_CLOUD_LOCATION",
+    // Google Drive, the carrier for files shared in organizations; the dashboard reads them.
+    "GOOGLE_DRIVE_CLIENT_ID",
+    "GOOGLE_DRIVE_CLIENT_SECRET",
+    "GOOGLE_DRIVE_API_KEY",
     "COMPOSIO_API_KEY",
     "ELEVENLABS_API_KEY",
     "OPENAI_API_KEY",
@@ -1484,6 +1488,9 @@ impl TrustedWorkerEnvironmentSet {
             // Match the supervisor's dashboard-only boundary. Optional product
             // keys must not make every scheduled background job fail to launch.
             "COMPOSIO_API_KEY",
+            "GOOGLE_DRIVE_CLIENT_ID",
+            "GOOGLE_DRIVE_CLIENT_SECRET",
+            "GOOGLE_DRIVE_API_KEY",
             "BREADBOARD_MEMORY_DIAGNOSTIC_TOKEN",
             "BREADBOARD_PACKAGED_SERVICE_EVIDENCE",
             "BREADBOARD_PACKAGED_SERVICE_EVIDENCE_ENDPOINTS",
@@ -3360,6 +3367,9 @@ impl TrustedWorkerEnvironmentSet {
             "GOOGLE_APPLICATION_CREDENTIALS",
             "GOOGLE_CLOUD_PROJECT",
             "GOOGLE_CLOUD_LOCATION",
+            "GOOGLE_DRIVE_CLIENT_ID",
+            "GOOGLE_DRIVE_CLIENT_SECRET",
+            "GOOGLE_DRIVE_API_KEY",
             "ELEVENLABS_API_KEY",
             "OPENAI_API_KEY",
             "XAI_API_KEY",
@@ -5024,6 +5034,9 @@ fn service_only_product_environment_name(name: &str) -> bool {
             | "GOOGLE_APPLICATION_CREDENTIALS"
             | "GOOGLE_CLOUD_PROJECT"
             | "GOOGLE_CLOUD_LOCATION"
+            | "GOOGLE_DRIVE_CLIENT_ID"
+            | "GOOGLE_DRIVE_CLIENT_SECRET"
+            | "GOOGLE_DRIVE_API_KEY"
             | "ELEVENLABS_API_KEY"
             | "OPENAI_API_KEY"
             | "XAI_API_KEY"
@@ -6740,6 +6753,9 @@ fn build_gateway_environment(
                     | "HOSTNAME"
                     | "BREADBOARD_BULK_DATA_DIR"
                     | "COMPOSIO_API_KEY"
+                    | "GOOGLE_DRIVE_CLIENT_ID"
+                    | "GOOGLE_DRIVE_CLIENT_SECRET"
+                    | "GOOGLE_DRIVE_API_KEY"
                     | "BREADBOARD_DASHBOARD_BUNDLER"
                     | "BREADBOARD_SUPERVISOR_CONTROL_URL"
                     | "BREADBOARD_SUPERVISOR_CONTROL_TOKEN"

@@ -11,7 +11,6 @@ import { Pencil } from "lucide-react";
 import AssistantComposer from "@/app/components/assistant-composer";
 import { UserMessageText } from "@/app/components/hermes/command-text";
 import BreadboardLoader from "@/app/components/breadboard-loader";
-import { ArtifactLoadingMark } from "@/app/components/hermes/artifact-preview-loading";
 import { useLoadingTextReveal } from "@/app/components/loading-text-reveal";
 import ChatMarkdown from "@/app/components/chat-markdown";
 import { ConfirmDialog } from "@/app/components/confirm-dialog";
@@ -460,7 +459,7 @@ export default function MarkdownArtifactEditor({
         <section className={styles.documentPane} aria-label="Markdown workspace" aria-busy={loading}>
           {loading ? (
             <div role="status" className="grid min-h-0 flex-1 place-items-center">
-              <ArtifactLoadingMark size={24} />
+              <BreadboardLoader className="h-6 w-6" />
               <span className="sr-only">Opening Markdown editor…</span>
             </div>
           ) : editing ? (

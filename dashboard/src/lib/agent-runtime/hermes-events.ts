@@ -82,7 +82,7 @@ function asNumber(value: unknown): number | undefined {
 }
 
 /** The persona tag an orchestrator prepends to a delegated task's goal text. */
-const DELEGATION_PERSONA_TAG = /^\s*\[persona:\s*([a-z0-9][a-z0-9-]*)\]\s*/i;
+const DELEGATION_PERSONA_TAG = /^\s*\[persona:\s*(bot-[\p{L}\p{N}][\p{L}\p{M}\p{N}-]*|[a-z0-9][a-z0-9-]*)\]\s*/iu;
 
 function parsePersonaSlug(goal: string | undefined): string | undefined {
   if (!goal) return undefined;

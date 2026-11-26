@@ -12,8 +12,17 @@ import {
 } from "@/lib/buzz/instance.ts";
 import { requireBuzzUser, requireRoomAndSelf, requireString, requireWritableRoom, roomPermissions, presentRoomMessage } from "@/lib/buzz/route-helpers.ts";
 import { canDeleteMessage } from "@/lib/buzz/permissions.ts";
+import { buzzBridge, relayOrganizations } from "@/lib/crumbs/service.ts";
+import type { BridgeChange } from "@/lib/crumbs/buzz-bridge.ts";
 
 export const dynamic = "force-dynamic";
+
+/** In a room linked to a Crumbs organization, the change is relayed to the members on other machines. */
+function relayChange(userId: number, roomId: number, messageId: number, change: BridgeChange) {
+  if (!buzzBridge.isLinked(roomId)) return;
+  buzzBridge.recordChange(roomId, messageId, change);
+  void relayOrganizations(userId, roomId, { force: true });
+}
 
 /** Edit your own message, or add and remove a reaction on anyone's. */
 export async function PATCH(
@@ -34,7 +43,10 @@ export async function PATCH(
     const body = await readJsonBody(request);
 
     if (typeof body.emoji === "string" && body.emoji.length > 0) {
-      toggleReaction(message.id, self.id, body.emoji.slice(0, 16));
+      const emoji = body.emoji.slice(0, 16);
+      toggleReaction(message.id, self.id, emoji);
+      const on = Boolean(db.prepare("SELECT 1 FROM buzz_room_reactions WHERE message_id = ? AND member_id = ? AND emoji = ?").get(message.id, self.id, emoji));
+      relayChange(userId, room.id, message.id, { kind: "react", emoji, on });
       return NextResponse.json({ ok: true });
     }
 
@@ -45,6 +57,7 @@ export async function PATCH(
         throw new ApiError(403, "not_your_message", "You can only edit your own messages.");
       }
       editMessage(message.id, requireString(body.body, "body", 12000));
+      relayChange(userId, room.id, message.id, { kind: "edit" });
       return NextResponse.json({ message: presentRoomMessage(getMessage(message.id)!, userId) });
     }
 
@@ -71,6 +84,7 @@ export async function DELETE(
       throw new ApiError(403, "cannot_delete_message", "You can only delete your own messages.");
     }
     softDeleteMessage(message.id);
+    relayChange(userId, room.id, message.id, { kind: "delete" });
     return NextResponse.json({ message: presentRoomMessage(getMessage(message.id)!, userId) });
   } catch (error) {
     return apiErrorResponse(error);

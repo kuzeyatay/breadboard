@@ -147,7 +147,7 @@ test("turn dispatch applies selection and delegates first-prompt naming to the L
   const turnService = source("src/lib/conversations/turn-service.ts");
   const conversationStore = source("src/lib/conversations/store.ts");
   assert.match(turnService, /activeAgencyAgentSlug: resolved\.agencyAgentSelection\.slug/);
-  assert.match(turnService, /renderAgencyAgentPersona\(activeAgencyAgent\)/);
+  assert.match(turnService, /renderAgencyAgentPersona\(activeAgencyAgent, input\.conversation\.user_id\)/);
   assert.match(
     turnService,
     /mergeSelectedTools\(prepared\.grant\.allowedTools, \{\s*\.\.\.resolved\.tools,\s*\.\.\.connectedApps\.tools,/,

@@ -45,4 +45,8 @@ export function ensureOrganizationSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_organization_invites_user
       ON organization_invites(invited_user_id, status);
   `);
+  // The organization's picture, a small data URL. Shared organizations get it
+  // from their admins through Crumbs, so every member sees the same one.
+  const columns = db.prepare("PRAGMA table_info(organizations)").all() as Array<{ name: string }>;
+  if (!columns.some((column) => column.name === "image")) db.exec("ALTER TABLE organizations ADD COLUMN image TEXT");
 }

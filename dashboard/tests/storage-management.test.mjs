@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import fs from "node:fs";
+import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
@@ -323,4 +324,30 @@ test("accounting deduplicates hardlinks and cleanup retains replaced, linked and
     assert.ok(path.resolve(root).startsWith(path.resolve(os.tmpdir())+path.sep));
     fs.rmSync(root,{recursive:true,force:true});
   }
+});
+
+test("an identical upload shares the first copy's bytes at once, and each copy stays independently removable",async()=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),"bb-storage-fresh-")),db=database();
+  try {
+    const content=Buffer.from("the same course reader attached again ".repeat(4000));
+    const sha=crypto.createHash("sha256").update(content).digest("hex");
+    const write=id=>{const file=path.join(root,"chat-documents","u1",`doc_${id.repeat(32)}.pdf`);fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,content);return file;};
+    const first=write("a"),second=write("b"),third=write("c");
+    assert.ok(await immutable.shareFreshImmutableUpload(db,root,first,sha)===0,"the first copy has nothing to share with");
+    assert.ok(await immutable.shareFreshImmutableUpload(db,root,second,sha)>0);
+    assert.ok(await immutable.shareFreshImmutableUpload(db,root,third,sha)>0);
+    const ino=fs.statSync(first,{bigint:true}).ino;
+    for(const file of [second,third]) {assert.equal(fs.statSync(file,{bigint:true}).ino,ino);assert.deepEqual(fs.readFileSync(file),content);}
+    // A digest that does not describe the file is refused, never trusted.
+    const other=write("d");fs.writeFileSync(other,Buffer.from("different bytes ".repeat(4000)));
+    await assert.rejects(()=>immutable.shareFreshImmutableUpload(db,root,other,sha));
+    assert.notEqual(fs.statSync(other,{bigint:true}).ino,ino);
+    // Outside the immutable stores nothing is touched.
+    const workspace=path.join(root,"runtime","hermes-workspaces","notes.pdf");fs.mkdirSync(path.dirname(workspace),{recursive:true});fs.writeFileSync(workspace,content);
+    assert.equal(await immutable.shareFreshImmutableUpload(db,root,workspace,sha),0);
+    assert.equal(fs.statSync(workspace).nlink,1);
+    // Removing one copy keeps the others whole.
+    fs.unlinkSync(first);
+    assert.deepEqual(fs.readFileSync(second),content);assert.deepEqual(fs.readFileSync(third),content);
+  } finally {db.close();assert.ok(path.resolve(root).startsWith(path.resolve(os.tmpdir())+path.sep));fs.rmSync(root,{recursive:true,force:true});}
 });

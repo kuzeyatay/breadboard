@@ -10,7 +10,7 @@
 // one block rather than as repeated records.
 
 import { memo, useState } from "react";
-import { MessageSquareText, Pencil, RotateCcw, SmilePlus, Trash2 } from "lucide-react";
+import { MessageSquareText, Pencil, RotateCcw, SmilePlus, Square, Trash2 } from "lucide-react";
 import { modelVerification } from "@/lib/hermes/evidence";
 import AssistantMessageActions from "@/app/components/assistant-message-actions";
 import { useLoadingTextReveal } from "@/app/components/loading-text-reveal";
@@ -23,8 +23,26 @@ import {
   MessageMetaSeparator,
 } from "@/app/buzz/ui/MessageHeader";
 import { UserAvatar } from "@/app/buzz/ui/UserAvatar";
+import BotAvatar from "@/app/components/bots/bot-avatar";
 import { EmojiPicker } from "./emoji-picker";
 import { MessageMarkdown } from "./message-markdown";
+import ChatMessageAttachments from "@/app/components/chat-message-attachments";
+import type { ChatMessageAttachment } from "@/lib/chat-attachments";
+
+/**
+ * Files on a message. A file another member shared shows by name at once and
+ * becomes openable when its bytes have arrived; one that could not be fetched
+ * says why beneath.
+ */
+function messageFiles(metadata: BuzzMessage["metadata"]) {
+  const list = Array.isArray(metadata?.attachments) ? metadata.attachments as Array<Record<string, unknown>> : [];
+  const files = list.flatMap((item): Array<ChatMessageAttachment & { unavailable?: string }> => item && item.type === "file" && typeof item.name === "string"
+    ? [{ type: "file", name: item.name, ...(typeof item.sizeBytes === "number" ? { sizeBytes: item.sizeBytes } : {}),
+        ...(typeof item.blobId === "string" ? { blobId: item.blobId } : {}), ...(typeof item.format === "string" ? { format: item.format as never } : {}),
+        ...(typeof item.unavailable === "string" ? { unavailable: item.unavailable } : {}) }]
+    : []);
+  return { files, unavailable: files.filter(file => file.unavailable) };
+}
 import type { BuzzMember, BuzzMessage } from "../types.ts";
 
 /** Offered without opening a picker, as upstream's action bar does. */
@@ -74,6 +92,7 @@ function MessageRowImpl({
   runHref,
 }: MessageRowProps) {
   const [editing, setEditing] = useState(false);
+  const { files, unavailable } = messageFiles(message.metadata);
   const [draft, setDraft] = useState(message.body);
   const [saving, setSaving] = useState(false);
 
@@ -111,7 +130,11 @@ function MessageRowImpl({
     >
       {/* The photo gutter: a face on the first row of a block, blank on its continuations. */}
       <div className="mr-2.5 w-9 shrink-0 pt-0.5">
-        {grouped ? null : (
+        {grouped ? null : member?.botAvatar ? (
+          <span data-testid="message-avatar" className="flex h-9 w-9 items-center justify-center">
+            <BotAvatar avatar={member.botAvatar} name={message.authorName} size={36} state={live ? "working" : "default"} paused={!live} />
+          </span>
+        ) : (
           <UserAvatar
             avatarUrl={member?.avatarUrl ?? (typeof (message.metadata?.crumbs as { avatar?: unknown } | undefined)?.avatar === "string" ? (message.metadata!.crumbs as { avatar: string }).avatar : null)}
             displayName={message.authorName}
@@ -123,11 +146,6 @@ function MessageRowImpl({
         {grouped ? null : (
           <MessageHeaderRow>
             <MessageAuthorText as="h3">{message.authorName}</MessageAuthorText>
-            {message.authorKind === "agent" ? (
-              <span className="rounded bg-muted px-1 text-3xs font-medium text-muted-foreground">
-                Agent
-              </span>
-            ) : null}
             <span className="text-xs text-muted-foreground">
               {clockTime(message.createdAt)}
             </span>
@@ -141,7 +159,6 @@ function MessageRowImpl({
         )}
 
         {message.metadata?.needsPermission && onApprove ? <button type="button" className="neu-button my-2 self-start rounded-xl px-3 py-2 text-xs" onClick={onApprove}>Allow for this response</button> : null}
-        {live && onStop ? <button type="button" aria-label="Stop response" className="neu-button my-1 self-start rounded-xl px-3 py-1 text-xs" onClick={onStop}>Stop</button> : null}
         <div data-testid="message-body">
           {editing ? (
             <div data-enter-submit-scope className="mt-1">
@@ -177,22 +194,38 @@ function MessageRowImpl({
               </div>
             </div>
           ) : (
-            <div className={cn("text-message", failed && "text-destructive")}>
+            // A message on its way is drawn hollow, and fills in once it has been sent.
+            <div className={cn("text-message transition-opacity duration-300", failed && "text-destructive", message.delivery === "sending" && "opacity-45")}>
               {message.body ? (
                 <div ref={replyReveal}><MessageMarkdown body={message.body} members={roomMembers} /></div>
-              ) : live ? (
+              ) : failed ? <p ref={replyReveal}>{message.status === "aborted" ? "This response was stopped." : "This response could not be completed."}</p> : null}
+              {live ? (
                 <span className="inline-flex items-center gap-1.5 py-0.5 text-muted-foreground">
                   <BreadboardLoader className="size-3" />
-                  <span className="text-2xs">{message.authorName} is thinking…</span>
+                  <span className="text-2xs">{message.authorName} is {message.body ? "writing" : "thinking"}…</span>
+                  {onStop ? (
+                    <button type="button" aria-label="Stop response" title="Stop" onClick={onStop}
+                      className="ml-0.5 flex size-5 items-center justify-center rounded-full text-muted-foreground transition hover:bg-muted hover:text-foreground">
+                      <Square className="size-2.5 fill-current" aria-hidden />
+                    </button>
+                  ) : null}
                 </span>
-              ) : failed ? <p ref={replyReveal}>{message.status === "aborted" ? "This response was stopped." : "This response could not be completed."}</p> : null}
+              ) : null}
             </div>
           )}
         </div>
 
-        {message.delivery ? (
+        {files.length ? (
+          <div className={cn("mt-1 flex flex-col gap-1 transition-opacity duration-300", message.delivery === "sending" && "opacity-45")}>
+            <ChatMessageAttachments attachments={files} />
+            {unavailable.length ? <p className="text-2xs text-muted-foreground">{unavailable.map(file => `${file.name}: ${file.unavailable}`).join(" · ")}</p> : null}
+          </div>
+        ) : null}
+
+        {message.delivery === "sending" ? <span role="status" className="sr-only">Sending</span> : null}
+        {message.delivery === "failed" ? (
           <div role="status" className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
-            <span>{message.delivery === "sending" ? "Sending…" : message.deliveryError ?? "Not sent"}</span>
+            <span>{message.deliveryError ?? "Not sent"}</span>
             {message.delivery === "failed" && onRetry ? <button type="button" onClick={onRetry} aria-label="Retry sending message" className="neu-button-icon flex size-7 items-center justify-center rounded-full"><RotateCcw className="size-3.5" /></button> : null}
           </div>
         ) : null}

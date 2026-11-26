@@ -36,19 +36,24 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle(IPC_CHANNELS.getTabsState,event=>manager.tabs.stateFor(event.sender));
   ipcMain.handle(IPC_CHANNELS.tabsCommand,(event,command)=>manager.tabs.handleCommand(event.sender,command));
+  ipcMain.handle(IPC_CHANNELS.getBrowserDownloads,()=>({items:[],error:null}));
   manager.tabs.setEnabled(true);
   manager.tabs.setNewTabUrl(origin+'/new-tab');
   manager.tabs.setBrowserUrl(origin+'/browser');
-  const window = manager.createMainWindow(); window.hide();
+  const window = manager.createMainWindow();
+  window.setOpacity(0);
+  window.showInactive();
   const base = manager.page(window);
   await base.loadURL(origin+'/new-tab');
   const host = manager.tabs.hosts.get(window.id);
   const tab = host.tabs.find(tab=>tab.contents===base);
+  await until(()=>host.shellEnabled,'Terminal laid out below the native tab strip');
   let menu, anchor;
   Menu.prototype.popup = function(options) { menu=this;anchor=options;options.callback?.(); };
   const command = type => ({type,x:1000,y:60,profileLabel:'Fixture profile'});
   assert.equal(await manager.tabs.handleCommand(base,command('browser-menu')),true);
-  assert.equal(menu.getMenuItemById('profile').label,'Settings');
+  const settings = menu.getMenuItemById('settings');
+  assert.equal(settings?.label,'Browser settings');
   assert.equal(menu.getMenuItemById('save').enabled,false,'page-only actions retain browser-home rules');
   assert.equal(anchor.y,60+(tab.view?.getBounds().y??0),'native popup accounts for the Terminal view offset');
   for (const action of ['history','visited-pages','bookmarks','downloads']) {
@@ -57,14 +62,15 @@ app.whenReady().then(async () => {
   }
   assert.equal(await manager.tabs.handleCommand(base,command('browser-downloads-popover')),true);
   assert.ok(host.downloadsPopover);
-  assert.equal(host.downloadsPopover.contents.getURL(),origin+'/browser/downloads-popover');
+  const downloadsPage = path.resolve(__dirname,'../../dist/window-shell/downloads.html');
+  assert.equal(host.downloadsPopover.contents.getURL(),pathToFileURL(downloadsPage).href);
   assert.equal(manager.tabs.stateFor(base).tabs.find(t=>t.id===tab.id).downloadsOpen,true);
   host.downloadsPopover.resize(220);
   assert.equal(host.downloadsPopover.view.getBounds().y,60+(tab.view?.getBounds().y??0));
   assert.equal(await manager.tabs.handleCommand(host.downloadsPopover.contents,{type:'browser-downloads-show-all'}),true);
   assert.equal(host.downloadsPopover,undefined);
   assert.equal(manager.tabs.stateFor(base).tabs.find(t=>t.id===tab.id).downloadsOpen,false);
-  menu.getMenuItemById('settings').click();
+  settings.click();
   await until(()=>host.tabs.some(t=>t.url===origin+'/browser/settings'),'real settings tab opened');
   assert.equal(await manager.tabs.handleCommand(base,command('browser-menu')),false,'inactive Terminal cannot open a menu');
   await manager.tabs.handleCommand(base,{type:'activate',id:tab.id});

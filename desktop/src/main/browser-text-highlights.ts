@@ -1,10 +1,23 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { WebContents } from "electron";
-import { sendTextHighlightRequest } from "./text-highlight-transport";
+import { fetchFollowedHighlights, sendTextHighlightRequest, type FollowedHighlight } from "./text-highlight-transport";
 import { browserTextHighlightsBootstrapScript, browserTextHighlightsUpdateScript } from "./browser-text-highlights-dom";
 import { normalizeWebTextHighlight, webHighlightUrl, type BrowserSelection, type WebTextHighlight } from "../shared/web-text-selection";
 
 export type WebHighlightAction = "highlight" | "note" | "remove" | "chat" | "inline";
+
+/**
+ * Colors for people you follow, none of them one you can highlight with
+ * (blue, green, pink, purple) or the yellow of an answer. Each person keeps
+ * the same color on every page.
+ */
+export const FOLLOWED_TONES = ["#f8b878", "#82d6cd", "#f2938a", "#cbe17f", "#d9c2a3"] as const;
+export function followedTone(did: string): number {
+  let hash = 0;
+  for (let index = 0; index < did.length; index++) hash = (hash * 31 + did.charCodeAt(index)) >>> 0;
+  return hash % FOLLOWED_TONES.length;
+}
+const shortHandle = (handle: string | null) => handle?.replace(/\.bsky\.social$/, "") ?? "";
 
 /** One authenticated, URL-scoped annotation document per native page. Website
  * scripts cannot choose a storage key, user, endpoint, or conversation. */
@@ -16,6 +29,8 @@ export class BrowserTextHighlights {
   private loading: Promise<void> = Promise.resolve();
   private saving: Promise<unknown> = Promise.resolve();
   private privateEntries = new Map<string, WebTextHighlight[]>();
+  /** Passages on this page that people you follow left crumbs on. Never loaded in private browsing. */
+  private followed: FollowedHighlight[] = [];
 
   constructor(private page: WebContents, private chrome: WebContents, private shellUrl: string, private privateBrowsing: boolean) {}
 
@@ -34,7 +49,10 @@ export class BrowserTextHighlights {
     if (revision !== this.revision || this.page.isDestroyed()) return Promise.resolve();
     // The note stays out of the page (its scripts can read what we hand it); a flag draws the dotted underline.
     const anchors = this.entries.map(({ note, conversationId: _conversationId, ...entry }) => note ? { ...entry, noted: true as const } : entry);
-    return this.page.executeJavaScript(browserTextHighlightsUpdateScript(anchors)).then(() => undefined).catch(() => undefined);
+    // Followed passages reach the page as an anchor, a short id and a color: never who wrote them.
+    const follows = this.followed.map((item, index) => ({ id: `f${index}`, quote: item.target.quote ?? "", prefix: item.target.prefix ?? "", suffix: item.target.suffix ?? "",
+      tone: followedTone(item.people[0]!.did) }));
+    return this.page.executeJavaScript(browserTextHighlightsUpdateScript(anchors, null, follows)).then(() => undefined).catch(() => undefined);
   }
 
   /** Reinstall once per document, restore on SPA route changes, and reject late reads. */
@@ -43,7 +61,7 @@ export class BrowserTextHighlights {
     if (!reinstall && url === this.url) return this.loading;
     const revision = ++this.revision;
     const saves = this.saving;
-    this.url = url; this.entries = []; this.hydrated = false;
+    this.url = url; this.entries = []; this.hydrated = false; this.followed = [];
     this.loading = (async () => {
       if (reinstall && !this.page.isDestroyed()) await this.page.executeJavaScript(browserTextHighlightsBootstrapScript());
       if (!url) return;
@@ -52,6 +70,12 @@ export class BrowserTextHighlights {
       if (revision !== this.revision) return;
       this.entries = entries; this.hydrated = true;
       await this.paint(revision);
+      if (this.privateBrowsing) return;
+      // Your own highlights are painted first; what people you follow left follows when it arrives.
+      const pageUrl = this.page.getURL();
+      void fetchFollowedHighlights({ dashboardUrl: this.shellUrl, pageUrl, readCookies: target => this.chrome.session.cookies.get({ url: target }) })
+        .then(followed => { if (revision === this.revision && followed.length) { this.followed = followed; return this.paint(revision); } })
+        .catch(() => { /* Followed crumbs are an extra; the page reads fine without them. */ });
     })().catch(() => { /* The menu reports a failed read before accepting an edit. */ });
     return this.loading;
   }
@@ -67,6 +91,27 @@ export class BrowserTextHighlights {
     };
   }
   saved(id: string) { return this.entries.find(entry => entry.id === id); }
+
+  /** A followed passage by the short id the page knows it by. */
+  followedPassage(id: string): FollowedHighlight | undefined {
+    const match = /^f(\d{1,3})$/.exec(id);
+    return match ? this.followed[Number(match[1])] : undefined;
+  }
+
+  /** What the hover card says for a painted passage: your note, or who you follow left a crumb on it. */
+  hoverContent(id: string, kind: "note" | "follow"): { title?: string; body: string; tone?: string } | null {
+    if (kind === "note") {
+      const note = this.saved(id)?.note;
+      return note ? { body: note } : null;
+    }
+    const passage = this.followedPassage(id);
+    if (!passage) return null;
+    const [first, ...others] = passage.people;
+    const handle = shortHandle(first!.handle);
+    const title = (handle && handle !== first!.name ? `${first!.name} @${handle}` : first!.name)
+      + (others.length ? ` and ${others.length === 1 ? others[0]!.name : `${others.length} others`}` : "");
+    return { title, body: first!.comment || "Left a crumb here", tone: FOLLOWED_TONES[followedTone(first!.did)] };
+  }
 
   apply(entry: WebTextHighlight, action: WebHighlightAction, value?: string | null): Promise<void> {
     const url = this.url; const revision = this.revision;

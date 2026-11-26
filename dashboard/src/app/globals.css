@@ -2017,7 +2017,11 @@ html[data-breadboard-desktop="true"] .desktop-title-bar {
   display: flex;
   align-items: center;
   gap: 7px;
-  flex: 1 1 200px;
+  /* The scroll viewport sizes itself from its tabs' intrinsic widths, which
+     ignore flex-basis. A definite width keeps that independent of the title
+     text, so bolding the active tab or a title change never resizes the row. */
+  flex: 0 1 200px;
+  width: 200px;
   /* The anchor floats 30-49px from the right edge; under ~100px it covers the tab's middle,
      so an ordinary click there anchored the tab instead of switching to it. */
   min-width: 112px;

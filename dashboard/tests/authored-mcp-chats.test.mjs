@@ -37,7 +37,10 @@ async function harness() {
       export { composeHermesSystemPrompt } from './src/lib/hermes/system-prompts.ts';
       export * as proxy from './src/lib/agent-runtime/mcp-proxy.ts';
       export { default as db } from './src/lib/db.ts';
-      export { createConversation, appendConversationAssistantMessage } from './src/lib/conversations/store.ts';
+      export { createConversation, setConversationArchived, appendConversationAssistantMessage } from './src/lib/conversations/store.ts';
+      export { ScheduledChatJobStore } from './src/lib/schedules/store.ts';
+      export { scheduledBotPrompt } from './src/lib/schedules/bot.ts';
+      export { turnRespondent } from './src/lib/bots/team.ts';
       export { PUT as starMessage } from './src/app/api/starred-messages/route.ts';
       export { createHook } from './src/lib/hooks/store.ts';
       export { gadgetBindingHandler } from './src/lib/hermes/gadget-bindings.ts';
@@ -49,7 +52,7 @@ async function harness() {
       export { decideCapabilityMode } from './src/lib/hermes/capability-policy.ts';
       export { createRuntimeSession, persistCapabilityDecision } from './src/lib/hermes/runtime-store.ts';
       export { beginRuntimeRun, finishRuntimeRun } from './src/lib/hermes/run-store.ts';
-      export { listMcpConnections } from './src/lib/hermes/mcp-connections.ts';`, resolveDir: dashboard },
+      export { deleteMcpConnection, listMcpConnections } from './src/lib/hermes/mcp-connections.ts';`, resolveDir: dashboard },
     bundle: true, packages: "external", platform: "node", format: "cjs", write: false,
     logOverride: { "empty-import-meta": "silent" },
     plugins: [{ name: "isolated-services", setup(builder) {
@@ -139,10 +142,11 @@ test("chat authors and uses a custom server, a new chat rediscovers it after dis
     { name: "mean", parameters: [], readOnly: true, description: "Calculate the stored batch mean.",
       code: "const v = state.values || []; return v.length ? v.reduce((a,b)=>a+b,0)/v.length : null;" },
     { name: "preview", parameters: [], readOnly: true, description: "Preview an alternate value.",
-      code: "state.values = [700]; return state.values;" },
-    { name: "fail", parameters: [], readOnly: false, description: "Reject an invalid batch.",
-      code: "state.values = [900]; throw Error('Invalid batch');" },
-  ], test: { tool: "record_batch", args: { values: [3, 4] }, expected: 2 } };
+      code: "return [700];" },
+    { name: "fail", parameters: [{name:"validateOnly",type:"boolean"}], readOnly: false, description: "Reject an invalid batch.",
+      code: "if(args.validateOnly) return true; state.values = [900]; throw Error('Invalid batch');" },
+  ], test: { tool: "record_batch", args: { values: [3, 4] }, expected: 2 },
+    then:[{tool:"mean",args:{},expected:3.5},{tool:"preview",args:{},expected:[700]},{tool:"fail",args:{validateOnly:true},expected:true}] };
   assert.equal((await first.call("mcp-installer", "author", spec)).status, 428);
   const bad = await first.call("mcp-installer", "author", { ...spec, test: { ...spec.test, expected: 99 } }, true);
   assert.equal(bad.status, 400, JSON.stringify(bad));
@@ -153,9 +157,7 @@ test("chat authors and uses a custom server, a new chat rediscovers it after dis
   assert.equal(api.listMcpConnections(81, true)[0].slug, slug);
   const retried = await first.call("mcp-installer", "author", spec, true);
   assert.equal(retried.body.data?.connection, slug);
-  const conflict = await first.call("mcp-installer", "author", { ...spec, tools: [
-    spec.tools[0], { ...spec.tools[1], code: "return 999;" },
-  ] }, true);
+  const conflict = await first.call("mcp-installer", "author", { ...spec, tools:spec.tools.map(t=>({...t,description:t.description + " Updated."})) }, true);
   assert.equal(conflict.status, 409);
   assert.equal(api.listMcpConnections(81, true).length, 1);
   const empty = await first.call(slug, "mean", {});
@@ -163,6 +165,9 @@ test("chat authors and uses a custom server, a new chat rediscovers it after dis
   assert.equal((await first.call(slug, "record_batch", { values: [12, 18, 24] })).status, 428);
   const recorded = await first.call(slug, "record_batch", { values: [12, 18, 24] }, true);
   assert.equal(recorded.body.data?.content[0].text, "3", JSON.stringify(recorded));
+  const missing = await first.call(slug, "record_batch", {}, true);
+  assert.equal(missing.body.data?.isError,true);
+  assert.match(missing.body.data.content[0].text,/Missing required argument: values/);
   const preview = await first.call(slug, "preview", {});
   assert.deepEqual(JSON.parse(preview.body.data.content[0].text), [700]);
   const failedWrite = await first.call(slug, "fail", {}, true);
@@ -177,6 +182,47 @@ test("chat authors and uses a custom server, a new chat rediscovers it after dis
   assert.ok(listed.body.data.tools.some(tool => tool.name === "record_batch"));
   const actual = await second.call(slug, "mean", {});
   assert.equal(actual.body.data?.content[0].text, "18", JSON.stringify(actual));
+  await t.test("update installed code from a fresh chat and keep existing measurements", async () => {
+    // Older installations stored SQLite next to the active revision and had
+    // no origin marker. Upgrade that layout while the server is connected.
+    fs.unlinkSync(path.join(root,"authored-mcp","81",slug,"state-origin.json"));
+    const read = await second.call("mcp-installer","read_authored",{connection:slug});
+    assert.equal(read.status,200,JSON.stringify(read));
+    const {name,tools,revision} = read.body.data;
+    const input = {name,updateFrom:revision,tools:[...tools,{
+      name:"package_info",description:"Fetch package metadata and save its version.",parameters:[],readOnly:false,
+      http:{url:"https://registry.npmjs.org/is-number/7.0.0",example:{version:"test-fixture"}},
+      code:"state.packageVersion=response.version; return {version:response.version, batches:state.values.length};",
+    },{name:"saved_version",description:"Report the last retrieved version.",parameters:[],readOnly:true,code:"return state.packageVersion ?? null;"}],
+    test:spec.test,then:[...spec.then,{tool:"package_info",args:{},expected:{version:"test-fixture",batches:2}},{tool:"saved_version",args:{},expected:"test-fixture"}]};
+    const badWrite = {...input,tools:input.tools.map(tool=>tool.name === "package_info" ? {...tool,readOnly:true} : tool)};
+    assert.equal((await second.call("mcp-installer","author",badWrite,true)).status,400);
+    const incomplete = {...input,then:spec.then};
+    assert.equal((await second.call("mcp-installer","author",incomplete,true)).status,400);
+    const updated = await second.call("mcp-installer","author",input,true);
+    assert.equal(updated.status,200,JSON.stringify(updated));
+    assert.equal((await second.call("mcp-installer","author",{...spec,updateFrom:revision},true)).status,409);
+    await api.proxy.disposeProxyMcpConnections(81);
+    const fresh = await chat(81,"Look up the current package and the stored measurements using Batch statistics.");
+    assert.equal((await fresh.call(slug,"mean",{})).body.data.content[0].text,"18");
+    assert.equal((await fresh.call(slug,"saved_version",{})).body.data.content[0].text,"null");
+    assert.equal((await fresh.call(slug,"package_info",{})).status,428);
+    if (process.env.BREADBOARD_QA_PUBLIC_API === "1") {
+      const live = await fresh.call(slug,"package_info",{},true);
+      assert.deepEqual(JSON.parse(live.body.data.content[0].text),{version:"7.0.0",batches:3},JSON.stringify(live));
+      await api.proxy.disposeProxyMcpConnections(81);
+      const later = await chat(81,"Retrieve the saved package version from Batch statistics.");
+      assert.equal(JSON.parse((await later.call(slug,"saved_version",{})).body.data.content[0].text),"7.0.0");
+    }
+    const row = api.listMcpConnections(81).find(connection => connection.slug === slug);
+    api.deleteMcpConnection(81,row.id);
+    await api.proxy.setProxyMcpConnectionConnected(81,slug,false);
+    const reinstall = {...input, updateFrom:undefined, tools:input.tools.map(t=>({...t,description:t.description+" Reinstalled."}))};
+    const reinstalled = await second.call("mcp-installer","author",reinstall,true);
+    assert.equal(reinstalled.status,200,JSON.stringify(reinstalled));
+    const reopened = await chat(81,"Read my existing batch after reinstalling Batch statistics.");
+    assert.equal((await reopened.call(slug,"mean",{})).body.data.content[0].text,"18");
+  });
   const other = await chat(82, "Use Batch statistics.");
   assert.ok(!other.registry.connectionNames.includes(slug));
   assert.equal((await other.call(slug, "mean", {})).status, 403);
@@ -265,6 +311,56 @@ test("chat authors and uses a custom server, a new chat rediscovers it after dis
   assert.notEqual(copy.id, source.id);
   assert.equal(copy.name, "Morning shift.md");
   assert.equal(fs.readFileSync(store.content(target, copy.id).path, "utf8"), fileBody);
+  await t.test("template keeps its saved contents after trash; Spaces finds Unicode filenames", async () => {
+    store.trash(ownerScope, source.id, source.revision);
+    assert.ok(api.listSpaceTemplates(store,81).some(t=>t.id === tile.id));
+    const later = await api.createFromSpaceTemplate(store,target,tile.id,"Afternoon shift");
+    assert.equal(fs.readFileSync(store.content(target,later.id).path,"utf8"),fileBody);
+    const accented = store.import(ownerScope,"Spaces/Énergie.md",await store.stage(new Blob(["results"]).stream()));
+    const found = await second.call(workspace,"find_space_files",{title:"Énergie.md"});
+    assert.equal(found.body.data.files[0].fileId,accented.id);
+  });
+  await t.test("retry, cancel, paginate and find archived chats", async () => {
+    const create = ()=>second.call(workspace,"create_garden",{name:"Shift reports"});
+    const [a,b] = await Promise.all([create(),create()]);
+    assert.equal(a.body.data.garden.slug,b.body.data.garden.slug);
+    const stopped = await api.POST(new Request("http://localhost/api/hermes/tools/mcp",{method:"POST",
+      headers:{authorization:"Bearer "+token,"x-hermes-session-id":second.external},signal:AbortSignal.abort(),
+      body:JSON.stringify({connection:workspace,tool:"create_garden",args:{name:"Cancelled shift"}})}));
+    assert.equal(stopped.status,409);
+    assert.equal(api.db.prepare("SELECT count(*) AS n FROM clusters WHERE name IN ('Shift reports','Cancelled shift')").get().n,1);
+    const duplicate = ()=>second.call(workspace,"create_garden",{name:"Shift reports",copyKey:"separate-shift"});
+    const separate = await duplicate();
+    assert.notEqual(separate.body.data.garden.slug,a.body.data.garden.slug);
+    assert.equal((await duplicate()).body.data.garden.slug,separate.body.data.garden.slug);
+    const chats = Array.from({length:102},()=>api.createConversation({userId:81,title:"Repeated log"}));
+    api.setConversationArchived(chats[0],true);
+    const search = async filter=>(await second.call(workspace,"find_chats",{title:"Repeated log",...filter})).body.data;
+    const firstPage = await search({});
+    const last = await search({offset:firstPage.nextOffset});
+    assert.equal(firstPage.total,102);
+    assert.equal(last.nextOffset,null);
+    assert.equal(new Set([...firstPage.chats,...last.chats].map(c=>c.chatId)).size,102);
+    assert.equal((await search({archived:true})).chats[0].chatId,chats[0].public_id);
+  });
+  await t.test("a routine follows its bot through rename and reuse of the old handle", async () => {
+    const scheduler = new api.ScheduledChatJobStore(api.db);
+    const job = scheduler.create(81,{prompt:"@batch-analyst summarize the measurements",cron:"0 8 * * *",surface:"dashboard_terminal"});
+    assert.equal(job.bot_id,analyst.id);
+    const manage = async args => {
+      const res = await api.manageBot(new Request("http://localhost/api/hermes/tools/bot-manage",{method:"POST",
+        headers:{authorization:"Bearer "+token,"x-hermes-session-id":second.external},body:JSON.stringify({args})}));
+      assert.equal(res.status,200,await res.text());
+    };
+    await manage({action:"update",bot:"batch-analyst",name:"研究助手"});
+    await manage({action:"create",name:"Batch Analyst",personality:analyst.personality});
+    const text = api.scheduledBotPrompt(api.db,scheduler.require(81,job.id));
+    assert.equal(text,"@研究助手 summarize the measurements");
+    assert.equal(api.turnRespondent(81,second.conversation.public_id,text).id,analyst.id);
+    assert.equal(scheduler.update(81,job.id,{prompt:"@batch-analyst summarize all measurements"}).bot_id,analyst.id);
+    await manage({action:"remove",bot:"研究助手"});
+    assert.throws(()=>api.scheduledBotPrompt(api.db,scheduler.require(81,job.id)),/Bot not found/);
+  });
   await t.test("starring an answer dispatches the matching Garden hook once", async () => {
     const input = { name: "Starred lab answers", provider: "message_starred", mode: "chat", chatInstructions: "Summarize the saved answer.", gardenSlug: destination };
     const hook = api.createHook(81, input, api.db);
@@ -295,12 +391,14 @@ test("chat authors and uses a custom server, a new chat rediscovers it after dis
         try {
           const chunks = [];
           for await (const chunk of req) chunks.push(chunk);
-          const { connection, tool } = JSON.parse(Buffer.concat(chunks).toString());
+          const { connection, tool, args } = JSON.parse(Buffer.concat(chunks).toString());
           const reply = await handler(new Request("http://localhost" + req.url, {
             method: "POST", headers: req.headers, body: Buffer.concat(chunks),
           }));
-          trace.push([req.headers["x-agent-session-id"], connection, tool, reply.status]);
-          res.writeHead(reply.status, { "content-type": "application/json" }).end(await reply.text());
+          const body = await reply.text();
+          trace.push([req.headers["x-agent-session-id"], connection, tool, reply.status,
+            connection === "custom-sample-ledger" ? args : undefined, body.slice(0,340)]);
+          res.writeHead(reply.status, { "content-type": "application/json" }).end(body);
         } catch { res.writeHead(500).end(); }
       });
       await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
@@ -320,7 +418,9 @@ test("chat authors and uses a custom server, a new chat rediscovers it after dis
         let output = "", errors = "";
         worker.stdout.on("data", bytes => { output = (output + bytes).slice(-8000); });
         worker.stderr.on("data", bytes => { errors = (errors + bytes).slice(-1200); });
-        worker.stdin.end(JSON.stringify({ prompt, context: [persona, turn.registry.systemContext].join("\n"), model, session: turn.external }));
+        const context = api.composeHermesSystemPrompt({userId:81,surface:"dashboard_terminal",decision:turn.decision,
+          userText:prompt,stableAdditional:[persona,turn.registry.systemContext].join("\n")});
+        worker.stdin.end(JSON.stringify({ prompt, context, model, session: turn.external }));
         const [status] = await closed;
         assert.equal(status, 0, errors);
         api.finishRuntimeRun(turn.run.id, "completed");
@@ -328,14 +428,22 @@ test("chat authors and uses a custom server, a new chat rediscovers it after dis
       }
       try {
         const marker = "batch-" + crypto.randomUUID();
-        const created = await promptBread(`Code a custom MCP called Sample Ledger, with put and get tools to store and retrieve a sample by name. Install it. Use it to save "${marker}" as sample A and read it back.`);
+        const created = await promptBread(`Code a custom MCP called Sample Ledger, with put and get tools to store and retrieve a sample by name. Install it. Save "${marker}" under the exact name "shift-entry-41", read it back and report its value.`);
         assert.ok(api.listMcpConnections(81, true).some(row => row.slug === "custom-sample-ledger"), created);
+        assert.ok(trace.some(([,connection,tool,status,,result])=>connection==="custom-sample-ledger" && tool==="get" && status===200 && result.includes(marker)),JSON.stringify({created,trace}));
         await api.proxy.disposeProxyMcpConnections(81);
-        const answer = await promptBread("Use my saved Sample Ledger MCP to look up sample A. Reply with its value.");
+        const answer = await promptBread('Use my saved Sample Ledger MCP to look up "shift-entry-41". Reply with its value.');
         assert.ok(answer?.includes(marker), JSON.stringify({ answer, trace }));
         const calls = api.db.prepare(`SELECT DISTINCT runtime_session_id FROM hermes_audit_events WHERE event_type='mcp.tool_completed'
           AND json_extract(payload, '$.slug')='custom-sample-ledger' AND json_extract(payload, '$.success')=1`).all();
         assert.equal(calls.length, 2);
+        if (process.env.BREADBOARD_QA_PUBLIC_API === "1") {
+          const updated = await promptBread("Update my Sample Ledger MCP. Keep its existing tools and all samples. Add a tool named package_version that calls the public JSON API https://registry.npmjs.org/is-number/7.0.0 and returns its version property. Install the update.");
+          await api.proxy.disposeProxyMcpConnections(81);
+          const verified = await promptBread('Use the saved Sample Ledger MCP to retrieve "shift-entry-41" and call its package_version tool. Report both results.');
+          assert.ok(verified?.includes(marker) && verified.includes("7.0.0"),JSON.stringify({updated,verified,trace}));
+          assert.ok(trace.some(([,connection,tool,status])=>connection==="custom-sample-ledger" && tool==="package_version" && status===200));
+        }
         const requested = await promptBread("Create a private Garden called Sample Reports and move this chat into it. Then create a bot named Sample Clerk on my Bots page whose job is to look up samples by name using my Sample Ledger MCP and report their stored values.");
         const moved = api.db.prepare("SELECT c.id FROM conversations c JOIN clusters g ON g.id=c.default_garden_id WHERE c.user_id=? AND g.slug=?").all(81, "sample-reports");
         assert.equal(moved.length, 1, requested);
@@ -347,7 +455,7 @@ test("chat authors and uses a custom server, a new chat rediscovers it after dis
         }))).json();
         const dedicated = api.db.prepare("SELECT * FROM conversations WHERE public_id=?").get(opened.conversationId);
         assert.ok(dedicated);
-        const report = await promptBread("Please look up sample A and give me its stored value.", dedicated);
+        const report = await promptBread('Please look up "shift-entry-41" and give me its stored value.', dedicated);
         assert.ok(report?.includes(marker), JSON.stringify({ report, trace }));
         assert.ok(trace.some(([id, connection, , status]) => id === "chat-" + dedicated.id && connection === "custom-sample-ledger" && status === 200));
       } finally { await new Promise(resolve => server.close(resolve)); }

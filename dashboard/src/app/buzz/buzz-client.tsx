@@ -8,6 +8,7 @@
 // both, because at this width two right-hand panels squeeze the transcript
 // into a column nobody can read.
 
+import { OrganizationSettingsDialog } from "./components/organization-settings-dialog";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Menu, Hash, Lock, MessagesSquare, SlidersHorizontal, Users } from "lucide-react";
 
@@ -142,6 +143,7 @@ function BuzzWorkspace({
   // portals their content to `document.body`, which is why the effect below
   // puts Buzz's palette on `body` as well as on this element.
   const [searchOpen, setSearchOpen] = useState(false);
+  const [organizationSettingsOpen, setOrganizationSettingsOpen] = useState(false);
   const [newRoomOpen, setNewRoomOpen] = useState(false);
   const [newCommunityOpen, setNewCommunityOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -173,8 +175,10 @@ function BuzzWorkspace({
 
   }, []);
 
-  // A room of an encrypted organization has no push channel: other members'
-  // messages arrive when the transcript is read, so read it on a short beat.
+  // Other members' messages in an encrypted organization are pushed: the
+  // server tells this page when something arrived and the open room and the
+  // rails refresh at once. The short beat stays as the fallback for when the
+  // live connection is down.
   const refreshRoom = useRef(room.refresh);
   useEffect(() => { refreshRoom.current = room.refresh; });
   const linkedRoom = room.detail?.linked === true;
@@ -183,6 +187,12 @@ function BuzzWorkspace({
     const timer = setInterval(() => { if (!document.hidden) void refreshRoom.current(); }, 5000);
     return () => clearInterval(timer);
   }, [linkedRoom]);
+  useEffect(() => {
+    if (typeof EventSource === "undefined") return;
+    const source = new EventSource("/api/buzz/live");
+    source.onmessage = () => { void refreshRoom.current(); void refreshRails(); };
+    return () => source.close();
+  }, [refreshRails]);
 
   // Badges have to move for rooms the reader is not looking at, so the rails
   // refresh on their own rather than only when a room is opened.
@@ -528,6 +538,7 @@ function openCrumbs(roomPublicId: string) {
               setDialogError(null);
               setNewRoomOpen(true);
             }}
+            onOpenSettings={() => setOrganizationSettingsOpen(true)}
             onSearch={() => setSearchOpen(true)}
             onOpenView={(next) => { setView(next); setNavigationOpen(false); }}
             onOpenWorkspace={(slug) => window.location.assign(`/gardens/${encodeURIComponent(slug)}`)}
@@ -610,6 +621,7 @@ function openCrumbs(roomPublicId: string) {
                     autoFocus
                     placeholder={`Message #${activeRoom.slug}`}
                     onSend={room.send}
+                    files={room.detail?.linked ? "linked" : "local"}
                   />
                   </>}
                 </>
@@ -641,7 +653,7 @@ function openCrumbs(roomPublicId: string) {
                 rosterReady={rosterReady}
                 onClose={() => setShowMembers(false)}
                 onAddPersona={(slug) => addMember({ personaSlug: slug })}
-                onAddPerson={(userId) => addMember({ userId })}
+                onAddPerson={(person) => addMember(person.did ? { did: person.did } : { userId: person.userId })}
                 onRemove={removeMember}
                 onRespondToChange={async (memberId, respondTo) => {
                   if (!roomId) return;
@@ -659,6 +671,12 @@ function openCrumbs(roomPublicId: string) {
         onOpenChange={setSearchOpen}
         onOpenRoom={openRoom}
         onOpenMessage={openHit}
+      />
+      <OrganizationSettingsDialog
+        open={organizationSettingsOpen}
+        community={community}
+        onOpenChange={setOrganizationSettingsOpen}
+        onSaved={refreshRails}
       />
       <NewRoomDialog
         open={newRoomOpen}

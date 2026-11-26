@@ -8,7 +8,7 @@
 // search that quietly lies about what it looked at.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { CornerDownLeft, Hash, Lock, MessagesSquare, Search } from "lucide-react";
+import { Hash, Lock, MessagesSquare, Search } from "lucide-react";
 
 import { cn } from "@/app/buzz/lib/cn";
 import { Dialog, DialogContent, DialogTitle } from "@/app/buzz/ui/dialog";
@@ -123,8 +123,10 @@ export function SearchPalette({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
+      {/* The Terminal's chat search: a plain dimmed page (no blur), the panel near the top. */}
       <DialogContent
-        className="max-w-xl gap-0 overflow-hidden p-0"
+        className="max-w-xl gap-0 self-start overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--paper-raised)] p-0 shadow-[0_18px_44px_rgba(0,0,0,0.22)] mt-[12vh]"
+        overlayClassName="bg-black/55 backdrop-blur-none"
         showCloseButton={false}
         onOpenAutoFocus={(event) => {
           event.preventDefault();
@@ -134,8 +136,8 @@ export function SearchPalette({
         <DialogTitle className="sr-only">Search everything</DialogTitle>
         {error ? <p role="alert" className="px-4 py-2 text-xs text-destructive">{error}</p> : null}
 
-        <div className="flex items-center gap-2 border-b border-border/60 px-3.5 py-3">
-          <Search className="size-4 shrink-0 text-muted-foreground" />
+        <div className="flex items-center gap-2.5 border-b border-[var(--line)] px-4 py-3">
+          <Search className="size-4 shrink-0 text-[var(--ink-muted)]" strokeWidth={1.8} />
           <input
             ref={inputRef}
             value={query}
@@ -162,19 +164,18 @@ export function SearchPalette({
               }
             }}
             placeholder="Search rooms and messages…"
-            className="h-6 w-full bg-transparent text-sm outline-hidden placeholder:text-muted-foreground"
+            aria-label="Search rooms and messages"
+            className="w-full bg-transparent text-sm text-[var(--ink)] outline-none placeholder:text-[var(--ink-muted)]"
           />
-          <kbd className="shrink-0 rounded border border-border/60 px-1 font-mono text-3xs text-muted-foreground">
-            esc
-          </kbd>
+          {loading ? <span className="shrink-0 text-[11px] text-[var(--ink-muted)]">Searching…</span> : null}
         </div>
 
         <div
           ref={listRef}
-          className="buzz-content-scrollbar max-h-[min(60vh,26rem)] min-h-24 overflow-y-auto p-1.5"
+          className="buzz-content-scrollbar max-h-[52vh] overflow-y-auto p-2"
         >
           {results.length === 0 ? (
-            <p className="px-2 py-6 text-center text-xs text-muted-foreground">
+            <p className="px-3 py-8 text-center text-xs text-[var(--ink-muted)]">
               {loading
                 ? "Looking…"
                 : query.trim() === ""
@@ -201,13 +202,15 @@ export function SearchPalette({
                   onHover={() => setHighlighted(index)}
                   onSelect={() => choose(result)}
                 >
-                  <Icon className="size-4 shrink-0 text-muted-foreground" />
-                  <span className="truncate text-xs font-medium">{room.name}</span>
-                  {room.topic ? (
-                    <span className="truncate text-2xs text-muted-foreground">
-                      {room.topic}
-                    </span>
-                  ) : null}
+                  <Icon className="size-4 shrink-0 text-[var(--ink-muted)]" strokeWidth={1.8} />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-[13px] text-[var(--ink)]">{room.name}</span>
+                    {room.topic ? (
+                      <span className="mt-0.5 block truncate text-[11px] text-[var(--ink-muted)]">
+                        {room.topic}
+                      </span>
+                    ) : null}
+                  </span>
                   <span className="ml-auto flex shrink-0 items-center gap-1.5">
                     {room.archived ? (
                       <span className="rounded bg-muted px-1 text-3xs text-muted-foreground">
@@ -218,9 +221,6 @@ export function SearchPalette({
                       <span className="rounded-full bg-primary px-1.5 text-badge font-semibold leading-4 text-primary-foreground">
                         {room.unread > 99 ? "99+" : room.unread}
                       </span>
-                    ) : null}
-                    {active ? (
-                      <CornerDownLeft className="size-3 text-muted-foreground" />
                     ) : null}
                   </span>
                 </Row>
@@ -238,24 +238,21 @@ export function SearchPalette({
                   onSelect={() => choose(result)}
                 >
                   <span className="flex min-w-0 flex-1 flex-col">
-                    <span className="flex items-center gap-1.5 text-3xs text-muted-foreground">
-                      <span className="font-semibold text-foreground/80">
+                    <span className="flex items-center gap-1.5 text-[13px] text-[var(--ink)]">
+                      <span className="truncate">
                         {hit.message.authorName}
                       </span>
-                      <span>in #{hit.roomSlug}</span>
+                      <span className="shrink-0 text-[10px] text-[var(--ink-muted)]">in #{hit.roomSlug}</span>
                       {hit.mentionsYou ? (
                         <span className="rounded bg-primary/20 px-1 font-semibold text-primary">
                           mentions you
                         </span>
                       ) : null}
                     </span>
-                    <span className="flex min-w-0 text-2xs text-muted-foreground">
+                    <span className="mt-0.5 flex min-w-0 text-[11px] text-[var(--ink-muted)]">
                       <Excerpt body={hit.message.body} query={query.trim()} />
                     </span>
                   </span>
-                  {active ? (
-                    <CornerDownLeft className="size-3 shrink-0 text-muted-foreground" />
-                  ) : null}
                 </Row>
               </div>
             );
@@ -268,7 +265,7 @@ export function SearchPalette({
 
 function GroupLabel({ children }: { children: React.ReactNode }) {
   return (
-    <p className="px-2 pb-1 pt-1.5 text-3xs font-semiboldr text-muted-foreground">
+    <p className="px-2 pb-1 pt-1 text-xs font-semibold text-[var(--ink-muted)] [&:not(:first-child)]:pt-3">
       {children}
     </p>
   );
@@ -292,8 +289,8 @@ function Row({
       onMouseMove={onHover}
       onClick={onSelect}
       className={cn(
-        "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors",
-        active && "bg-accent text-accent-foreground",
+        "flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left transition",
+        active ? "bg-[var(--paper-strong)]" : "hover:bg-[var(--paper-surface)]",
       )}
     >
       {children}

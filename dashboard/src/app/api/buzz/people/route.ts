@@ -4,6 +4,7 @@ import { apiErrorResponse } from "@/lib/hermes/route-helpers.ts";
 import { searchAccounts } from "@/lib/organizations/store.ts";
 import { listMembers } from "@/lib/buzz/instance.ts";
 import { requireBuzzUser, requireRoom } from "@/lib/buzz/route-helpers.ts";
+import { buzzBridge } from "@/lib/crumbs/service.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -25,15 +26,27 @@ export async function GET(request: Request) {
 
     // Membership of the room is what makes its roster readable, so the room is
     // resolved through the same guard every other Buzz route uses.
-    const seated = roomPublicId
-      ? listMembers(requireRoom(userId, roomPublicId).id)
+    const room = roomPublicId ? requireRoom(userId, roomPublicId) : null;
+    const seated = room
+      ? listMembers(room.id)
           .map((member) => member.userId)
           .filter((id): id is number => id !== null)
       : [];
 
+    // A room of an organization on Crumbs is joined by Crumbs account: members
+    // are on other machines, where local accounts do not exist. Those people
+    // carry `did`, and adding one sends it instead of a local account id.
+    const remote = room ? await buzzBridge.findPeople(userId, room.id, query).catch(() => []) : [];
     return NextResponse.json({
       query: query.trim(),
-      people: searchAccounts(query, { excludeUserIds: seated, limit: 20 }),
+      people: [
+        ...searchAccounts(query, { excludeUserIds: seated, limit: 20 }),
+        ...remote.map((person) => ({
+          userId: 0,
+          did: person.did,
+          username: person.displayName ? `${person.displayName} (@${person.handle})` : `@${person.handle}`,
+        })),
+      ],
     });
   } catch (error) {
     return apiErrorResponse(error);

@@ -44,6 +44,34 @@ export function settings(env = process.env) {
 export async function createOrgStore({ db, config = settings(), auth = authenticate }) {
   await db.exec(SCHEMA);
 
+  // Live signals. Each member's Breadboard keeps one `GET /orgs/stream` open and
+  // is told *that* something changed in one of its organizations: which
+  // organization, and for a message, its page index and id. Never content; the
+  // client then fetches and decrypts as it always does. Signals are a hint, so
+  // a missed one costs only latency: clients catch up whenever they reconnect.
+  // ponytail: subscribers live in this process. Running more than one store
+  // machine needs the signal fanned out between them (Postgres LISTEN/NOTIFY).
+  const subscribers = new Map(); // did -> Set<sink>
+  const heartbeat = setInterval(() => { for (const sinks of subscribers.values()) for (const sink of sinks) sink.ping(); }, 25_000);
+  heartbeat.unref?.();
+  const signalDids = (dids, data) => { for (const did of new Set(dids)) for (const sink of subscribers.get(did) ?? []) sink.send(data); };
+  async function signal(orgId, data, extra = []) {
+    if (!subscribers.size) return;
+    const members = (await db.all("SELECT did FROM members WHERE org_id=?", [orgId])).map(row => row.did);
+    signalDids([...members, ...extra], { org: orgId, ...data });
+  }
+  function subscribe(did) {
+    const sinks = subscribers.get(did) ?? new Set();
+    // A few machines per account; a flood of connections from one is refused.
+    if (sinks.size >= 10) throw new HttpError(429, "Too many live connections for this account.");
+    return { stream(sink) {
+      sinks.add(sink); subscribers.set(did, sinks);
+      sink.onClose(() => { sinks.delete(sink); if (!sinks.size) subscribers.delete(did); });
+      // Sent once the subscription is in place, so the client's catch-up sync cannot miss anything.
+      sink.send({ kind: "ready" });
+    } };
+  }
+
   async function membership(orgId, did, needAdmin = false) {
     if (!ID.test(orgId)) throw new HttpError(404, "Organization not found.");
     const org = await db.get("SELECT * FROM orgs WHERE id=?", [orgId]);
@@ -94,6 +122,10 @@ export async function createOrgStore({ db, config = settings(), auth = authentic
     rateLimit(`org:${did}`, 600);
     const parts = path.split("/").filter(Boolean);
     if (parts[0] !== "orgs") throw new HttpError(404, "Not found.");
+    if (parts.length === 2 && parts[1] === "stream" && method === "GET") {
+      rateLimit(`org-stream:${did}`, 30);
+      return subscribe(did);
+    }
 
     if (parts.length === 1 && method === "GET") {
       const rows = await db.all("SELECT o.*, m.role FROM orgs o JOIN members m ON m.org_id=o.id WHERE m.did=? AND o.suspended=0 ORDER BY o.created_at", [did]);
@@ -127,7 +159,9 @@ export async function createOrgStore({ db, config = settings(), auth = authentic
     }
     if (!section && method === "DELETE") {
       await membership(orgId, did, true);
+      const members = (await db.all("SELECT did FROM members WHERE org_id=?", [orgId])).map(row => row.did);
       await db.tx(async tx => { for (const table of ["reports", "messages", "envelopes", "key_requests", "members"]) await tx.run(`DELETE FROM ${table} WHERE org_id=?`, [orgId]); await tx.run("DELETE FROM orgs WHERE id=?", [orgId]); });
+      signalDids(members, { org: orgId, kind: "membership" });
       return { deleted: true };
     }
 
@@ -143,6 +177,7 @@ export async function createOrgStore({ db, config = settings(), auth = authentic
         if (Number(admins.n) <= 1) throw new HttpError(409, "Make someone else an admin first.");
       }
       await db.run("INSERT INTO members(org_id,did,role,added_by,added_at) VALUES(?,?,?,?,?) ON CONFLICT(org_id,did) DO UPDATE SET role=excluded.role", [orgId, body.did, role, did, now()]);
+      await signal(orgId, { kind: "membership" });
       return { did: body.did, role };
     }
     if (section === "members" && method === "DELETE" && parts[3] === "me") {
@@ -157,6 +192,7 @@ export async function createOrgStore({ db, config = settings(), auth = authentic
         if (Number(others.n) === 0) { for (const table of ["reports", "messages", "envelopes"]) await tx.run(`DELETE FROM ${table} WHERE org_id=?`, [orgId]); await tx.run("DELETE FROM orgs WHERE id=?", [orgId]); }
         else await tx.run("UPDATE orgs SET needs_rotation=1 WHERE id=?", [orgId]);
       });
+      await signal(orgId, { kind: "membership" }, [did]);
       return { left: true };
     }
 
@@ -175,6 +211,7 @@ export async function createOrgStore({ db, config = settings(), auth = authentic
         await tx.run("UPDATE orgs SET epoch=?, name_ct=?, needs_rotation=0 WHERE id=?", [epoch, text(body.nameCt, 2000, "name"), orgId]);
         await storeEnvelopes(tx, orgId, epoch, envelopes);
       });
+      await signal(orgId, { kind: "membership" }, remove);
       return { epoch };
     }
     if (section === "envelopes" && method === "POST") {
@@ -182,13 +219,18 @@ export async function createOrgStore({ db, config = settings(), auth = authentic
       const epoch = Number(body.epoch);
       if (!Number.isInteger(epoch) || epoch < 1 || epoch > Number(org.epoch)) throw new HttpError(400, "Unknown key epoch.");
       await db.tx(tx => storeEnvelopes(tx, orgId, epoch, validEnvelopes(body.envelopes)));
+      await signal(orgId, { kind: "keys" });
       return { stored: true };
     }
     if (section === "envelopes" && method === "GET") {
       const { org } = await membership(orgId, did);
       const rows = await db.all("SELECT epoch, envelope FROM envelopes WHERE org_id=? AND did=? AND device=? ORDER BY epoch", [orgId, did, device]);
       // A device without the current key leaves a request that any member's client answers.
-      if (!rows.some(row => Number(row.epoch) === Number(org.epoch))) await db.run("INSERT INTO key_requests(org_id,did,device) VALUES(?,?,?) ON CONFLICT(org_id,did,device) DO NOTHING", [orgId, did, device]);
+      if (!rows.some(row => Number(row.epoch) === Number(org.epoch))) {
+        const asked = await db.run("INSERT INTO key_requests(org_id,did,device) VALUES(?,?,?) ON CONFLICT(org_id,did,device) DO NOTHING", [orgId, did, device]);
+        // Members online hand the key over now rather than the next time they open the organization.
+        if (asked.changes) await signal(orgId, { kind: "keys" });
+      }
       return { envelopes: rows.map(row => ({ epoch: Number(row.epoch), envelope: row.envelope })) };
     }
 
@@ -199,6 +241,7 @@ export async function createOrgStore({ db, config = settings(), auth = authentic
       if (!ID.test(String(body.id)) || !HEX.test(String(body.pageIndex))) throw new HttpError(400, "Send a valid message.");
       await db.run("INSERT INTO messages(id,org_id,epoch,page_index,sender,device,ciphertext,sig,created_at) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING",
         [body.id, orgId, Number(org.epoch), body.pageIndex, did, device, text(body.ciphertext, 100000, "message"), text(body.sig, 200, "signature"), now()]);
+      await signal(orgId, { kind: "message", index: body.pageIndex, id: body.id });
       return { id: body.id };
     }
     if (section === "messages" && method === "GET") {
@@ -243,7 +286,7 @@ export async function createOrgStore({ db, config = settings(), auth = authentic
     }
     throw new HttpError(404, "Not found.");
   }
-  return { api };
+  return { api, close: () => clearInterval(heartbeat) };
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

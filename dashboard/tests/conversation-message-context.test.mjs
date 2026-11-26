@@ -116,3 +116,29 @@ test("user text and ordinary assistant messages cannot acquire a worker answer",
     assert.equal(conversationMessageText(message), message.content);
   }
 });
+
+test("a replayed turn names the files attached to it and where the originals are saved", () => {
+  const metadata = JSON.stringify({
+    attachments: [
+      { type: "document", name: "GGzE_D2_Retake_Feedback.pdf", blobId: "doc_1", format: "pdf" },
+      { type: "video", name: "demo.mp4", blobId: "vid_1", format: "mp4" },
+      { type: "image", name: "Current PDF view.png", dataUrl: "data:image/png;base64,AA==", context: "pdf" },
+    ],
+  });
+  const text = conversationMessageText(
+    { role: "user", content: "read the feedback and redo the project", metadata },
+    (attachment) => attachment.blobId === "doc_1" ? "C:/data/chat-documents/u1/doc_1.pdf" : null,
+  );
+  assert.match(text, /^read the feedback and redo the project/);
+  assert.match(text, /"GGzE_D2_Retake_Feedback\.pdf" \(PDF document\), original saved at C:\/data\/chat-documents\/u1\/doc_1\.pdf/);
+  assert.match(text, /"demo\.mp4" \(video\)\n/);
+  assert.match(text, /rather than searching other chats/);
+  // Automatic reader context is not something the person attached.
+  assert.doesNotMatch(text, /Current PDF view/);
+
+  // An upload with no words still reaches the agent, and a failing lookup
+  // never loses the turn.
+  const bare = conversationMessageText({ role: "user", content: "", metadata }, () => { throw new Error("disk"); });
+  assert.match(bare, /"GGzE_D2_Retake_Feedback\.pdf" \(PDF document\)\n/);
+  assert.equal(conversationMessageText({ role: "assistant", content: "done", metadata }), "done");
+});

@@ -201,7 +201,7 @@ test("the semantic half of retrieval is gated too, not just the lexical one", ()
 });
 
 test("the switch sits directly above Concise, and defaults to on", () => {
-  const composer = source("src/app/components/assistant-composer.tsx");
+  const composer = (source("src/app/components/assistant-intelligence-menu.tsx") + source("src/app/components/assistant-composer.tsx"));
   const personalize = composer.indexOf("aria-checked={personalize}");
   const direct = composer.indexOf("aria-checked={directMode}");
   const yolo = composer.indexOf("aria-checked={yoloMode}");

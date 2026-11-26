@@ -17,7 +17,7 @@ const login = await import("../src/lib/chatmock-login.ts");
 const source = (relativePath) =>
   fs.readFileSync(new URL(relativePath, import.meta.url), "utf8");
 
-const composer = source("../src/app/components/assistant-composer.tsx");
+const composer = (source("../src/app/components/assistant-intelligence-menu.tsx") + source("../src/app/components/assistant-composer.tsx"));
 const dialog = source("../src/app/components/settings-dialog.tsx");
 const accountPanel = source("../src/app/components/settings-accounts.tsx");
 const memoryPanel = source("../src/app/components/settings-agent-memory.tsx");
@@ -508,12 +508,12 @@ test("old chats get their first summary without restoring cleared memory or touc
 
 test("Settings sits below Usage and opens as a sibling Intelligence popover", () => {
   const usageIndex = composer.indexOf("<UsageLimitsPopover");
-  const settingsIndex = composer.indexOf("current === 'settings'");
+  const settingsIndex = composer.indexOf("panel === 'settings' ? null : 'settings'");
   assert.ok(usageIndex > 0, "the Usage entry must still be present");
   assert.ok(settingsIndex > usageIndex, "Settings must render after Usage");
   assert.match(composer, /presentation="popover"/);
-  assert.match(composer, /intelligencePanel === 'settings'/);
-  assert.match(composer, /open=\{intelligencePanel === 'usage'\}/);
+  assert.match(composer, /panel === 'settings'/);
+  assert.match(composer, /open=\{panel === 'usage'\}/);
   assert.match(composer, /showBackdrop=\{false\}/);
   assert.doesNotMatch(composer, /setShowSettings/);
 });

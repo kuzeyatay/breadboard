@@ -10,6 +10,7 @@ import type DatabaseType from "better-sqlite3";
 import { DEFAULT_MODEL } from "../ai-models.ts";
 import { DEFAULT_ASSISTANT_REASONING_EFFORT } from "../assistant-reasoning.ts";
 import { inferScheduledChatConversationPolicy } from "./conversation-policy.ts";
+import { scheduledBotId } from "./bot.ts";
 
 type Db = DatabaseType.Database;
 
@@ -102,6 +103,14 @@ export function ensureScheduledChatSchema(db: Db): void {
     "conversation_policy",
     "conversation_policy TEXT NOT NULL DEFAULT 'always_open' CHECK (conversation_policy IN ('always_open', 'open_when_objective_met'))",
   );
+
+  db.transaction(() => {
+    if (db.prepare("SELECT 1 FROM pragma_table_info('scheduled_chat_jobs') WHERE name='bot_id'").get()) return;
+    db.exec("ALTER TABLE scheduled_chat_jobs ADD COLUMN bot_id TEXT");
+    const previous = db.prepare("SELECT id,user_id,prompt FROM scheduled_chat_jobs WHERE ltrim(prompt) LIKE '@%' AND delivery_mode IS NULL").all() as Array<{id:number;user_id:number;prompt:string}>;
+    const bind = db.prepare("UPDATE scheduled_chat_jobs SET bot_id=? WHERE id=?");
+    for (const job of previous) bind.run(scheduledBotId(db,job.user_id,job.prompt),job.id);
+  }).immediate();
 
   // Titles used to be short generated summaries while the full prompt was
   // repeated beneath them. The prompt is now the schedule's name everywhere.

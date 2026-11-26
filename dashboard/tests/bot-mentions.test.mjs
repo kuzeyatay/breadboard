@@ -19,6 +19,9 @@ const roster = [sage, byte, tutor];
 test("handles come from names", () => {
   assert.equal(botHandle("Math Tutor"), "math-tutor");
   assert.equal(botHandle("  Zoë!! "), "zoe");
+  assert.equal(botHandle("研究助手"),"研究助手");
+  assert.deepEqual(mentionedHandles("Ask @研究助手 about this",["研究助手"]),["研究助手"]);
+  assert.equal(mentionQueryAt("@研究",3).query,"研究");
 });
 
 test("a mention stands apart from addresses, links and code", () => {

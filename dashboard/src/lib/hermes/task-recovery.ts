@@ -10,6 +10,8 @@ import { taskRecoveryCheckpoint, taskFailureCanRecover,
   type RecoveryFailure, type RecoveryToolResult, type TaskRecoveryCheckpoint } from "./task-recovery-policy.ts";
 import type { StartConversationTurnInput, StartConversationTurnResult } from "../conversations/turn-service.ts";
 import { sourceRepairOutcome, cancelConversationSourceRepairs } from "../source-repair/checkpoint.ts";
+import { livePendingReplySql } from "../conversations/live-pending.ts";
+import { interruptedTurnNote } from "./interrupted-turn.ts";
 
 export interface TaskRecoveryState {
   request: string;
@@ -101,8 +103,8 @@ export function taskRecoveryCurrent(conversationId: number, sourceRunId: string,
     AND order_index>? AND client_message_id<>? AND COALESCE(json_extract(metadata, '$.internalAgentContinuation'),0)<>1
     AND json_type(metadata, '$.chatCoordination') IS NULL LIMIT 1`)
     .get(conversationId, source.order_index, ownClientMessageId)) return false;
-  if (db.prepare(`SELECT 1 FROM conversation_messages WHERE conversation_id=? AND client_message_id<>?
-    AND (status='pending' OR json_extract(metadata, '$.externalAgentOutcome')='running') LIMIT 1`)
+  if (db.prepare(`SELECT 1 FROM conversation_messages pending WHERE pending.conversation_id=? AND pending.client_message_id<>?
+    AND ((${livePendingReplySql("pending")}) OR json_extract(pending.metadata, '$.externalAgentOutcome')='running') LIMIT 1`)
     .get(conversationId, ownClientMessageId)) return false;
   return !db.prepare(`SELECT 1 FROM hermes_steer_requests q JOIN hermes_runtime_sessions s ON s.id=q.runtime_session_id
     WHERE s.conversation_id=? AND q.status='pending' LIMIT 1`).get(conversationId);
@@ -114,6 +116,18 @@ export function taskRecoveryForContinuation(sourceRunId: string): TaskRecoverySt
   if (!previous?.pending || !previous.checkpoint) throw new Error("Task recovery is no longer pending.");
   return { ...previous, turn: previous.turn + (previous.checkpoint.providerWaitStartedAt === undefined ? 1 : 0), pending: false, stopped: undefined,
     outcomeRecorded: false, claim: undefined, previousRunIds: [...(previous.previousRunIds ?? []), sourceRunId] };
+}
+
+// The earlier answer stays on screen when it was delivered, so the retry must
+// read as a follow-up to it: what was fixed or finished, not the whole answer
+// again (a full rewrite under the original reads as a second, competing reply).
+function deliveredAnswerNote(conversationId: number, clientMessageId: string | undefined): string {
+  if (!clientMessageId) return "";
+  const delivered = db.prepare(`SELECT 1 FROM conversation_messages WHERE conversation_id=? AND client_message_id=?
+    AND role='assistant' AND status='complete' AND length(trim(content))>0 LIMIT 1`).get(conversationId, clientMessageId);
+  return delivered
+    ? "Your previous answer to this request was delivered and stays visible to the person. Do not repeat it. Finish only the step that failed, then reply briefly with what is now done or what still could not be done."
+    : "";
 }
 
 export function prepareTaskRecovery(conversationId: number, sourceRunId: string): StartConversationTurnInput | null {
@@ -130,7 +144,8 @@ export function prepareTaskRecovery(conversationId: number, sourceRunId: string)
   return {
     conversation, clientMessageId, text: state.request, surface: conversation.surface,
     surfaceContext: { ...state.context, authorizedContext: [state.context?.authorizedContext,
-      systemPromptText("task-recovery-instructions", conversation.user_id), JSON.stringify({ error: state.checkpoint, previousRunId: sourceRunId })].filter(Boolean).join("\n\n") },
+      systemPromptText("task-recovery-instructions", conversation.user_id), JSON.stringify({ error: state.checkpoint, previousRunId: sourceRunId }),
+      deliveredAnswerNote(conversationId, dispatch.clientMessageId), interruptedTurnNote(run, dispatch.clientMessageId, conversationId)].filter(Boolean).join("\n\n") },
     attachments: reusableChatAttachments(normalizeChatMessageAttachments(metadata.attachments)),
     model: dispatch.modelIdentity?.modelID ?? dispatch.model?.modelID,
     reasoningEffort: dispatch.variant, superAgent: state.superAgent, personalize: state.personalize,

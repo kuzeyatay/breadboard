@@ -55,13 +55,14 @@
 .answer strong { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; }
 .answer p { margin: 5px 0 0; font-size: 12px; color: var(--ink); white-space: pre-wrap; overflow-wrap: anywhere; }
 
-.threads { list-style: none; margin: 0 0 6px; padding: 0; display: flex; flex-direction: column; gap: 8px; }
-.thread { display: flex; flex-direction: column; gap: 4px; width: 100%; padding: 11px 13px; text-align: left; border-radius: 12px; border: 1px solid var(--neu-border, var(--line)); background: var(--neu-surface-raised, var(--paper-raised)); box-shadow: var(--neu-soft-shadow); color: var(--ink); transition: box-shadow var(--neu-duration, .16s) ease, transform .15s ease; }
-.thread:hover { box-shadow: var(--neu-hover-shadow); }
-.thread:active { transform: scale(.99); }
-.thread span { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; padding-left: 9px; border-left: 2px solid var(--botanical); font-size: 12px; }
-.thread em { display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; font-style: normal; color: var(--ink-muted); font-size: 12px; }
-.thread small { color: var(--ink-muted); font-size: 11px; }
+.threads { display: flex; flex-direction: column; margin: 0 0 6px; }
+.threads > .message:first-child { margin-top: 0; }
+/* A crumb on a passage reads as a post replying to that text. */
+.reply { cursor: pointer; transition: box-shadow var(--neu-duration, .16s) ease; }
+.reply:hover { box-shadow: var(--neu-hover-shadow); }
+.reply:focus-visible { outline: 2px solid var(--botanical); outline-offset: 2px; }
+.replyQuote { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; margin: 2px 0 6px; padding: 8px 11px; border: 1px solid var(--neu-border, var(--line)); border-radius: 12px; color: var(--ink-muted); font-size: 13px; line-height: 1.45; }
+.reply p { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
 
 .empty, .card { display: flex; flex-direction: column; align-items: center; text-align: center; padding: 34px 14px; color: var(--ink-muted); }
 .empty svg, .card svg { color: var(--botanical); }

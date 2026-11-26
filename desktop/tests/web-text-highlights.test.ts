@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { normalizeWebTextHighlight, parseWebSelectionAction, webHighlightUrl } from "../src/shared/web-text-selection";
+import { normalizeWebTextHighlight, parseWebHighlightPointer, parseWebSelectionAction, webHighlightUrl } from "../src/shared/web-text-selection";
+import { FOLLOWED_TONES, followedTone } from "../src/main/browser-text-highlights";
 import { isTabsCommand } from "../src/shared/ipc-contract";
 
 const entry = { id: "mark", start: 4, end: 18, quote: "selected words", prefix: "The ", suffix: " follow." };
@@ -43,4 +44,23 @@ test("trusted popup commands validate colors, notes, sizes and conversation bind
     { type: "browser-answer-state", state: { requestId: "request", selectionId: "mark", content: { pending: "yes" } } },
     { type: "browser-answer-action", action: { requestId: "request", selectionId: "mark", action: "ask", question: "" } },
     { type: "browser-selection-conversation", id: "mark", url: "https://example.com/", conversationId: "other" }]) assert.equal(isTabsCommand(value), false);
+});
+
+test("a hovered or clicked passage crosses from the page as an id and a rectangle only", () => {
+  const hover = (data: unknown) => parseWebHighlightPointer("breadboard-selection://hover?data=" + encodeURIComponent(JSON.stringify(data)));
+  assert.deepEqual(hover({ id: "f0", kind: "follow", rect: { x: 10, y: 20, width: 30, height: 18 } }),
+    { action: "hover", id: "f0", kind: "follow", rect: { x: 10, y: 20, width: 30, height: 18 } });
+  assert.deepEqual(hover({ id: null, kind: "note" }), { action: "hover", id: null, kind: "note", rect: { x: 0, y: 0, width: 0, height: 0 } });
+  assert.equal(hover({ id: "f0", kind: "name", rect: { x: 0, y: 0, width: 1, height: 1 } }), null);
+  assert.equal(hover({ id: "<script>", kind: "note" }), null);
+  assert.equal(hover({ id: "f0", kind: "note", rect: { x: Infinity, y: 0, width: 1, height: 1 } }), null);
+  assert.deepEqual(parseWebHighlightPointer("breadboard-selection://follow?data=" + encodeURIComponent(JSON.stringify({ id: "f2" }))), { action: "follow-open", id: "f2" });
+  assert.equal(parseWebHighlightPointer("breadboard-selection://follow?data=" + encodeURIComponent(JSON.stringify({}))), null);
+  assert.equal(parseWebHighlightPointer("https://example.com/hover"), null);
+});
+
+test("each person you follow keeps one color, never one you highlight with", () => {
+  assert.equal(followedTone("did:plc:alice"), followedTone("did:plc:alice"));
+  assert.ok(new Set(["a", "b", "c", "d", "e", "f", "g", "h"].map(name => followedTone(`did:plc:${name}`))).size > 2, "people spread across the colors");
+  for (const own of ["#8fc3eb", "#8ed09e", "#e99abb", "#b79be9", "#f4e7ad"]) assert.ok(!(FOLLOWED_TONES as readonly string[]).includes(own));
 });

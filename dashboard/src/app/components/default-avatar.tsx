@@ -60,12 +60,7 @@ export function personColor(name: string): string {
   return PERSON_COLORS[hash % PERSON_COLORS.length];
 }
 
-/** A person's disc in a shared workspace chat: their initial on their colour. */
+/** A person in a shared workspace chat: the Crumbs default face, like everywhere else. */
 export function PersonAvatar({ name, size = 36 }: { name: string; size?: number }) {
-  return (
-    <span aria-hidden="true" style={{
-      width: size, height: size, flex: "none", borderRadius: "9999px", background: personColor(name), color: "#fff",
-      display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: size * 0.4, fontWeight: 600,
-    }}>{name.trim().charAt(0).toUpperCase() || "?"}</span>
-  );
+  return <DefaultAvatar name={name} size={size} />;
 }

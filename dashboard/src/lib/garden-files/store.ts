@@ -33,11 +33,6 @@ export function ensureGardenFileSchema(database: Database.Database): void {
     );
     CREATE UNIQUE INDEX IF NOT EXISTS garden_files_live_path ON garden_files(cluster_id,path_key) WHERE deleted_at IS NULL;
     CREATE INDEX IF NOT EXISTS garden_files_listing ON garden_files(cluster_id,deleted_at,visibility);
-    CREATE TABLE IF NOT EXISTS spaces_templates (
-      id TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      name TEXT NOT NULL COLLATE NOCASE, file_id TEXT NOT NULL REFERENCES garden_files(id) ON DELETE CASCADE,
-      version INTEGER NOT NULL, extension TEXT NOT NULL, kind TEXT NOT NULL, UNIQUE(user_id, name)
-    );
     CREATE TABLE IF NOT EXISTS garden_file_versions (
       file_id TEXT NOT NULL REFERENCES garden_files(id) ON DELETE CASCADE, version INTEGER NOT NULL,
       blob TEXT NOT NULL, size INTEGER NOT NULL, sha256 TEXT NOT NULL, created_at TEXT NOT NULL,
@@ -49,6 +44,17 @@ export function ensureGardenFileSchema(database: Database.Database): void {
       PRIMARY KEY(cluster_id,import_key)
     );
   `);
+  database.transaction(() => {
+    const legacy = database.prepare("SELECT 1 FROM pragma_table_info('spaces_templates') WHERE name='file_id'").get();
+    if (legacy) database.exec("ALTER TABLE spaces_templates RENAME TO spaces_templates_source");
+    database.exec(`CREATE TABLE IF NOT EXISTS spaces_templates (
+      id TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      name TEXT NOT NULL COLLATE NOCASE, blob TEXT NOT NULL, extension TEXT NOT NULL, kind TEXT NOT NULL, UNIQUE(user_id,name)
+    )`);
+    if (legacy) database.exec(`INSERT INTO spaces_templates SELECT t.id,t.user_id,t.name,v.blob,t.extension,t.kind
+      FROM spaces_templates_source t JOIN garden_file_versions v ON v.file_id=t.file_id AND v.version=t.version;
+      DROP TABLE spaces_templates_source`);
+  }).immediate();
 }
 
 /** A logical path, never a user-supplied path on the host filesystem. */
@@ -182,7 +188,7 @@ export class GardenFileStore {
   }
 
   discard(stage: StagedGardenFile): void {
-    const used = this.database.prepare("SELECT 1 FROM garden_file_versions WHERE blob = ? LIMIT 1").get(stage.blob);
+    const used = this.database.prepare("SELECT 1 FROM garden_file_versions WHERE blob = ? UNION ALL SELECT 1 FROM spaces_templates WHERE blob = ? LIMIT 1").get(stage.blob,stage.blob);
     if (!used) fs.rmSync(this.blobPath(stage.blob), { force: true });
   }
 

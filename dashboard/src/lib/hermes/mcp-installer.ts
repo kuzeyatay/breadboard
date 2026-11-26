@@ -7,7 +7,7 @@ import { listMcpConnections, mcpSlug, parseMcpConfig, runtimeMcpConfig, saveMcpC
 import { ApiError } from "./route-core.ts";
 import { MCP_INSTALLER_CONNECTION } from "./mcp-installer-context.ts";
 import { resolveHostExecutable, withHostPath } from "../../../scripts/host-path.mjs";
-import { AUTHOR_MCP_TOOL, authorMcpServer } from "./authored-mcp.ts";
+import { AUTHOR_MCP_TOOL, authorMcpServer, readAuthoredMcp } from "./authored-mcp.ts";
 
 /**
  * Built-in connection that lets a chat turn find an MCP server on GitHub and
@@ -21,6 +21,7 @@ const LAUNCHES = ["npx", "uvx", "clone", "remote"] as const;
 
 const TOOLS = [
   AUTHOR_MCP_TOOL,
+  { name:"read_authored", description:"Read an installed custom server's source and revision before editing it.", inputSchema:{type:"object",required:["connection"],properties:{connection:{type:"string"}}} },
   { name: "list_installed", description: "Look up saved MCP servers available to this chat by display name and exact connection slug.", inputSchema: { type: "object", properties: {} } },
   {
     name: "search",
@@ -393,6 +394,11 @@ export async function callMcpInstaller(input: {
   signal?: AbortSignal;
 }): Promise<{ data: unknown; installedSlug?: string }> {
   if (input.tool === "__breadboard_list_tools") return { data: { tools: TOOLS } };
+  if (input.tool === "read_authored") {
+    const slug = String(input.args.connection ?? "");
+    if (!input.selectedConnections?.includes(slug)) throw new ApiError(404,"authored_mcp_missing","Choose an available custom server.");
+    return {data:readAuthoredMcp(input.userId,slug)};
+  }
   if (input.tool === "list_installed") return { data: { connections: listMcpConnections(input.userId, true)
     .filter(connection => input.selectedConnections?.includes(connection.slug))
     .map(({ slug, displayName }) => ({ name: displayName, connection: slug })) } };

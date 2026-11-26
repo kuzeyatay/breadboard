@@ -107,14 +107,14 @@ test("an invalidated in-flight response cannot overwrite newer settings", async 
 });
 
 test("the settings overview prewarms and visited panels stay mounted", () => {
-  const composer = source("../src/app/components/assistant-composer.tsx");
+  const composer = (source("../src/app/components/assistant-intelligence-menu.tsx") + source("../src/app/components/assistant-composer.tsx"));
   const dialog = source("../src/app/components/settings-dialog.tsx");
   const accounts = source("../src/app/components/settings-accounts.tsx");
   const providers = source("../src/app/components/settings-providers.tsx");
 
   assert.match(composer, /window\.setTimeout\(\(\) => \{\s*void preloadSettingsOverview\(\)/);
   assert.match(composer, /settingsMounted \? \(/);
-  assert.match(composer, /open=\{intelligencePanel === 'settings'\}/);
+  assert.match(composer, /open=\{panel === 'settings'\}/);
   assert.match(dialog, /visitedTabs\.has\("memory"\)/);
   assert.match(dialog, /hidden=\{tab !== "memory"\}/);
   assert.match(accounts, /fetchCachedSettings\("\/api\/chatmock\/account"/);

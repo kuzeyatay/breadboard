@@ -143,7 +143,8 @@ test("a typed draft appears in the rail before its first turn is saved", () => {
   );
   assert.match(
     gardenWorkspace,
-    /activeChatId === null && \(input\.trim\(\)\.length > 0 \|\| draftMessages !== null\)/,
+    // A temporary chat never gets a rail row, so its draft does not either.
+    /!temporaryChat &&\s*activeChatId === null &&\s*\(input\.trim\(\)\.length > 0 \|\| draftMessages !== null\)/,
   );
   assert.match(sidebar, /pending\?: boolean;/);
   assert.match(sidebar, /!chat\.pending \? \(/);

@@ -43,10 +43,10 @@ async function browserFixture(t, initialState, { storedWidth } = {}) {
   `);
   mocks.set("@/app/components/hermes/dashboard-agent-terminal", `
     import {useEffect, useState} from 'react';
-    export default function Terminal({initialDraft}) {
+    export default function Terminal({initialDraft, onClose}) {
       const [draft, setDraft] = useState(initialDraft ?? '');
       useEffect(() => { window.terminalMounts = (window.terminalMounts ?? 0) + 1; }, []);
-      return <textarea aria-label="Terminal message" value={draft} onChange={e => setDraft(e.target.value)} />;
+      return <><button type="button" aria-label="Hide assistant" onClick={onClose} /><textarea aria-label="Terminal message" value={draft} onChange={e => setDraft(e.target.value)} /></>;
     }
   `);
   mocks.set("./use-browser-saved-items", "export const useBrowserSavedItems = () => ({items: [], ready: true});");
@@ -120,7 +120,7 @@ test("browser Terminal opens without another script request and preserves its dr
   const composer = page.getByRole("textbox", { name: "Terminal message" });
   await composer.waitFor({ timeout: 2_000 });
   await composer.fill("Keep this unsent draft");
-  await page.locator(".browser-terminal-drawer > .browser-terminal-close").click();
+  await page.getByRole("button", { name: "Hide assistant", exact: true }).click();
   await launcher.click();
   assert.equal(await composer.inputValue(), "Keep this unsent draft");
   assert.equal(await page.evaluate(() => window.terminalMounts), 1);

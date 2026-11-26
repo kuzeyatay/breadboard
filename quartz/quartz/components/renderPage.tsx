@@ -2,7 +2,7 @@ import { render } from "preact-render-to-string"
 import { QuartzComponent, QuartzComponentProps } from "./types"
 import HeaderConstructor from "./Header"
 import BodyConstructor from "./Body"
-import { JSResourceToScriptElement, StaticResources } from "../util/resources"
+import { JSResourceToScriptElement, StaticResources, linkSharedResources } from "../util/resources"
 import { FullSlug, RelativeURL, joinSegments, normalizeHastElement } from "../util/path"
 import { clone } from "../util/clone"
 import { visit } from "unist-util-visit"
@@ -39,12 +39,13 @@ export function pageResources(
     const fetchData = fetch(${JSON.stringify(metadataPath)}).then(response =>
       response.status === 404 ? fetchSearchData() : readContentIndex(response));`
 
+  const shared = linkSharedResources(staticResources, (file) => joinSegments(baseDir, file))
   const resources: StaticResources = {
     css: [
       {
         content: joinSegments(baseDir, "index.css"),
       },
-      ...staticResources.css,
+      ...shared.css,
     ],
     js: [
       {
@@ -58,7 +59,7 @@ export function pageResources(
         spaPreserve: true,
         script: contentIndexScript,
       },
-      ...staticResources.js,
+      ...shared.js,
     ],
     additionalHead: staticResources.additionalHead,
   }

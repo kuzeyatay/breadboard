@@ -91,7 +91,7 @@ test("agent stream watchdog returns data received before the deadline", async ()
   assert.equal(result, "event");
 });
 
-test("agent stream reconnects bounded transport failures but not run timeouts", () => {
+test("agent stream reconnects bounded transport failures and silent streams", () => {
   assert.equal(
     isRecoverableAgentStreamDisconnect(new AgentStreamDisconnectedError()),
     true,
@@ -110,7 +110,14 @@ test("agent stream reconnects bounded transport failures but not run timeouts", 
     isRecoverableAgentStreamDisconnect(
       new AgentStreamTimeoutError("inactivity_timeout"),
     ),
-    false,
+    true,
+  );
+  // A slow reconnect is transport trouble; it must retry, not stop the turn.
+  assert.equal(
+    isRecoverableAgentStreamDisconnect(
+      new AgentStreamTimeoutError("connect_timeout"),
+    ),
+    true,
   );
   assert.equal(agentStreamReconnectDelay(0), 500);
   assert.equal(agentStreamReconnectDelay(5), 16_000);

@@ -328,8 +328,10 @@ test("the panel no longer tells the user to opt in", () => {
   // sign-in buttons it disables, which is the only place it was ever needed.
   const panel = source("src/app/components/settings-accounts.tsx");
   assert.doesNotMatch(panel, /CLIPROXY_MODE=optional/);
-  assert.match(panel, /npm run cliproxy/);
-  assert.match(panel, /subscriptions\?\.installed/);
+  // Runtime V2 owns the proxy, so the fix it names is a restart, not a dev
+  // command, and only the sign-ins that need the proxy are disabled.
+  assert.match(panel, /The subscription proxy is unavailable\. Restart Breadboard to reconnect it\./);
+  assert.match(panel, /subscriptions\?\.running === true/);
 });
 
 test("cliproxy routes authenticate the session and never leak the token", () => {
@@ -400,7 +402,7 @@ test("usage limits are scoped to the plan they actually describe", () => {
   assert.match(popover, /Google-reported model quota/);
   assert.match(popover, /Anthropic-reported subscription usage/);
 
-  const composer = source("src/app/components/assistant-composer.tsx");
+  const composer = (source("src/app/components/assistant-intelligence-menu.tsx") + source("src/app/components/assistant-composer.tsx"));
   assert.match(composer, /activeModel=\{model\}/);
 });
 
@@ -457,7 +459,7 @@ test("model labels drop the routing prefix", async () => {
     "Gemini 3.7 Flash High",
   );
   assert.equal(formatAssistantModelName("gpt-5.6-sol"), "GPT-5.6 Sol");
-  assert.equal(formatAssistantModelName("default"), "Background model");
+  assert.equal(formatAssistantModelName("default"), "Default model");
 });
 
 test("credential filenames yield the account they belong to", () => {
@@ -533,7 +535,7 @@ test("an account connected in either half of the page reaches the other", () => 
 
 test("the Account tab is one list of every account", () => {
   const dialog = source("src/app/components/settings-dialog.tsx");
-  assert.match(dialog, /Every account Breadboard is signed in to/);
+  assert.match(dialog, /label: "Accounts"/);
   // One panel, not a ChatGPT box beside a Subscriptions box — they are the
   // same kind of thing and read as two when split.
   assert.match(dialog, /<SettingsAccounts \/>/);

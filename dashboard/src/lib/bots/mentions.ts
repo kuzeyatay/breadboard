@@ -21,10 +21,11 @@ export const BREAD_BOT = {
 
 /** The handle a bot is mentioned by: its name, lowercased, words joined by "-". */
 export function botHandle(name: string): string {
-  return name
-    .normalize("NFKD")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
+  const lower = name.normalize("NFKD").toLowerCase();
+  const words = /^[\p{Script=Latin}\p{Script=Common}\p{M}]*$/u.test(lower)
+    ? lower.replace(/[^a-z0-9]+/g, "-")
+    : lower.normalize("NFC").replace(/[^\p{L}\p{M}\p{N}]+/gu, "-");
+  return words
     .replace(/^-+|-+$/g, "")
     .slice(0, 60);
 }
@@ -32,7 +33,7 @@ export function botHandle(name: string): string {
 // Fenced code, inline code, and links (with or without a scheme).
 const QUOTED = /```[\s\S]*?(?:```|$)|`[^`\n]*`|\bhttps?:\/\/\S+|\bwww\.\S+|\b[a-z0-9-]+(?:\.[a-z0-9-]+)+\/\S*/gi;
 // "@" not glued to a word, address, or path before it.
-const MENTION = /(?<![\p{L}\p{N}_.@/\\+-])@([a-z0-9](?:[a-z0-9-]*[a-z0-9])?)/giu;
+const MENTION = /(?<![\p{L}\p{N}_.@/\\+-])@([\p{L}\p{N}](?:[\p{L}\p{M}\p{N}-]*[\p{L}\p{M}\p{N}])?)/giu;
 
 /** Handles from `known` that `text` @mentions, in order of first mention, each once. */
 export function mentionedHandles(text: string, known: Iterable<string>): string[] {
@@ -70,7 +71,7 @@ export function mentionQueryAt(
   let end = position;
   while (end < value.length && !/\s/.test(value[end]!)) end += 1;
   const token = value.slice(start, end);
-  if (!/^@[a-z0-9-]*$/i.test(token)) return null;
+  if (!/^@[\p{L}\p{M}\p{N}-]*$/u.test(token)) return null;
   return { query: token.slice(1).toLowerCase(), start, end };
 }
 
