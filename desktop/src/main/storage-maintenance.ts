@@ -1,4 +1,33 @@
 import { powerMonitor, type Session } from "electron";
+import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+
+/** Must match the dashboard's `MAINTENANCE_KEY_HEADER` and key file. */
+export const MAINTENANCE_KEY_HEADER = "x-breadboard-maintenance-key";
+export const MAINTENANCE_KEY_FILE = "storage-maintenance.key";
+
+/**
+ * Every launch signs the dashboard out, so idle maintenance on a locked app
+ * was refused on every tick. A fresh random key per launch, kept in the data
+ * folder's config directory, lets the lifecycle owner run idle ticks without a
+ * session. Written to a temporary name and renamed, so a reader never sees a
+ * partial key; a key from an earlier launch stops working at once.
+ */
+export function issueMaintenanceKey(configDir: string): string | null {
+  try {
+    const key = crypto.randomBytes(32).toString("hex");
+    fs.mkdirSync(configDir, { recursive: true });
+    const target = path.join(configDir, MAINTENANCE_KEY_FILE);
+    const temporary = `${target}.${process.pid}.tmp`;
+    fs.writeFileSync(temporary, key, { encoding: "utf8", mode: 0o600 });
+    fs.renameSync(temporary, target);
+    return key;
+  } catch {
+    // Without a key the signed-in path still works exactly as before.
+    return null;
+  }
+}
 
 export interface StorageCoordinatorOptions {
   dashboardUrl: () => string | null;
@@ -6,6 +35,7 @@ export interface StorageCoordinatorOptions {
   idleSeconds?: () => number;
   fetch?: typeof fetch;
   afterMaintenance?: (result: { housekeepingAllowed: boolean }) => void | Promise<void>;
+  maintenanceKey?: () => string | null;
 }
 
 /** One lifecycle-owned loop; no runtime job or renderer timer is created. */
@@ -28,7 +58,11 @@ export function startStorageMaintenance(options: StorageCoordinatorOptions): () 
       const response = await request(url, {
         method: "POST", redirect: "error", cache: "no-store",
         signal: AbortSignal.any([pending.signal, AbortSignal.timeout(10_000)]),
-        headers: { "Content-Type": "application/json", Cookie: cookies.map(cookie => `${cookie.name}=${cookie.value}`).join("; ") },
+        headers: {
+          "Content-Type": "application/json",
+          Cookie: cookies.map(cookie => `${cookie.name}=${cookie.value}`).join("; "),
+          ...(options.maintenanceKey?.() ? { [MAINTENANCE_KEY_HEADER]: options.maintenanceKey()! } : {}),
+        },
         body: JSON.stringify({ action: "tick", idleMs: idleSeconds() * 1000 }),
       });
       if (response.ok) {

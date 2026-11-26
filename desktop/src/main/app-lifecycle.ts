@@ -20,7 +20,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import { LogManager } from "./log-manager";
-import { startStorageMaintenance } from "./storage-maintenance";
+import { issueMaintenanceKey, startStorageMaintenance } from "./storage-maintenance";
 import { runRequestedStorageCompaction } from "./storage-compaction";
 import { cleanReleasedInstallationDownloads } from "../shared/released-downloads";
 import { initializeAppSession, signOutDashboard } from "./app-session";
@@ -300,6 +300,7 @@ export class AppLifecycle {
   private runtime: RuntimeProcess | null = null;
   private sourceRepairActivator: SourceRepairActivator | null = null;
   private runtimeDashboardUrl: string | null = null;
+  private storageMaintenanceKey: string | null = null;
   private readonly spotifyViews = new Map<number, { origin: string; client: SpotifyViewLeases }>();
   private spotifyAppHold: { origin: string; viewId: string; client: SpotifyViewLeases } | null = null;
   private allowedOrigins!: AllowedOrigins;
@@ -418,6 +419,7 @@ export class AppLifecycle {
     const stopStorageMaintenance = startStorageMaintenance({
       dashboardUrl: () => this.runtimeDashboardUrl,
       session: session.defaultSession,
+      maintenanceKey: () => this.storageMaintenanceKey,
       afterMaintenance: async result => {
         if (result.housekeepingAllowed) {
           this.logs?.prune();
@@ -444,6 +446,7 @@ export class AppLifecycle {
       moduleDir: this.moduleDir,
     });
     ensureMutableDirectories(this.paths);
+    this.storageMaintenanceKey = issueMaintenanceKey(this.paths.configDir);
 
     // Refuse a data root a newer Breadboard already migrated; running an older
     // app over it is how workspaces get corrupted.

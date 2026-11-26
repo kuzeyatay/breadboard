@@ -69,3 +69,44 @@ test("one idle coordinator neither starts on launch nor overlaps requests, and a
     finish();await new Promise(resolve=>setImmediate(resolve));
   } finally {stop();t.mock.timers.reset();}
 });
+
+test("a locked app's idle tick carries the per-launch key, which the dashboard accepts only while it is current",async(t)=>{
+  const dataRoot=fs.mkdtempSync(path.join(os.tmpdir(),"bb-maintenance-key-")),configDir=path.join(dataRoot,"config");
+  const keys=await (async()=>{
+    const result=await build({entryPoints:[path.resolve(import.meta.dirname,"../src/lib/storage/maintenance-key.ts")],bundle:true,platform:"node",format:"cjs",packages:"external",write:false});
+    const module={exports:{}};new Function("require","module","exports",result.outputFiles[0].text)(createRequire(import.meta.url),module,module.exports);return module.exports;
+  })();
+  t.mock.timers.enable({apis:["setInterval","Date"]});
+  try {
+    const key=coordinator.issueMaintenanceKey(configDir);
+    assert.match(key,/^[a-f0-9]{64}$/u);
+    assert.equal(coordinator.MAINTENANCE_KEY_HEADER,keys.MAINTENANCE_KEY_HEADER);
+    assert.equal(path.join(configDir,coordinator.MAINTENANCE_KEY_FILE),keys.maintenanceKeyPath(dataRoot));
+    let presented;
+    const stop=coordinator.startStorageMaintenance({dashboardUrl:()=>"http://127.0.0.1:4444",idleSeconds:()=>600,maintenanceKey:()=>key,
+      session:{cookies:{get:async()=>[]}},fetch:async(_url,init)=>{presented=new Request("http://127.0.0.1:4444/api/storage/maintenance",{method:"POST",headers:init.headers});return new Response('{"housekeepingAllowed":true}',{headers:{"content-type":"application/json"}});}});
+    try {t.mock.timers.tick(15000);await new Promise(resolve=>setImmediate(resolve));await new Promise(resolve=>setImmediate(resolve));} finally {stop();}
+    assert.ok(presented,"the idle tick was sent");
+    assert.equal(keys.desktopMaintenanceAuthorized(presented,dataRoot),true);
+    const asking=value=>new Request("http://127.0.0.1:4444/",{headers:value===undefined?{}:{[keys.MAINTENANCE_KEY_HEADER]:value}});
+    assert.equal(keys.desktopMaintenanceAuthorized(asking(undefined),dataRoot),false);
+    assert.equal(keys.desktopMaintenanceAuthorized(asking("f".repeat(64)),dataRoot),false);
+    assert.equal(keys.desktopMaintenanceAuthorized(asking(key.toUpperCase()),dataRoot),false);
+    assert.equal(keys.desktopMaintenanceAuthorized(asking(key+"0"),dataRoot),false);
+    // The next launch's key replaces it; the old one stops working at once.
+    const next=coordinator.issueMaintenanceKey(configDir);
+    assert.notEqual(next,key);
+    assert.equal(keys.desktopMaintenanceAuthorized(asking(key),dataRoot),false);
+    assert.equal(keys.desktopMaintenanceAuthorized(asking(next),dataRoot),true);
+    assert.deepEqual(fs.readdirSync(configDir),[coordinator.MAINTENANCE_KEY_FILE],"no partial key file is left behind");
+    // No key file, no access.
+    fs.rmSync(path.join(configDir,coordinator.MAINTENANCE_KEY_FILE));
+    assert.equal(keys.desktopMaintenanceAuthorized(asking(next),dataRoot),false);
+  } finally {t.mock.timers.reset();assert.ok(path.resolve(dataRoot).startsWith(path.resolve(os.tmpdir())+path.sep));fs.rmSync(dataRoot,{recursive:true,force:true});}
+});
+
+test("the desktop maintenance key unlocks only the idle tick of the storage route",()=>{
+  const source=fs.readFileSync(path.resolve(import.meta.dirname,"../src/app/api/storage/maintenance/route.ts"),"utf8");
+  assert.match(source,/const desktop = desktopMaintenanceAuthorized\(request\);\s*if \(!desktop\) assertStorageOwner\(db, await requireUserId\(\)\);/u);
+  assert.match(source,/if \(desktop && body\.action !== "tick"\)[\s\S]*?status: 403/u);
+});

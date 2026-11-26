@@ -3,6 +3,10 @@ export const STORAGE_POLICY = Object.freeze({
   version: 1,
   idleMs: 120_000,
   sliceMs: 250,
+  // Runtime retention per idle tick: several bounded runtime slices, each
+  // releasing its lock. One 150 ms slice a second drained a real 790k-record
+  // backlog at ~2.4 records/s, about 90 idle hours.
+  runtimeTickMs: 1_000,
   ioBytesPerSecond: 10 * 1024 * 1024,
   reserveBytes: 2 * 1024 ** 3,
   coldDays: 7,

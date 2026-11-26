@@ -87,7 +87,22 @@ export async function runStorageMaintenance(input: { action: "tick" | "clean" | 
     // The scheduler starts a job every few seconds, so "busy" is the usual
     // answer. It postpones housekeeping only: returning here also skipped the
     // measurement below, which is why Settings never showed a finished scan.
-    const runtime = input.action !== "scan" ? await maintainRuntimeStorage() : undefined;
+    let runtime = input.action !== "scan" ? await maintainRuntimeStorage() : undefined;
+    const progress = (report: NonNullable<typeof runtime>) => report.jobsPruned + report.directoriesRemoved + (report.eventsArchived ?? 0);
+    if (runtime && !runtime.busy && progress(runtime) > 0) {
+      // While it keeps finding work, give the runtime more bounded slices in
+      // this tick. A returning user aborts the request; at most the slice in
+      // flight finishes.
+      const until = Date.now() + STORAGE_POLICY.runtimeTickMs;
+      while (Date.now() < until && !input.signal?.aborted) {
+        const next = await maintainRuntimeStorage();
+        if (!next || next.busy) break;
+        runtime = { ...runtime, inspected: runtime.inspected + next.inspected, jobsPruned: runtime.jobsPruned + next.jobsPruned,
+          directoriesRemoved: runtime.directoriesRemoved + next.directoriesRemoved, protected: runtime.protected + next.protected,
+          eventsArchived: (runtime.eventsArchived ?? 0) + (next.eventsArchived ?? 0) };
+        if (progress(next) === 0) break;
+      }
+    }
     if (runtime?.busy) result.skipped.push("The runtime is busy.");
     if (input.action !== "scan" && !runtime?.busy) {
       result.housekeepingAllowed = true;
