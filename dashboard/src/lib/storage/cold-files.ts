@@ -18,6 +18,8 @@ import { nativeWorkspaceFile } from "./workspace-native.ts";
  */
 
 // Owned roots, relative to the data folder. Anything else is left alone.
+export const COLD_FILE_ROOTS = Object.freeze(["quartz", "cad-projects", "artifacts", "chat-documents", "recall",
+  "runtime/scriberr", "runtime/hermes", "openscience-state", "exports", "outputs"]);
 const ROOTS = /^(?:quartz|cad-projects|artifacts|chat-documents|recall|runtime\/scriberr|runtime\/hermes|openscience-state|exports|outputs)\//u;
 // Trees with their own owner, live state, executable code or browser profiles.
 const EXCLUDED = /^(?:runtime\/hermes-workspaces|runtime\/jobs|runtime-v2|database|config|Partitions|Local Storage|agent-runtime|code)\/|\/(?:node_modules|\.git|\.venv|venv|site-packages|__pycache__|models)\/|\/\.restore-|\/cache\//u;
@@ -60,6 +62,47 @@ export function enqueueColdFile(db: Database.Database, relative: string, stat: B
       state='pending',saved_bytes=0,checked_at=0,detail=NULL
     WHERE identity<>excluded.identity OR modified_ms<>excluded.modified_ms OR byte_length<>excluded.byte_length`)
     .run(relative.replaceAll("\\", "/"), fileIdentity(stat), Number(stat.mtimeMs), Number(stat.size));
+}
+
+type ScannerLike = { readonly result: { complete: boolean }; step(shouldYield: () => boolean, maximumEntries: number,
+  onFile: (relative: string, stat: BigIntStats) => void): Promise<unknown> };
+
+/**
+ * The warm tier walks only its own roots. Waiting for the whole data-folder
+ * inventory meant waiting behind millions of runtime job files (23,000 files
+ * in ten idle minutes on a real install, restarting with every launch), so it
+ * never saw a candidate. One root at a time; after a full pass it rests a week.
+ */
+export class ColdFileScan {
+  private index = 0;
+  private scanner: ScannerLike | null = null;
+  private restingUntil = 0;
+  private readonly create: (absoluteRoot: string) => ScannerLike;
+  private readonly roots: readonly string[];
+  constructor(create: (absoluteRoot: string) => ScannerLike, roots: readonly string[] = COLD_FILE_ROOTS) {
+    this.create = create;
+    this.roots = roots;
+  }
+  async step(db: Database.Database, root: string, shouldYield: () => boolean, now = Date.now()): Promise<void> {
+    if (now < this.restingUntil) return;
+    while (!shouldYield()) {
+      if (this.index >= this.roots.length) {
+        this.index = 0;
+        this.restingUntil = now + 7 * DAY_MS;
+        return;
+      }
+      const relativeRoot = this.roots[this.index];
+      const absolute = `${root}/${relativeRoot}`;
+      if (!this.scanner) {
+        if (!fs.existsSync(absolute)) { this.index++; continue; }
+        this.scanner = this.create(absolute);
+      }
+      await this.scanner.step(shouldYield, 2048, (relative, stat) => enqueueColdFile(db, `${relativeRoot}/${relative.replaceAll("\\", "/")}`, stat));
+      if (!this.scanner.result.complete) return;
+      this.scanner = null;
+      this.index++;
+    }
+  }
 }
 
 export function coldFileStatus(db: Database.Database) {

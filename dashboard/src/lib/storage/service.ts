@@ -16,9 +16,9 @@ import { indexAttachmentReferences, attachmentIndexComplete } from "./attachment
 import { learnWorkspaceGardenSlugs, pruneSupersededLearnBuildWorkspaces } from "../learn-build-workspace.ts";
 import { readStorageCompaction, requestStorageCompaction } from "./compaction-state.ts";
 import { WorkspaceStorageWorker, enqueueWorkspaceCandidate, workspaceStorageStatus, collectWorkspaceStorage } from "./workspace-storage.ts";
-import { ColdFileWorker, coldFileStatus, enqueueColdFile } from "./cold-files.ts";
+import { ColdFileScan, ColdFileWorker, coldFileStatus, enqueueColdFile } from "./cold-files.ts";
 
-const state = globalThis as typeof globalThis & { breadboardStorageScanner?: StorageScanner; breadboardImmutableWorker?: ImmutableFileWorker; breadboardColdWorker?: ColdPayloadWorker; breadboardWorkspaceWorker?: WorkspaceStorageWorker; breadboardColdFileWorker?: ColdFileWorker; breadboardStoragePhase?: number; breadboardStorageGarden?: number };
+const state = globalThis as typeof globalThis & { breadboardStorageScanner?: StorageScanner; breadboardImmutableWorker?: ImmutableFileWorker; breadboardColdWorker?: ColdPayloadWorker; breadboardWorkspaceWorker?: WorkspaceStorageWorker; breadboardColdFileWorker?: ColdFileWorker; breadboardColdFileScan?: ColdFileScan; breadboardStoragePhase?: number; breadboardStorageGarden?: number };
 const workspaceScanState = globalThis as typeof globalThis & { breadboardWorkspaceScanner?: StorageScanner };
 
 const chatUsage = new WeakMap<StorageScanner, ChatUsage>();
@@ -179,6 +179,11 @@ export async function runStorageMaintenance(input: { action: "tick" | "clean" | 
       if (!shouldYield()) {
         state.breadboardColdFileWorker ??= new ColdFileWorker();
         result.payloadBytesSaved += await state.breadboardColdFileWorker.step(db, root, shouldYield, input.signal);
+      }
+      // Its own scan of the warm-tier roots feeds the worker above.
+      if (!shouldYield()) {
+        state.breadboardColdFileScan ??= new ColdFileScan(absolute => new StorageScanner(absolute));
+        await state.breadboardColdFileScan.step(db, root, shouldYield);
       }
       // Incremental vacuum never upgrades an existing database on startup.
       if (!shouldYield() && db.pragma("auto_vacuum", { simple: true }) === 2) db.pragma("incremental_vacuum(32)");

@@ -122,3 +122,38 @@ test("Windows compresses in place: same bytes, same path and timestamp, edits st
   fs.appendFileSync(file, "<!-- edited -->");
   assert.equal(fs.readFileSync(file, "utf8").endsWith("<!-- edited -->"), true);
 });
+
+test("the warm tier scans only its own roots, one at a time, and rests after a full pass", async () => {
+  const { StorageScanner } = await load("../src/lib/storage/filesystem.ts");
+  const root = fs.mkdtempSync(path.join(path.resolve(os.tmpdir()), "breadboard-cold-scan-")), db = new Database(":memory:");
+  try {
+    cold.ensureColdFileSchema(db);
+    const write = (relative, bytes = 64 * 1024) => {
+      const file = path.join(root, relative); fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, "x".repeat(bytes)); fs.utimesSync(file, new Date(old), new Date(old));
+    };
+    write("quartz/public/garden/page.html");
+    write("artifacts/1/a1/v1/report.md");
+    write("runtime/jobs/job_1/result.json");        // a runtime-owned tree: never scanned
+    write("quartz/node_modules/pkg/index.js");       // excluded inside a warm root
+    for (let i = 0; i < 3000; i++) write(`outputs/batch/${i}.txt`, 20 * 1024);
+    const scan = new cold.ColdFileScan(absolute => new StorageScanner(absolute));
+    const rows = () => db.prepare("SELECT relative_path FROM storage_cold_files ORDER BY relative_path").all().map(row => row.relative_path);
+    let deadline = Date.now() + 10_000, passes = 0;
+    while (rows().length < 3002 && passes++ < 50) await scan.step(db, root, () => Date.now() > deadline);
+    const found = rows();
+    assert.ok(found.includes("quartz/public/garden/page.html"));
+    assert.ok(found.includes("artifacts/1/a1/v1/report.md"));
+    assert.equal(found.filter(name => name.startsWith("outputs/")).length, 3000, "a large root is finished across passes");
+    assert.ok(!found.some(name => name.startsWith("runtime/jobs") || name.includes("node_modules")));
+    // After a full pass it rests: a new file is not picked up until the week is over.
+    await scan.step(db, root, () => false);
+    write("quartz/public/garden/later.html");
+    await scan.step(db, root, () => false);
+    assert.ok(!rows().includes("quartz/public/garden/later.html"));
+    await scan.step(db, root, () => false, Date.now() + 8 * DAY);
+    assert.ok(rows().includes("quartz/public/garden/later.html"));
+    // The scan only records candidates; every file is exactly as it was.
+    assert.equal(fs.readFileSync(path.join(root, "quartz/public/garden/page.html"), "utf8").length, 64 * 1024);
+  } finally { db.close(); fs.rmSync(root, { recursive: true, force: true }); }
+});
