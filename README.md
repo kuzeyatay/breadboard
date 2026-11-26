@@ -6,7 +6,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/platform-Windows_10%2F11_x64-0078d4" alt="Platform: Windows 10 and 11, x64">
-  <img src="https://img.shields.io/badge/license-MIT-3f7d5c" alt="License: MIT">
+  <img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial-3f7d5c" alt="License: PolyForm Noncommercial 1.0.0">
   <img src="https://img.shields.io/badge/runtime-local--first-3f7d5c" alt="Local-first runtime">
 </p>
 
@@ -164,7 +164,9 @@ editing, transcription and connected communication tools.
 
 ## License
 
-Breadboard is released under the [MIT License](LICENSE). The upstream projects
+Breadboard is released under the [PolyForm Noncommercial License 1.0.0](LICENSE):
+you may use, modify, and share it freely for any noncommercial purpose, but you
+may not sell it or use it to make money. The upstream projects
 it bundles keep their own licenses; the installer ships them under
 `resources/licenses`, and [docs/VENDORED_REPOSITORIES.md](docs/VENDORED_REPOSITORIES.md)
 lists every snapshot with its revision and license.
