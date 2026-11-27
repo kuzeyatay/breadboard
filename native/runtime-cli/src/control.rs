@@ -53,9 +53,15 @@ const MAX_ACTIVE_CONNECTIONS: usize =
     MAX_ACTIVE_DASHBOARD_CONNECTIONS + MIN_LIFECYCLE_CONNECTION_RESERVE;
 // A development compiler can pause its Node event loop after Undici connects
 // but before it writes the first request byte. Both development modes get a
-// bounded compiler-stall allowance; Packaged retains the strict two-second
-// prelude. Once headers arrive, every mode uses the strict body deadline.
-const REQUEST_PRELUDE_DEADLINE: Duration = Duration::from_secs(2);
+// bounded compiler-stall allowance. Packaged has no compiler, but a slow or
+// memory-starved machine stalls the dashboard's event loop too: at two seconds
+// an installed copy reset its own control connections during startup
+// (`stage=prelude class=deadline`, then ECONNRESET and an unhandled rejection
+// in the dashboard). Ten seconds still bounds how long a silent connection
+// holds a handler, and the dashboard's two pools (24 connections) stay below
+// the 32 dashboard handlers. Once headers arrive, every mode uses the strict
+// body deadline.
+const REQUEST_PRELUDE_DEADLINE: Duration = Duration::from_secs(10);
 const DEVELOPMENT_REQUEST_PRELUDE_DEADLINE: Duration = Duration::from_secs(60);
 const REQUEST_DEADLINE: Duration = Duration::from_secs(2);
 const RESPONSE_WRITE_DEADLINE: Duration = Duration::from_secs(2);
