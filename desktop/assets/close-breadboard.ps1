@@ -46,7 +46,11 @@ function Is-BreadboardAppFolder([string]$dir) {
   $hasResources = (Test-Path -LiteralPath (Join-Path $dir "resources\app.asar")) -or
                   (Test-Path -LiteralPath (Join-Path $dir "resources\app-services")) -or
                   (Test-Path -LiteralPath (Join-Path $dir "resources.pak"))
-  if (-not ($hasExe -and $hasResources)) { return $false }
+  # A replacement interrupted by a held file leaves resources\ without the
+  # executables; on Retry the same (target or registered) folder still counts.
+  $leftover = (-not $hasExe) -and (Test-Path -LiteralPath (Join-Path $dir "resources") -PathType Container) -and
+              @(Get-ChildItem -LiteralPath $dir -Force | Where-Object { $_.Name -ne "resources" }).Count -eq 0
+  if (-not (($hasExe -and $hasResources) -or $leftover)) { return $false }
   # Never a data folder: those hold the database and runtime store.
   if ((Test-Path -LiteralPath (Join-Path $dir "Data\database")) -or
       (Test-Path -LiteralPath (Join-Path $dir "Data\runtime-v2"))) { return $false }
@@ -168,6 +172,33 @@ foreach ($dir in $roots) {
   }
 }
 if ($remaining.Count -gt 0) {
+  # Name the program holding them (Windows Restart Manager), so the person
+  # knows what to close instead of guessing.
+  $holders = @()
+  try {
+    Add-Type -Language CSharp @'
+using System; using System.Runtime.InteropServices; using System.Collections.Generic;
+public static class BreadboardRm {
+  [StructLayout(LayoutKind.Sequential)] struct UNIQUE_PROCESS { public int Pid; public System.Runtime.InteropServices.ComTypes.FILETIME Start; }
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] struct INFO {
+    public UNIQUE_PROCESS Process; [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)] public string App;
+    [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 64)] public string Svc; public int Type; public int Status; public int Session; [MarshalAs(UnmanagedType.Bool)] public bool Restartable; }
+  [DllImport("rstrtmgr.dll", CharSet = CharSet.Unicode)] static extern int RmStartSession(out uint h, int f, string key);
+  [DllImport("rstrtmgr.dll")] static extern int RmEndSession(uint h);
+  [DllImport("rstrtmgr.dll", CharSet = CharSet.Unicode)] static extern int RmRegisterResources(uint h, uint n, string[] files, uint a, UNIQUE_PROCESS[] p, uint s, string[] svc);
+  [DllImport("rstrtmgr.dll")] static extern int RmGetList(uint h, out uint need, ref uint n, [In, Out] INFO[] info, ref uint reasons);
+  public static List<string> Holders(string[] files) {
+    var r = new List<string>(); uint h; if (RmStartSession(out h, 0, Guid.NewGuid().ToString()) != 0) return r;
+    try { if (RmRegisterResources(h, (uint)files.Length, files, 0, null, 0, null) != 0) return r;
+      uint need = 0, n = 0, reasons = 0; RmGetList(h, out need, ref n, null, ref reasons);
+      if (need == 0) return r; var info = new INFO[need]; n = need;
+      if (RmGetList(h, out need, ref n, info, ref reasons) != 0) return r;
+      for (int i = 0; i < n; i++) r.Add(info[i].App + " (process " + info[i].Process.Pid + ")"); }
+    finally { RmEndSession(h); } return r; } }
+'@
+    $holders = [BreadboardRm]::Holders([string[]]$remaining) | Select-Object -Unique
+  } catch { }
+  if ($holders.Count -gt 0) { "held open by: " + ($holders -join ", ") }
   "files that are still in use:"
   $remaining
   exit 1
