@@ -111,7 +111,7 @@ test("producers and electron-builder agree that native artifacts stage in resour
 test("electron-builder preserves immutable zero-byte closure markers", () => {
   for (const relative of [
     "deer-flow/backend/packages/harness/deerflow/persistence/migrations/versions/.gitkeep",
-    "dashboard/node_modules/mem0ai/node_modules/openai/node_modules/node-fetch/node_modules/whatwg-url/node_modules/tr46/lib/.gitkeep",
+    "dashboard/node_modules/mem0ai/node_modules/tr46/lib/.gitkeep",
   ]) {
     assert.match(
       electronBuilder,

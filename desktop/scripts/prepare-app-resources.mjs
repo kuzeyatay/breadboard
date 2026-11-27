@@ -5268,6 +5268,28 @@ const STAGED_BARE_IMPORT_EXCEPTIONS = new Set([
     fail(`Staged scripts import packages that do not resolve from where they are installed:\n  ${unresolved.join("\n  ")}`);
   }
 }
+// electron-builder's directory walker always drops `.gitkeep`, so each one in
+// a staged package must be copied by its own electron-builder.yml entry, or a
+// pinned closure (Mem0's tr46/lib/.gitkeep) comes out one file short after
+// hoisting moves the package. Fail here instead of after the installer build.
+{
+  const builderConfig = fs.readFileSync(path.join(desktopRoot, "electron-builder.yml"), "utf8");
+  const unmapped = [];
+  const walk = (directory) => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const file = path.join(directory, entry.name);
+      if (entry.isDirectory()) walk(file);
+      else if (entry.name === ".gitkeep") {
+        const relative = path.relative(stagingRoot, file).split(path.sep).join("/");
+        if (!builderConfig.includes(`to: app-services/${relative}`)) unmapped.push(relative);
+      }
+    }
+  };
+  walk(path.join(stagingRoot, "dashboard", "node_modules"));
+  if (unmapped.length) {
+    fail(`electron-builder will drop these staged .gitkeep files; map each in electron-builder.yml:\n  ${unmapped.join("\n  ")}`);
+  }
+}
 scanForbidden(stagingRoot);
 
 // Manifests live beside bundled executable runtimes, not beneath app-services.
