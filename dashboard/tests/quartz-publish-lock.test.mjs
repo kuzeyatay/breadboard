@@ -466,3 +466,62 @@ test("sealed worker cancellation never promotes a partial Quartz build", async (
     fs.rmSync(temporaryRoot, { recursive: true, force: true });
   }
 });
+
+test(
+  "a note deleted during the build is rebuilt from the settled library, not failed",
+  { timeout: 20_000 },
+  async () => {
+    const temporaryRoot = fs.mkdtempSync(
+      path.join(os.tmpdir(), "breadboard-quartz-vanish-test-"),
+    );
+    try {
+      const fixture = createQuartzFixture(temporaryRoot);
+      const marker = path.join(fixture.quartzRoot, "vanished-once");
+      fs.writeFileSync(
+        path.join(fixture.quartzRoot, "quartz", "bootstrap-cli.mjs"),
+        [
+          'import fs from "node:fs";',
+          'import path from "node:path";',
+          `const marker = ${JSON.stringify(marker)};`,
+          'const output = process.argv.find((value) => value.startsWith("--output="))?.slice(9);',
+          'fs.mkdirSync(output, { recursive: true });',
+          'fs.writeFileSync(path.join(output, "partial.html"), "partial");',
+          "if (!fs.existsSync(marker)) {",
+          '  fs.writeFileSync(marker, "1");',
+          "  console.error(\"Failed to process markdown `content/mendix/_index.md`: ENOENT: no such file or directory, open 'content/mendix/_index.md'\");",
+          "  process.exit(1);",
+          "}",
+          'fs.writeFileSync(path.join(output, "index.html"), "built");',
+        ].join("\n"),
+        "utf8",
+      );
+      const publisherScript = path.join(temporaryRoot, "publish.mjs");
+      fs.writeFileSync(
+        publisherScript,
+        [
+          `import { createSealedRuntimeV2QuartzPublishExecutor } from ${JSON.stringify(executorUrl)};`,
+          'import path from "node:path";',
+          `const dataRoot = ${JSON.stringify(fixture.dataRoot)};`,
+          "const start = JSON.parse(await import('node:fs').then(({ readFileSync }) => readFileSync('start.json', 'utf8')));",
+          "const workspacePath = path.join(process.cwd(), 'workspace');",
+          "const execute = createSealedRuntimeV2QuartzPublishExecutor({ identity: start.identity, dataRoot, contentPath: `${dataRoot}/quartz/content`, sourceRoot: `${dataRoot}/quartz`, workspacePath, signal: undefined });",
+          "await execute({ reasons: ['vanish-test'], concurrency: 1, timeoutMs: 10000, buildEnvironment: {} });",
+        ].join("\n"),
+        "utf8",
+      );
+      const layout = workerLayout(fixture.dataRoot, {
+        jobId: "job_quartz_vanish",
+        attempt: 1,
+        workerInstanceId: "worker_quartz_vanish",
+      });
+      await runPublisher(publisherScript, layout.attemptRoot);
+      assert.ok(fs.existsSync(marker), "the first build saw the note vanish");
+      assert.equal(
+        fs.readFileSync(path.join(fixture.quartzRoot, "public", "index.html"), "utf8"),
+        "built",
+      );
+    } finally {
+      fs.rmSync(temporaryRoot, { recursive: true, force: true });
+    }
+  },
+);

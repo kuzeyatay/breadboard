@@ -987,6 +987,31 @@ function runBuildChild({
   });
 }
 
+// A Garden edited during a build can delete or rename a note after Quartz
+// listed it ("Failed to process markdown ...: ENOENT"). The library itself is
+// fine, so rebuild from the settled tree instead of failing the publication
+// (and leaving no current publication for the next save). The stage is this
+// transaction's own fenced output, never user content.
+const VANISHED_CONTENT_RETRIES = 2;
+function isVanishedContentFailure(error) {
+  const message = String(error?.message ?? "");
+  return /Failed to process markdown/u.test(message) && /ENOENT/u.test(message);
+}
+async function runBuildChildOverSettlingContent(stagePath, options) {
+  // Every attempt shares the one build budget, so a retry never outlives it.
+  const deadline = Date.now() + options.timeoutMs;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await runBuildChild({ ...options, timeoutMs: Math.max(1, deadline - Date.now()) });
+    } catch (error) {
+      if (attempt >= VANISHED_CONTENT_RETRIES || !isVanishedContentFailure(error)) throw error;
+      if (options.signal?.aborted || deadline - Date.now() < MIN_BUILD_TIMEOUT_MS) throw error;
+      console.warn("[quartz] A note changed during the build; rebuilding from the settled library.");
+      fs.rmSync(stagePath, { recursive: true, force: true });
+    }
+  }
+}
+
 function scopeContains(scope, relativePosixPath) {
   return scope.some(
     (root) => relativePosixPath === root || relativePosixPath.startsWith(`${root}/`),
@@ -1224,7 +1249,7 @@ async function runSealedQuartzPublication(attestation, rawOptions) {
     }
     atomicWriteJson(journalPath, transaction);
     try {
-      await runBuildChild({
+      await runBuildChildOverSettlingContent(stagePath, {
         quartzRoot,
         sourceRoot: attestation.sourceRoot,
         cliPath,
