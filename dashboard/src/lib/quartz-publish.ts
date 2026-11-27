@@ -330,7 +330,10 @@ async function waitForQuartzPublication(
   if (!isQuartzPublishJob(initialJob)) {
     throw new Error("Runtime returned a job outside the Quartz publication contract.");
   }
-  const deadline = Date.now() + timeoutMs + 5 * 60_000;
+  // The executor widens a scoped save to a whole-library rebuild when the
+  // renderer changed, and gives that build up to MAX_BUILD_TIMEOUT_MS; the
+  // job's own terminal state, not this wait, decides the result.
+  const deadline = Date.now() + Math.max(timeoutMs, MAX_BUILD_TIMEOUT_MS) + 5 * 60_000;
   let job = initialJob;
   while (!TERMINAL_STATES.has(job.state)) {
     if (Date.now() >= deadline) {

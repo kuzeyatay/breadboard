@@ -1234,7 +1234,12 @@ async function runSealedQuartzPublication(attestation, rawOptions) {
         // ceiling in that case. One parser keeps full rebuilds inside it;
         // ordinary scoped publications retain their requested parallelism.
         concurrency: scope.length > 0 ? options.concurrency : 1,
-        timeoutMs: options.timeoutMs,
+        // A whole-library rebuild with one parser takes far longer than a
+        // scoped save: on a real library 17 to 25 minutes, so the default 30
+        // minutes timed out 32 times, and each failure left no current
+        // publication, so the next save rebuilt everything again. Widened
+        // publications get the maximum, inside the worker's 65 minute ceiling.
+        timeoutMs: scope.length > 0 ? options.timeoutMs : Math.max(options.timeoutMs, MAX_BUILD_TIMEOUT_MS),
         buildEnvironment: options.buildEnvironment,
         scope,
         signal: attestation.signal,

@@ -152,7 +152,7 @@ test(
         assert.ok(activeBuilds >= 0);
         if (record.event === "start") {
           assert.ok(
-            record.execArgv.includes("--max-old-space-size=7168"),
+            record.execArgv.includes("--max-old-space-size=5120"),
             "the sealed Quartz child must have enough bounded heap for large gardens",
           );
         }
