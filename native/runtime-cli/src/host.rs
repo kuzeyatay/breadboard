@@ -4,6 +4,7 @@ use crate::control::{
     RuntimeServiceControl,
 };
 use crate::durable_job_control::DurableRuntimeJobControl;
+use crate::retention_pacer::RetentionPacer;
 use crate::service_engine::ServiceEngine;
 use crate::shutdown::ShutdownCoordinator;
 use crate::worker_dispatcher::{WorkerDispatcher, WorkerDispatcherConfig, WorkerDispatcherError};
@@ -391,6 +392,8 @@ fn run_after_bootstrap(
             return Err(HostError::WorkerDispatcher(error));
         }
     };
+    let mut retention =
+        RetentionPacer::start(Arc::clone(&store), context.paths.clone(), Arc::clone(&shutdown));
     let job_control =
         DurableRuntimeJobControl::new(registry, Arc::clone(&store), context.paths.clone());
     let serve_result = run_prepared_runtime(
@@ -401,6 +404,7 @@ fn run_after_bootstrap(
         context.mode,
     );
     shutdown.request_shutdown();
+    retention.shutdown();
     let dispatcher_result = dispatcher.shutdown().map_err(HostError::WorkerDispatcher);
     let engine_result = prepared.shutdown().map_err(HostError::EngineShutdown);
     dispatcher_result?;

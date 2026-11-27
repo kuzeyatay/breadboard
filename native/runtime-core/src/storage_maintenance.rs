@@ -150,6 +150,16 @@ fn verified_noop(schedule: &str, result: &Value) -> bool {
     let Some(object) = result.as_object() else {
         return false;
     };
+    // Fields a schedule added later, so older and newer receipts differ only by
+    // their presence. Each still has to be exactly zero when present: about
+    // 49,000 receipts of these two shapes were otherwise protected forever.
+    let optional_zero: &[&str] = match schedule {
+        // `handedBack` (runs returned to their owner) arrived after `dispatched`.
+        "scheduled-chats" => &["handedBack"],
+        // Older reaper builds reported only `resumed`.
+        "hermes-abandoned-run-recovery" => &["reconciled"],
+        _ => &[],
+    };
     let zero_fields: &[&str] = match schedule {
         "review-scheduler" => &["considered", "sent"],
         "scheduled-chats" => &["dispatched"],
@@ -169,7 +179,7 @@ fn verified_noop(schedule: &str, result: &Value) -> bool {
                     .and_then(Value::as_array)
                     .is_some_and(|errors| errors.is_empty())
         }
-        "hermes-abandoned-run-recovery" => &["resumed", "reconciled"],
+        "hermes-abandoned-run-recovery" => &["resumed"],
         "memory-autofetch" => &["users", "written"],
         "email-poll" => &["fetched", "answered", "ignored", "errors"],
         "skills-catalog-refresh" => {
@@ -196,10 +206,12 @@ fn verified_noop(schedule: &str, result: &Value) -> bool {
         }
         _ => return false,
     };
-    object.len() == zero_fields.len() + 1
+    let present_optional = optional_zero.iter().filter(|field| object.contains_key(**field)).count();
+    object.len() == zero_fields.len() + present_optional + 1
         && object.get("operation").and_then(Value::as_str) == Some(schedule)
         && zero_fields
             .iter()
+            .chain(optional_zero.iter().filter(|field| object.contains_key(**field)))
             .all(|field| object.get(*field).and_then(Value::as_u64) == Some(0))
 }
 
@@ -247,8 +259,13 @@ impl JobStore {
             )?;
             let jobs: Vec<(i64, String)> = connection
                 .prepare(&format!(
+                    // `+` keeps the planner on the rowid window. Through the
+                    // state index it walked every settled job older than 30
+                    // days (400,000 rows, ~31 ms warm on a real install), most
+                    // of the slice, so the pruner below retired about one job
+                    // per pass and fell weeks behind.
                     "SELECT rowid,job_id FROM runtime_jobs
-                    WHERE rowid>?1 AND rowid<=?1+?2 AND {SETTLED} AND updated_at<?3
+                    WHERE rowid>?1 AND rowid<=?1+?2 AND +{SETTLED} AND +updated_at<?3
                       AND NOT (state='succeeded' AND owner_principal='internal:runtime-scheduler')
                       AND NOT EXISTS(SELECT 1 FROM runtime_job_event_archive a WHERE a.job_id=runtime_jobs.job_id)
                     ORDER BY rowid"
@@ -370,7 +387,10 @@ impl JobStore {
         // state-guarded delete).
         let mut reached: Option<(i64, String)> = None;
         for (job, owner, key, updated, finished, job_type) in candidates {
-            if started.elapsed() > Duration::from_millis(150) {
+            // Every slice retires at least one candidate: on a large store the
+            // archive step alone can use the budget, and slices that inspected
+            // nothing left the cursor where it was, pass after pass.
+            if report.inspected > 0 && started.elapsed() > Duration::from_millis(150) {
                 break;
             }
             // Recheck after every filesystem yield; a new foreground job ends this slice.
@@ -1032,6 +1052,24 @@ mod tests {
             "learn-recovery",
             &serde_json::json!({"learnJobId":null})
         ));
+        // Receipt shapes written by older and newer builds of the same schedule.
+        for (schedule, result) in [
+            ("scheduled-chats", serde_json::json!({"operation":"scheduled-chats","dispatched":0,"handedBack":0})),
+            ("hermes-abandoned-run-recovery", serde_json::json!({"operation":"hermes-abandoned-run-recovery","resumed":0})),
+            ("hermes-abandoned-run-recovery", serde_json::json!({"operation":"hermes-abandoned-run-recovery","resumed":0,"reconciled":0})),
+        ] {
+            assert!(verified_noop(schedule, &result), "{result}");
+        }
+        for (schedule, result) in [
+            ("scheduled-chats", serde_json::json!({"operation":"scheduled-chats","dispatched":0,"handedBack":1})),
+            ("scheduled-chats", serde_json::json!({"operation":"scheduled-chats","handedBack":0})),
+            ("hermes-abandoned-run-recovery", serde_json::json!({"operation":"hermes-abandoned-run-recovery","resumed":0,"reconciled":2})),
+            ("hermes-abandoned-run-recovery", serde_json::json!({"operation":"hermes-abandoned-run-recovery","reconciled":0})),
+            ("hermes-abandoned-run-recovery", serde_json::json!({"operation":"hermes-abandoned-run-recovery","resumed":0,"note":"x"})),
+            ("review-scheduler", serde_json::json!({"operation":"review-scheduler","considered":0,"sent":0,"handedBack":0})),
+        ] {
+            assert!(!verified_noop(schedule, &result), "{result}");
+        }
     }
     #[test]
     fn watermark_rejects_expired_occurrences_without_reexecuting() {

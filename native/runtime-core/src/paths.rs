@@ -2350,10 +2350,24 @@ fn open_read_pinned(path: &Path) -> io::Result<File> {
     use std::os::windows::fs::OpenOptionsExt;
     use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
 
-    OpenOptions::new()
-        .read(true)
-        .share_mode(FILE_SHARE_READ)
-        .open(path)
+    let open = || OpenOptions::new().read(true).share_mode(FILE_SHARE_READ).open(path);
+    // This pin lets others only read, so Windows refuses it while any handle
+    // still has write access. Two equivalent submissions race to the same job
+    // input: the winner publishes the file, then holds its write handle for a
+    // few milliseconds while it syncs, and the loser's pin failed with a
+    // sharing violation (1 in 5 runs of the concurrent-upload test) instead of
+    // finding the identical file. Wait that window out, up to two seconds.
+    let mut result = open();
+    for _ in 0..200 {
+        match &result {
+            Err(error) if error.raw_os_error() == Some(32) => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                result = open();
+            }
+            _ => break,
+        }
+    }
+    result
 }
 
 #[cfg(not(windows))]
@@ -3780,3 +3794,4 @@ mod tests {
         assert!(!outside_attempts.join("1/worker_1/start.json").exists());
     }
 }
+
