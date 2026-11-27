@@ -5116,7 +5116,9 @@ function checkResourcesRoot(resources, binRoot, label) {
   );
   for (const name of ["text-highlight-client.ts", "text-highlight-types.ts", "text-highlight-transport.ts"]) {
     requireFile(
-      path.join(resources, "app-services", "quartz-template", "quartz", "components", "scripts", name),
+      // quartz-template-closure.mjs mirrors the dashboard modules the template
+      // imports under quartz/external/<checkout path>.
+      path.join(resources, "app-services", "quartz-template", "quartz", "external", "dashboard", "src", "lib", name),
       `${label} Quartz highlight persistence ${name}`,
     );
   }
