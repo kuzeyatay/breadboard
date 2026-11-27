@@ -70,6 +70,12 @@ import {
   type HermesSessionSnapshot,
 } from "@/lib/hermes/session-client";
 import { useChatNotificationView } from "@/lib/use-chat-notification-view";
+import {
+  ASSISTANT_CHAT_PARAM,
+  CHAT_SURFACE_LAUNCH_EVENT,
+  takeAssistantChatParam,
+  type ChatSurfaceLaunchDetail,
+} from "@/lib/chat-surface-launch-client";
 import { useUnreadChats } from "@/lib/conversations/unread-client";
 import { UnreadChatDot } from "./hermes/history-client";
 import { useTextHighlights } from "./use-text-highlights";
@@ -100,6 +106,25 @@ interface Props {
 }
 
 type SentPdfView = Promise<{ snapshot: PdfViewportSnapshot; error?: never } | { snapshot?: never; error: unknown }>;
+
+const recordedSurfaceHrefs = new Set<string>();
+
+/**
+ * The address that reopens this document with its assistant: the viewer route
+ * on screen when there is one, otherwise the generic viewer on the same file
+ * (same identity, so the same chats). Null when the file has no app address.
+ */
+function pdfAssistantSurfaceHref(sourceUrl: string | undefined, title: string): string | null {
+  const here = new URL(window.location.href);
+  here.searchParams.delete(ASSISTANT_CHAT_PARAM);
+  if (/^\/(?:gardens\/[^/]+\/pdf\/[^/]+|pdf|attachments\/[^/]+\/pdf|artifacts\/[^/]+\/pdf)\/?$/.test(here.pathname)) {
+    return `${here.pathname}${here.search}`;
+  }
+  if (!sourceUrl || !sourceUrl.startsWith("/") || sourceUrl.startsWith("//")) return null;
+  const params = new URLSearchParams({ src: sourceUrl });
+  if (title.trim()) params.set("name", title.trim());
+  return `/pdf?${params}`;
+}
 
 export default function PdfAssistant({
   gardenSlug,
@@ -174,6 +199,52 @@ export default function PdfAssistant({
     ensureConversation: session.ensureConversation, pageSlug: documentKey,
   });
   const messages = inlineQuestions.messages;
+  // A launch from the Terminal or a Garden workspace: open the panel on that
+  // chat. It arrives as `?assistantChat=` on a navigation, or as an event when
+  // this document was already on screen. The chat opens once the hook has
+  // finished its own restore, so the restore cannot replace it afterwards.
+  const [launchedChatId, setLaunchedChatId] = useState<string | null>(null);
+  useEffect(() => {
+    if (temporary) return;
+    const arrived = takeAssistantChatParam();
+    if (arrived) setLaunchedChatId(arrived);
+    const onLaunch = (event: Event) => {
+      const detail = (event as CustomEvent<ChatSurfaceLaunchDetail>).detail;
+      // The event is only sent for the page on screen, so a chat whose key
+      // was never recorded still belongs to this document.
+      if (detail?.launch?.kind === "pdf" && (!detail.launch.pageSlug || detail.launch.pageSlug === documentKey)) {
+        setLaunchedChatId(detail.conversationId);
+      }
+    };
+    window.addEventListener(CHAT_SURFACE_LAUNCH_EVENT, onLaunch);
+    return () => window.removeEventListener(CHAT_SURFACE_LAUNCH_EVENT, onLaunch);
+  }, [documentKey, temporary]);
+  const openSessionRef = useRef(session.openSession);
+  openSessionRef.current = session.openSession;
+  useEffect(() => {
+    if (!launchedChatId || session.loadingSession) return;
+    setLaunchedChatId(null);
+    setOpen(true);
+    if (session.sessionId !== launchedChatId) void openSessionRef.current(launchedChatId);
+  }, [launchedChatId, session.loadingSession, session.sessionId]);
+  // Remember the page this document's chats live on, so the Terminal can launch
+  // back here. Sent once per chat and address for this page's lifetime.
+  useEffect(() => {
+    const chatId = session.sessionId;
+    if (temporary || !chatId?.startsWith("conv_")) return;
+    const href = pdfAssistantSurfaceHref(sourceUrl, title);
+    if (!href) return;
+    const key = `${chatId} ${href}`;
+    if (recordedSurfaceHrefs.has(key)) return;
+    recordedSurfaceHrefs.add(key);
+    void fetch(`/api/hermes/sessions/${encodeURIComponent(chatId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ surfaceHref: href }),
+    }).then((response) => {
+      if (!response.ok) recordedSurfaceHrefs.delete(key);
+    }, () => recordedSurfaceHrefs.delete(key));
+  }, [session.sessionId, sourceUrl, temporary, title]);
   const intelligence = useAssistantIntelligence({ scope: `pdf:${documentKey}`, sessionId: session.sessionId, createdSessionId: session.createdSessionId, shared: true });
   const { models } = useAssistantModels({ eager: open });
   const busy =

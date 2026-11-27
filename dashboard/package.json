@@ -171,5 +171,14 @@
     "eslint": "^9",
     "eslint-config-next": "16.2.3",
     "tailwindcss": "^4"
+  },
+  "overrides": {
+    "@opentelemetry/core": "2.9.0",
+    "@opentelemetry/resources": "2.9.0",
+    "@opentelemetry/sdk-metrics": "2.9.0",
+    "@opentelemetry/sdk-trace": "2.9.0",
+    "@opentelemetry/sdk-trace-base": "2.9.0",
+    "@opentelemetry/sdk-trace-node": "2.9.0",
+    "@opentelemetry/context-async-hooks": "2.9.0"
   }
 }

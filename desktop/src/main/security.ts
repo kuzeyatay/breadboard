@@ -242,7 +242,9 @@ export function hardenWebContents(
     // way, and Google refuses OAuth inside an embedded browser anyway.
     const accountLogin = !target.username && !target.password && (
       (target.origin === "https://auth.openai.com" && target.pathname === "/oauth/authorize") ||
-      (target.origin === "https://accounts.google.com" && target.pathname === "/o/oauth2/v2/auth"));
+      // Both OAuth endpoints: CLIProxy's Google sign-ins use either, and the
+      // v1 one used to open in the embedded browser, which Google refuses.
+      (target.origin === "https://accounts.google.com" && /^\/o\/oauth2\/(?:v2\/)?auth\/?$/.test(target.pathname)));
     if (!accountLogin && isSafeBrowserUrl(url) && handlers.onOpenExternalTab) {
       handlers.onOpenExternalTab(url, background);
       return;

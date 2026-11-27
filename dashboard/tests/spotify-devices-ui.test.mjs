@@ -11,7 +11,7 @@ test("the dock and expanded player switch Spotify devices and keep controls on t
     stdin: {resolveDir:root,loader:"tsx",contents:`
       import React from 'react'; import {createRoot} from 'react-dom/client';
       import {BrowserSpotifyDock,useSpotifyDock} from './src/app/browser/browser-home-widgets';
-      function App(){const [open,setOpen]=React.useState(false);return <BrowserSpotifyDock {...useSpotifyDock(true)} openConnections={()=>{}} open={open} setOpen={setOpen}/>;}
+      function App(){const [open,setOpen]=React.useState(false);return <BrowserSpotifyDock {...useSpotifyDock(true)} open={open} setOpen={setOpen}/>;}
       createRoot(document.getElementById('root')).render(<React.StrictMode><App/></React.StrictMode>);
     `},bundle:true,write:false,platform:"browser",format:"iife",jsx:"automatic",outfile:"devices.js",define:{"process.env.NODE_ENV":'"test"'},
     plugins:[{name:"dock-exports",setup(builder){builder.onLoad({filter:/browser-home-widgets\.tsx$/},({path:filename})=>({

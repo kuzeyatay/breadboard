@@ -189,7 +189,7 @@ test("the dock migrates saved songs and replays all 20 after reload with browser
       function App() {
         const [open,setOpen]=React.useState(true);
         const spotify=useSpotifyDock(true);
-        return <BrowserSpotifyDock {...spotify} openConnections={()=>{}} open={open} setOpen={setOpen}/>;
+        return <BrowserSpotifyDock {...spotify} open={open} setOpen={setOpen}/>;
       }
       createRoot(document.getElementById('root')).render(<App/>);
     `}, bundle:true,write:false,platform:"browser",format:"iife",jsx:"automatic",

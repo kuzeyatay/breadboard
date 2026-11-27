@@ -195,7 +195,7 @@ test("browser home has daily quotes, an image-free default, and theme-specific b
   assert.match(client, /usePageAppearance\(restoreOwnerKey, "browser"\)/);
   assert.match(client, /<BrowserHomeAccessories ownerKey=\{restoreOwnerKey\}/);
   assert.match(homeAccessories, /<BrowserDailyQuote ownerKey=\{ownerKey\}/);
-  assert.match(homeAccessories, /<BrowserDock [^>]*openConnections=/);
+  assert.match(homeAccessories, /<BrowserDock [^>]*setPanelOpen=/);
   assert.match(client, /<PageAppearance page="browser"/);
   assert.match(appearanceStore, /breadboard:browser-wallpaper:\$\{ownerKey\}:\$\{theme\}/);
   assert.match(appearance, /editingTheme/);

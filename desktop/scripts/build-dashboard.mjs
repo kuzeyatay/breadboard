@@ -178,6 +178,68 @@ for (let attempt = 1; attempt <= maxDashboardBuildAttempts; attempt += 1) {
   );
 }
 
+/**
+ * sharp's .node loads libvips through the Windows loader, which tracing cannot
+ * follow. Without those DLLs every route that imports sharp answers 500 on an
+ * installed copy (ERR_DLOPEN_FAILED) while development keeps working.
+ */
+function verifySharpNativeLibraries(standaloneDashboard) {
+  const lib = path.join(standaloneDashboard, "node_modules", "@img", "sharp-win32-x64", "lib");
+  if (!fs.existsSync(path.join(lib, "sharp-win32-x64.node"))) return;
+  const names = fs.readdirSync(lib);
+  const missing = ["libvips-42.dll", "libvips-cpp-"].filter(
+    (prefix) => !names.some((name) => name.startsWith(prefix) && name.endsWith(".dll")),
+  );
+  if (missing.length) {
+    throw new Error(
+      `Standalone dashboard ships sharp without its native libraries (${missing.join(", ")}) in ${lib}. ` +
+        "Check outputFileTracingIncludes in dashboard/next.config.ts.",
+    );
+  }
+  console.log(`[desktop] sharp native libraries present: ${names.filter((name) => name.endsWith(".dll")).join(", ")}`);
+  // pdf-parse resolves @napi-rs/canvas from the standalone tree; without it
+  // every PDF fails with "DOMMatrix is not defined".
+  for (const relative of [
+    "node_modules/@napi-rs/canvas/index.js",
+    "node_modules/@napi-rs/canvas-win32-x64-msvc/skia.win32-x64-msvc.node",
+    "node_modules/@napi-rs/canvas-win32-x64-msvc/icudtl.dat",
+  ]) {
+    if (!fs.existsSync(path.join(standaloneDashboard, relative))) {
+      throw new Error(`Standalone dashboard is missing ${relative}; PDF parsing would fail on installed copies.`);
+    }
+  }
+}
+
+/**
+ * The installer cannot write a file whose full path reaches Windows' 260
+ * character MAX_PATH, and it drops it silently. Installed at
+ * %LOCALAPPDATA%\Programs\Breadboard, a standalone file sits behind
+ * "C:\Users\<name>\AppData\Local\Programs\Breadboard\resources\app-services\
+ * dashboard-standalone\dashboard\" (98 characters plus the user name). Nested
+ * duplicate @opentelemetry packages once crossed that line and LiveKit failed
+ * with "Cannot find module" on installed copies only. Budget for 20-character
+ * user names.
+ */
+const MAX_STANDALONE_RELATIVE_PATH = 259 - (98 + 20);
+function verifyStandalonePathLengths(standaloneDashboard) {
+  const tooLong = [];
+  const walk = (directory, relative) => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const child = relative ? `${relative}\\${entry.name}` : entry.name;
+      if (entry.isDirectory()) walk(path.join(directory, entry.name), child);
+      else if (child.length > MAX_STANDALONE_RELATIVE_PATH) tooLong.push(child);
+    }
+  };
+  walk(standaloneDashboard, "");
+  if (tooLong.length) {
+    throw new Error(
+      `${tooLong.length} standalone dashboard file(s) exceed ${MAX_STANDALONE_RELATIVE_PATH} characters and would ` +
+        `be dropped by the Windows installer (MAX_PATH). Deduplicate the nesting packages (npm overrides). First: ` +
+        tooLong.sort((a, b) => b.length - a.length).slice(0, 5).join(", "),
+    );
+  }
+}
+
 // Next intentionally leaves static/public assets beside standalone output.
 // Complete the runnable tree here so every caller (lean dev, QA, packaging)
 // gets the same production-like artifact rather than each copying a subset.
@@ -185,6 +247,8 @@ try {
   assertSafeDashboardTraces(repoRoot);
   refreshStandaloneDashboardAssets(repoRoot);
   console.log(verifyLiveKitRuntime(dashboardBuildPaths(repoRoot).standaloneDashboard));
+  verifySharpNativeLibraries(dashboardBuildPaths(repoRoot).standaloneDashboard);
+  verifyStandalonePathLengths(dashboardBuildPaths(repoRoot).standaloneDashboard);
   writeDashboardBuildManifest(repoRoot);
   completeDashboardBuild(repoRoot);
 } catch (error) {

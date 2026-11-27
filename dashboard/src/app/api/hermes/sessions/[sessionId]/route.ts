@@ -33,6 +33,10 @@ import { reconcileVibeTradingConversation } from "@/lib/vibe-trading/conversatio
 import { requireSameOrigin } from "@/lib/request-origin";
 import { settleDelegatedWork } from "@/lib/conversations/settle-delegated-work.ts";
 import { sideChatHasStars } from "@/lib/starred-messages-store.ts";
+import {
+  normalizeSurfaceHref,
+  setConversationSurfaceHref,
+} from "@/lib/hermes/chat-surface-launch.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -117,6 +121,16 @@ export async function PATCH(
         );
       }
       conversation = setConversationHighlight(conversation, body.highlight);
+    }
+
+    if (body.surfaceHref !== undefined) {
+      // The page a reader assistant was opened on. Never activity, and only an
+      // address on this origin, since launching it navigates the app.
+      const href = body.surfaceHref === null ? null : normalizeSurfaceHref(body.surfaceHref);
+      if (body.surfaceHref !== null && !href) {
+        throw new ApiError(400, "invalid_surface_href", "The chat's page must be an address in this app.");
+      }
+      setConversationSurfaceHref(conversation, href);
     }
 
     if (body.moveToGarden !== undefined) {

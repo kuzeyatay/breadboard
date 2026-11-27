@@ -55,6 +55,18 @@
      from radii it computes itself; a canvas cannot follow corner-shape, so
      the disc and everything inside it stay round to keep the ring on the
      disc's edge. */
+  /* The chat dialogue bar (shared by terminal, workspace, code, Quartz…)
+     keeps its round 30px arcs by the user's choice. Its beam reads its own
+     corner shape, so it follows; an excerpt attached to the bar's top edge
+     shares that edge. */
+  .neu-composer,
+  .neu-composer > .bb-composer-header > .bb-composer-selection-attached,
+  [data-beam="composer"],
+  [data-beam="composer"]::before,
+  [data-beam="composer"]::after {
+    corner-shape: round;
+  }
+
   .metal-fx-root,
   .metal-fx-root::before,
   .metal-fx-root::after,
@@ -2990,6 +3002,7 @@ html[data-breadboard-desktop="true"] body > .browser-shell {
   gap: 3px;
   overflow-x: auto;
   overflow-y: hidden;
+  overscroll-behavior-x: contain;
   scrollbar-width: none;
 }
 
@@ -2997,10 +3010,37 @@ html[data-breadboard-desktop="true"] body > .browser-shell {
   display: none;
 }
 
+/* Same overflow arrows as the tab strip: only shown once bookmarks stop fitting. */
+.browser-bookmarks-scroll {
+  display: grid;
+  place-items: center;
+  flex: 0 0 24px;
+  width: 24px;
+  height: 25px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-muted);
+}
+
+.browser-bookmarks-scroll[hidden] { display: none; }
+.browser-bookmarks-scroll svg { width: 14px; height: 14px; }
+.browser-bookmarks-scroll:disabled { opacity: .3; }
+.browser-bookmarks-scroll:not(:disabled):hover {
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+  color: var(--ink);
+}
+.browser-bookmarks-scroll:focus-visible {
+  outline: 2px solid var(--botanical);
+  outline-offset: -2px;
+}
+
 .browser-bookmark-item {
   position: relative;
   display: flex;
-  min-width: 0;
+  /* Like tabs: shrink to a floor, then scroll instead of squeezing further. */
+  min-width: 112px;
   max-width: 230px;
   flex: 0 1 auto;
   align-items: center;

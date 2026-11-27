@@ -16,7 +16,7 @@ test("Spotify artists open browsable profiles without interrupting playback or s
         const [open,setOpen]=React.useState(true);
         const [ready,setReady]=React.useState(false); window.setReady=setReady;
         return <BrowserSpotifyDock spotify={{connected:true,history:[],playback:null,engine:{ready}}}
-          initializing={false} busy={false} error="" openConnections={()=>{}} open={open} setOpen={setOpen}
+          initializing={false} busy={false} error="" open={open} setOpen={setOpen}
           control={async(action,extra)=>{window.controls.push({action,...extra});return true;}}/>;
       }
       createRoot(document.getElementById('root')).render(<App/>);

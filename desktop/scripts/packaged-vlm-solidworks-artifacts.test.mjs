@@ -360,8 +360,14 @@ test("packaged manifests require the genuine VLM and SolidWorks artifact receipt
     [
       "runtime-root:bin/vlm-ocr/runtime/llama-server.exe",
       "runtime-root:bin/vlm-ocr/runtime-artifact.json",
-      "runtime-root:bin/vlm-ocr/models/HunyuanOCR-Q8_0.gguf",
-      "runtime-root:bin/vlm-ocr/models/mmproj-HunyuanOCR-Q8_0.gguf",
+    ],
+  );
+  // The weights install on first use into the data root (Optional components).
+  assert.deepEqual(
+    packagedFiles(vlm).filter((entry) => entry.includes("vlm-ocr-models/")),
+    [
+      "data-root:runtime-v2/toolchains/vlm-ocr-models/HunyuanOCR-Q8_0.gguf",
+      "data-root:runtime-v2/toolchains/vlm-ocr-models/mmproj-HunyuanOCR-Q8_0.gguf",
     ],
   );
   assert.ok(packagedFiles(solidworks).includes("runtime-root:runtimes/solidworks-python/runtime-artifact.json"));

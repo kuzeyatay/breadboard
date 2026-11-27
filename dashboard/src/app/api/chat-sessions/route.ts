@@ -916,6 +916,8 @@ function readLinkedGardenChats(clusterId: number, userId: number) {
         Boolean(summary.activeRun) ||
         summary.externalAgentActive ||
         summary.pendingMessageCount > 0,
+      // Where the chat lives, for the workspace's launch control.
+      launch: summary.launch,
     };
   });
 }

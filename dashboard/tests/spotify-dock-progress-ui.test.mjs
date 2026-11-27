@@ -13,7 +13,7 @@ test("the dock seeks with pointer and keyboard and keeps time between provider s
       import {BrowserSpotifyDock,useSpotifyDock} from './src/app/browser/browser-home-widgets';
       function App() {
         const [open,setOpen]=React.useState(true);
-        return <BrowserSpotifyDock {...useSpotifyDock(true)} openConnections={()=>{}} open={open} setOpen={setOpen}/>;
+        return <BrowserSpotifyDock {...useSpotifyDock(true)} open={open} setOpen={setOpen}/>;
       }
       createRoot(document.getElementById('root')).render(<React.StrictMode><App/></React.StrictMode>);
     `}, bundle: true, write: false, platform: "browser", format: "iife", jsx: "automatic",

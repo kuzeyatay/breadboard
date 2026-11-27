@@ -48,9 +48,9 @@ impl<'store> AdmissionGovernor<'store> {
         )
     }
 
-    /// Selects the trusted host mode's admission policy. Lean and Hot sample
-    /// live commit against a bounded adaptive reserve; Packaged remains on the
-    /// fixed architecture reserve used by acceptance and shipped builds.
+    /// Selects the trusted host mode's admission policy. Every mode samples
+    /// live commit against the bounded adaptive reserve (see
+    /// `AdmissionPolicy::for_runtime_mode`).
     pub fn for_runtime_mode(store: &'store JobStore, mode: RuntimeMode) -> Self {
         Self {
             store,

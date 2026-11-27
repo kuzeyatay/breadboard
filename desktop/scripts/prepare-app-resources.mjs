@@ -37,7 +37,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { CODEX_WINDOWS_RUNTIME_FILES } from "./codex-runtime-files.mjs";
 import { stageApiAnything } from "../../dashboard/scripts/build-api-anything.mjs";
-import { stageQuartzHighlightAssets } from "./quartz-highlight-assets.mjs";
 
 import {
   assertPinnedCleanCheckout,
@@ -355,8 +354,10 @@ const PINNED_MEM0_RUNTIME = Object.freeze({
     },
   },
   closure: {
-    fileCount: 4_048,
-    sha256: "A1E1BD7B439438CE7741895F117A2D82B103D346F84F7854355B362C330525F1",
+    // Hoisted layout (see createPortableGraph in prepare-app-resources.mjs):
+    // the nested one put Mem0 modules past MAX_PATH once installed.
+    fileCount: 3_143,
+    sha256: "75F2FDD742436EE4378AD302609377EAFF344E8263D587C5F73E744C0DE480B6",
     excludes: ["BREADBOARD_SOURCE_COMMIT", "runtime-artifact.json"],
   },
 });
@@ -1499,38 +1500,86 @@ log("staging finite-worker production dependency closures");
     }
     return null;
   };
-  const copyPortableDependency = ({ name, source, target, copiedSet, mem0Root = false }) => {
+  // A portable graph is laid out the way npm hoists: every package goes to the
+  // graph's root node_modules unless a different copy of that name is already
+  // what Node would resolve from there, and only then nests under its parent.
+  // Nesting every dependency under its parent (the old layout) put files like
+  // @modelcontextprotocol/sdk/node_modules/express/node_modules/body-parser/
+  // node_modules/qs/node_modules/side-channel/node_modules/es-errors/index.js
+  // past Windows' 260-character MAX_PATH once installed under a user profile;
+  // NSIS skips those files without failing, and 0.1.15 shipped Google image
+  // search, Google Flow and Mem0 with ~3,700 of their modules missing.
+  const createPortableGraph = (modulesRoot) => ({
+    modulesRoot,
+    // installed package directory -> canonical source directory
+    placed: new Map(),
+    copied: new Set(),
+  });
+  // Directories Node searches, nearest first, for `name` required from a
+  // package installed at `from`; the search ends at the graph's root.
+  const portableResolutionChain = (graph, from, name) => {
+    const stop = path.dirname(graph.modulesRoot);
+    const chain = [];
+    for (let directory = from; ; directory = path.dirname(directory)) {
+      if (path.basename(directory) !== "node_modules") {
+        chain.push(path.join(directory, "node_modules", ...name.split("/")));
+      }
+      if (directory === stop || path.dirname(directory) === directory) break;
+    }
+    return chain;
+  };
+  const registerPortableRoot = (graph, source, target) => {
+    const canonical = fs.realpathSync.native(source);
+    const existing = graph.placed.get(target);
+    if (existing && existing !== canonical) {
+      fail(`Two different packages were staged at ${target}.`);
+    }
+    graph.placed.set(target, canonical);
+  };
+  const copyPortableDependency = ({ graph, name, source, target, mem0Root = false }) => {
     const manifestPath = path.join(source, "package.json");
     if (!fs.existsSync(manifestPath)) {
-      fail(`The immutable Mem0 dependency is missing: ${name} (${source}).`);
+      fail(`The immutable portable dependency is missing: ${name} (${source}).`);
     }
+    registerPortableRoot(graph, source, target);
     const identity = `${fs.realpathSync.native(source)}\u0000${target}`;
-    if (copiedSet.has(identity)) return;
-    copiedSet.add(identity);
+    if (graph.copied.has(identity)) return;
+    graph.copied.add(identity);
     copyTree(source, target, (relative) =>
       /(^|\/)(?:node_modules|test|tests|docs|examples|coverage)(?:\/|$)/iu.test(relative) ||
       (mem0Root && (/(^|\/)src(?:\/|$)/iu.test(relative) || /\.map$/iu.test(relative))),
     );
     const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+    const wanted = [];
     for (const dependency of Object.keys(manifest.dependencies ?? {}).sort()) {
       const resolved = resolvePortableDependency(source, dependency);
-      if (!resolved) fail(`The frozen Mem0 dependency graph cannot resolve ${name} -> ${dependency}.`);
-      copyPortableDependency({
-        name: dependency,
-        source: resolved,
-        target: path.join(target, "node_modules", ...dependency.split("/")),
-        copiedSet,
-      });
+      if (!resolved) fail(`The frozen dependency graph cannot resolve ${name} -> ${dependency}.`);
+      wanted.push([dependency, resolved]);
     }
     for (const dependency of Object.keys(manifest.optionalDependencies ?? {}).sort()) {
       const resolved = resolvePortableDependency(source, dependency);
-      if (!resolved) continue;
-      copyPortableDependency({
-        name: dependency,
-        source: resolved,
-        target: path.join(target, "node_modules", ...dependency.split("/")),
-        copiedSet,
-      });
+      if (resolved) wanted.push([dependency, resolved]);
+    }
+    // Place every direct dependency before descending, so a later nested copy
+    // can never shadow what a sibling's subtree already resolved.
+    const descend = [];
+    for (const [dependency, resolved] of wanted) {
+      const canonical = fs.realpathSync.native(resolved);
+      const visible = portableResolutionChain(graph, target, dependency).find((candidate) =>
+        graph.placed.has(candidate),
+      );
+      if (visible && graph.placed.get(visible) === canonical) continue;
+      const location = visible
+        ? path.join(target, "node_modules", ...dependency.split("/"))
+        : path.join(graph.modulesRoot, ...dependency.split("/"));
+      // The package's own slot was claimed up front by a pinned copy (Mem0's
+      // better-sqlite3): the pin wins, as the old overwrite did.
+      if (location === visible) continue;
+      graph.placed.set(location, canonical);
+      descend.push([dependency, resolved, location]);
+    }
+    for (const [dependency, resolved, location] of descend) {
+      copyPortableDependency({ graph, name: dependency, source: resolved, target: location });
     }
   };
   for (const dependency of [
@@ -1563,6 +1612,36 @@ log("staging finite-worker production dependency closures");
   ]) {
     copyDependency(dependency, sourceModules, targetModules);
   }
+  // The list above is hand-kept, and 0.1.15 missed packages the workers load:
+  // the Learn worker died on worker-src/lib/runtime-control-transport.ts ->
+  // undici. Derive the rest from what the worker entry modules (loaded by
+  // computed path from worker-src) actually import.
+  {
+    const { closeStagedImports, computedSourceEntries } = await import("./staged-import-closure.mjs");
+    const entries = computedSourceEntries(path.join(repoRoot, "dashboard", "scripts"))
+      .filter((entry) => entry.startsWith("lib/"));
+    const reachable = closeStagedImports({
+      repoRoot,
+      stagingRoot,
+      // The standalone scripts (learn-worker, windows-breakaway-process -> koffi)
+      // resolve packages from this same node_modules.
+      entryDirectories: ["dashboard-standalone/dashboard/scripts"],
+      entryFiles: entries.map((entry) => `dashboard-standalone/dashboard/worker-src/${entry}`),
+      mirrors: [
+        ["dashboard-standalone/dashboard/worker-src", "dashboard/src"],
+        ["dashboard-standalone/dashboard", "dashboard"],
+        ["dashboard-standalone", "."],
+      ],
+    });
+    const packages = [...new Set(reachable.unresolvedBare.map((entry) => entry.split(" <- ")[0]))].sort();
+    for (const name of packages) {
+      if (!fs.existsSync(path.join(sourceModules, ...name.split("/"), "package.json"))) {
+        fail(`Worker source imports ${name}, which is not installed in dashboard/node_modules.`);
+      }
+      copyDependency(name, sourceModules, targetModules);
+    }
+    log(`staged ${packages.length} worker-source package(s) the hand-kept list missed: ${packages.join(", ") || "none"}`);
+  }
 
   const googleImagesSource = path.join(repoRoot, "mcp-google-images-search");
   const googleImagesTarget = path.join(stagingRoot, "mcp-google-images-search");
@@ -1587,20 +1666,18 @@ log("staging finite-worker production dependency closures");
   const googleManifest = JSON.parse(
     fs.readFileSync(path.join(googleImagesSource, "package.json"), "utf8"),
   );
-  const googleCopied = new Set();
   const googleModulesTarget = path.join(googleImagesTarget, "node_modules");
-  for (const dependency of Object.keys(googleManifest.dependencies ?? {})) {
+  const googleGraph = createPortableGraph(googleModulesTarget);
+  const googleRoots = Object.keys(googleManifest.dependencies ?? {}).map((dependency) => {
     const source = resolvePortableDependency(googleImagesSource, dependency);
     if (!source) {
       fail(`The frozen Google image-search dependency graph cannot resolve ${dependency}.`);
     }
-    copyPortableDependency({
-      name: dependency,
-      source,
-      target: path.join(googleModulesTarget, ...dependency.split("/")),
-      copiedSet: googleCopied,
-    });
-  }
+    const target = path.join(googleModulesTarget, ...dependency.split("/"));
+    registerPortableRoot(googleGraph, source, target);
+    return { name: dependency, source, target };
+  });
+  for (const root of googleRoots) copyPortableDependency({ graph: googleGraph, ...root });
   writeSourceCommitReceipt(googleImagesTarget, googleImagesCommit);
 
   // Subscription video uses a reviewed, unmodified Flow MCP and its login
@@ -1619,12 +1696,15 @@ log("staging finite-worker production dependency closures");
     for (const directory of ["dist", "extension"]) copyTree(path.join(source, directory), path.join(target, directory));
     for (const file of ["package.json", "LICENSE", "AGENTS.md", "INSTALL.md"]) fs.copyFileSync(path.join(source, file), path.join(target, file));
     const manifest = JSON.parse(fs.readFileSync(path.join(source, "package.json"), "utf8"));
-    const copied = new Set();
-    for (const dependency of Object.keys(manifest.dependencies ?? {})) {
+    const flowGraph = createPortableGraph(path.join(target, "node_modules"));
+    const flowRoots = Object.keys(manifest.dependencies ?? {}).map((dependency) => {
       const resolved = resolvePortableDependency(source, dependency);
       if (!resolved) fail(`The Google Flow runtime cannot resolve ${dependency}.`);
-      copyPortableDependency({ name: dependency, source: resolved, target: path.join(target, "node_modules", ...dependency.split("/")), copiedSet: copied });
-    }
+      const location = path.join(target, "node_modules", ...dependency.split("/"));
+      registerPortableRoot(flowGraph, resolved, location);
+      return { name: dependency, source: resolved, target: location };
+    });
+    for (const root of flowRoots) copyPortableDependency({ graph: flowGraph, ...root });
     fs.mkdirSync(path.join(stagingRoot, "scripts"), { recursive: true });
     for (const script of ["launch-google-flow.mjs", "google-flow-browser.mjs", "connect-google-flow.mjs"]) {
       fs.copyFileSync(path.join(repoRoot, "scripts", script), path.join(stagingRoot, "scripts", script));
@@ -1713,25 +1793,25 @@ log("staging finite-worker production dependency closures");
     );
   }
   const mem0Target = path.join(runtimeServiceModules, "mem0ai");
-  const portableCopied = new Set();
+  const mem0Graph = createPortableGraph(path.join(mem0Target, "node_modules"));
+  // Mem0's optional stores are pinned to these exact copies; claim their root
+  // slots before Mem0's own graph is placed around them.
+  const mem0Extras = [
+    ["better-sqlite3", path.join(sourceModules, "better-sqlite3")],
+    ["pg", path.join(mem0Source, "node_modules", "pg")],
+  ].map(([name, source]) => {
+    const target = path.join(mem0Target, "node_modules", ...name.split("/"));
+    registerPortableRoot(mem0Graph, source, target);
+    return { name, source, target };
+  });
   copyPortableDependency({
+    graph: mem0Graph,
     name: "mem0ai",
     source: mem0Source,
     target: mem0Target,
-    copiedSet: portableCopied,
     mem0Root: true,
   });
-  for (const [name, source] of [
-    ["better-sqlite3", path.join(sourceModules, "better-sqlite3")],
-    ["pg", path.join(mem0Source, "node_modules", "pg")],
-  ]) {
-    copyPortableDependency({
-      name,
-      source,
-      target: path.join(mem0Target, "node_modules", ...name.split("/")),
-      copiedSet: portableCopied,
-    });
-  }
+  for (const extra of mem0Extras) copyPortableDependency({ graph: mem0Graph, ...extra });
   fs.copyFileSync(path.join(mem0Checkout, "LICENSE"), path.join(mem0Target, "LICENSE"));
   for (const [name, version] of Object.entries(PINNED_MEM0_RUNTIME.dependencies)) {
     const manifestPath = path.join(mem0Target, "node_modules", ...name.split("/"), "package.json");
@@ -2269,7 +2349,9 @@ for (const entry of [
   "runtime-v2-dashboard-diagnostics.mjs",
   "runtime-v2-learn-worker.mjs",
   "runtime-v2-document-ingestion-worker.mjs",
-  "runtime-v2-anydoc-pdf-worker.mjs",
+  // runtime-v2-anydoc-pdf-worker.mjs is spawned by the ingestion executor from
+  // the standalone dashboard's worker-src (../../../scripts), beside the
+  // @firecrawl/anydoc package it needs; the import closure stages it there.
   "runtime-v2-office-artifact-worker.mjs",
   "genoffice-worker-imports.mjs",
   "runtime-v2-agent-browser-worker.mjs",
@@ -2991,25 +3073,23 @@ for (const entry of [
   if (!fs.existsSync(source)) continue;
   copyTree(source, path.join(quartzTarget, entry), (rel) => rel.startsWith(".git"));
 }
-// Quartz builds from its staged template after installation. Carry the shared
-// converter into that template so it does not depend on dashboard source files.
-fs.copyFileSync(
-  path.join(repoRoot, "dashboard", "src", "lib", "latex-delimiters.ts"),
-  path.join(quartzTarget, "quartz", "util", "latexDelimiters.ts"),
-);
-// Quartz is relocated independently of dashboard worker-src in packaged apps.
-// Keep one source for wheel behavior, and close the template's local import.
-const quartzVisualScripts = path.join(quartzTarget, "quartz", "components", "scripts");
-fs.copyFileSync(
-  path.join(repoRoot, "dashboard", "src", "lib", "hermes", "interactive-visualizer-wheel.ts"),
-  path.join(quartzVisualScripts, "interactiveVisualizerWheel.ts"),
-);
-const quartzVisualHost = path.join(quartzVisualScripts, "breadboardGeneratedVisual.inline.ts");
-const quartzVisualHostSource = fs.readFileSync(quartzVisualHost, "utf8");
-const wheelSourceImport = "../../../../dashboard/src/lib/hermes/interactive-visualizer-wheel";
-if (!quartzVisualHostSource.includes(wheelSourceImport)) fail("Quartz visualizer wheel import was not staged");
-fs.writeFileSync(quartzVisualHost, quartzVisualHostSource.replace(wheelSourceImport, "./interactiveVisualizerWheel"));
-stageQuartzHighlightAssets(repoRoot, quartzTarget);
+// Quartz builds from its staged template after installation, with no dashboard
+// source beside it. Close every import that leaves the template (shared
+// Breadboard modules, stylesheets, shared/ data) over a mirror inside it.
+{
+  const { closeQuartzTemplateImports } = await import("./quartz-template-closure.mjs");
+  let mirrored;
+  try {
+    mirrored = closeQuartzTemplateImports({
+      repoRoot,
+      templateSource: path.join(repoRoot, "quartz"),
+      templateTarget: quartzTarget,
+    });
+  } catch (error) {
+    fail(error instanceof Error ? error.message : String(error));
+  }
+  log(`closed quartz template over ${mirrored.length} shared file(s)`);
+}
 
 // --- scriberr (compose only, optional Docker compatibility mode) ----------
 log("staging scriberr compose file");
@@ -5131,6 +5211,61 @@ function scanForbidden(dir) {
       if (insideDependencies && fs.statSync(full).size === 0) continue;
       forbidden.push(full);
     }
+  }
+}
+// Packaged workers and services run straight from app-services; close every
+// staged entrypoint over the files it imports (see staged-import-closure.mjs:
+// 0.1.15 shipped the managed-setup, Claude account and terminal workers without
+// host-path.mjs, so each crashed at its first import).
+// Reviewed bare-import findings that are not real loads.
+const STAGED_BARE_IMPORT_EXCEPTIONS = new Set([
+  // esbuild bundles ajv; the remaining require("ajv/dist/runtime/...") are
+  // source strings ajv's standalone code generator emits, never executed.
+  "ajv <- dashboard/scripts/authored-mcp-server.cjs",
+]);
+{
+  log("closing staged worker and service imports");
+  const { closeStagedImports, computedSourceEntries } = await import("./staged-import-closure.mjs");
+  const mirrors = [
+    ["dashboard-standalone/dashboard/worker-src", "dashboard/src"],
+    ["dashboard-standalone/dashboard", "dashboard"],
+    // worker-src/lib/../../../desktop is the checkout's desktop/.
+    ["dashboard-standalone", "."],
+  ];
+  let closure;
+  try {
+    // Workers load worker-src through computed paths; close its relative
+    // imports and the scripts it spawns. Its UI modules import packages that
+    // Next bundled, so package resolution is enforced on entrypoints only.
+    const sources = closeStagedImports({
+      repoRoot,
+      stagingRoot,
+      entryDirectories: ["dashboard-standalone/dashboard/worker-src/lib/**"],
+      mirrors,
+      checkBare: false,
+    });
+    closure = closeStagedImports({
+      repoRoot,
+      stagingRoot,
+      entryDirectories: ["dashboard/scripts", "scripts", "dashboard-standalone/dashboard/scripts"],
+      // Worker modules loaded by computed path: their packages must resolve too.
+      entryFiles: computedSourceEntries(path.join(repoRoot, "dashboard", "scripts"))
+        .filter((entry) => entry.startsWith("lib/"))
+        .map((entry) => `dashboard-standalone/dashboard/worker-src/${entry}`),
+      mirrors,
+    });
+    closure.added.unshift(...sources.added);
+    closure.missingEverywhere.unshift(...sources.missingEverywhere);
+  } catch (error) {
+    fail(error instanceof Error ? error.message : String(error));
+  }
+  for (const file of closure.added) log(`  staged missing import ${file}`);
+  if (closure.missingEverywhere.length) {
+    log(`  ${closure.missingEverywhere.length} import(s) are absent from the checkout too (same as development); not staged`);
+  }
+  const unresolved = closure.unresolvedBare.filter((entry) => !STAGED_BARE_IMPORT_EXCEPTIONS.has(entry));
+  if (unresolved.length) {
+    fail(`Staged scripts import packages that do not resolve from where they are installed:\n  ${unresolved.join("\n  ")}`);
   }
 }
 scanForbidden(stagingRoot);

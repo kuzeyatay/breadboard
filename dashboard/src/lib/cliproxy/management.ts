@@ -363,8 +363,35 @@ async function listCliproxyModels(): Promise<string[]> {
  * ids stay stable, while request dispatch now hands those Claude ids to Claude
  * Code itself. Other subscription providers continue through CLIProxyAPI.
  */
+/**
+ * Claude's status comes from a Runtime job that can fail on its own (memory
+ * admission, a worker fault). It must not take Gemini, Kimi and Grok down with
+ * it: an uncaught failure here once failed the whole Accounts status call, so
+ * every provider looked disconnected and Connect stayed disabled. The promise
+ * is also settled immediately, so a failure while the proxy call is still in
+ * flight is never an unhandled rejection.
+ */
+function readClaudeStatusContained(userId: number, signal?: AbortSignal) {
+  return readClaudeCodeStatus(userId, signal).then(
+    (status) => ({ ...status, statusError: null as string | null }),
+    (error: unknown) => ({
+      installed: false,
+      loggedIn: false,
+      authMethod: null,
+      email: null,
+      subscriptionType: null,
+      accounts: [] as Awaited<ReturnType<typeof readClaudeCodeStatus>>["accounts"],
+      error: null,
+      statusError:
+        error instanceof Error && error.message
+          ? error.message
+          : "Claude Code could not be checked.",
+    }),
+  );
+}
+
 export async function listModels(userId: number, signal?: AbortSignal): Promise<string[]> {
-  const claudeStatusPromise = readClaudeCodeStatus(userId, signal);
+  const claudeStatusPromise = readClaudeStatusContained(userId, signal);
   let proxyModels: string[] = [];
   let proxyError: unknown;
   try {
@@ -384,6 +411,8 @@ export async function listModels(userId: number, signal?: AbortSignal): Promise<
 export interface CliproxyStatus {
   installed: boolean;
   claudeInstalled: boolean;
+  /** Set when Claude's status could not be read; it is unknown, not missing. */
+  claudeStatusError: string | null;
   running: boolean;
   baseUrl: string;
   providers: Array<{
@@ -410,7 +439,7 @@ export async function readStatus(userId: number, signal?: AbortSignal): Promise<
     (account) => account.provider !== "claude",
   );
   const proxyInstalled = isCliproxyInstalled();
-  const claudeStatusPromise = readClaudeCodeStatus(userId, signal);
+  const claudeStatusPromise = readClaudeStatusContained(userId, signal);
 
   let proxyModels: string[] = [];
   let proxyRunning = false;
@@ -446,6 +475,7 @@ export async function readStatus(userId: number, signal?: AbortSignal): Promise<
   return {
     installed,
     claudeInstalled: claudeStatus.installed,
+    claudeStatusError: claudeStatus.statusError,
     running,
     baseUrl: cliproxyBaseUrl(),
     providers: CLIPROXY_PROVIDERS.map((provider) => ({

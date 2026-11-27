@@ -111,6 +111,7 @@ import type { QuartzTopologyInvestigationRequest } from '@/lib/quartz-topology-i
 import { abortGardenTurnCheckpoint, fetchGardenChat, reserveGardenTurnCheckpoint } from '@/lib/conversations/garden-turn-client';
 import { gardenTurnCompletedOnServer, readGardenResponseData } from '@/lib/hermes/garden-response-stream';
 import { runGardenInlineQuestion, preserveInlineQuestionMessages, reconcileInlineQuestionMessages, retireCompletedInlineQuestionViewers } from '@/lib/conversations/garden-inline-question';
+import { CHAT_SURFACE_LAUNCH_EVENT, persistQuartzChatSelection, QUARTZ_CHAT_SELECTION_KEY_PREFIX, type ChatSurfaceLaunchDetail } from '@/lib/chat-surface-launch-client';
 
 interface QuartzInlineSelectionReference {
   requestId: string;
@@ -406,7 +407,6 @@ const DEFAULT_PROMPTS: SavedPrompt[] = [
 const PROMPT_CATEGORIES = ['All', 'Summary', 'Study', 'Analysis', 'Writing', 'Custom'];
 const PANEL_WIDTH_KEY = 'second-brain:garden-assistant-width';
 const QUARTZ_CHAT_HISTORY_KEY_PREFIX = 'second-brain:quartz-ai-history:';
-const QUARTZ_CHAT_SELECTION_KEY_PREFIX = 'second-brain:quartz-ai-selection:';
 const QUARTZ_BRANCH_KEY_PREFIX = 'breadboard:quartz-conversation-branches:';
 const MAX_QUARTZ_CHAT_SESSIONS = 30;
 const DEFAULT_PANEL_WIDTH = 520;
@@ -509,12 +509,6 @@ function loadQuartzChatSelection(clusterSlug: string | null): number | null | un
   } catch { return undefined; }
 }
 
-function persistQuartzChatSelection(clusterSlug: string | null, sessionId: number | null) {
-  if (typeof window === 'undefined' || !clusterSlug) return;
-  try {
-    window.localStorage.setItem(`${QUARTZ_CHAT_SELECTION_KEY_PREFIX}${clusterSlug}`, sessionId === null ? 'new' : String(sessionId));
-  } catch { /* Keep the selected conversation usable when storage is unavailable. */ }
-}
 
 // The history is a multi-MB JSON of up to 30 sessions, and every write sends a
 // `storage` event carrying the old and new strings to every other Breadboard
@@ -1704,6 +1698,37 @@ export default function GardenAssistant({
     setPermissionRequest(permissionRequestFromMessages(session.messages ?? []));
    
   }
+
+  // A launch from the Terminal (or a Garden workspace) aimed at this page's
+  // Assistant while it is already on screen: open the panel on that chat here
+  // rather than navigating to the page that is already showing.
+  const openLaunchedChatRef = useRef<(chatId: number) => void>(() => undefined);
+  openLaunchedChatRef.current = (chatId: number) => {
+    setChatOpen(true);
+    const session = chatSessions.find((item) => item.id === chatId);
+    if (session) {
+      if (session.id !== activeChatId) openChatSession(session);
+      return;
+    }
+    // Not in this page's list yet: select it for the reconcile to restore.
+    persistQuartzChatSelection(historyScope, chatId);
+    chatSelectionVersionRef.current += 1;
+    blankChatRequestedRef.current = false;
+    setActiveChatId(chatId);
+  };
+  useEffect(() => {
+    const onLaunch = (event: Event) => {
+      const detail = (event as CustomEvent<ChatSurfaceLaunchDetail>).detail;
+      const launch = detail?.launch;
+      if (
+        launch?.kind !== 'explore' || !launch.legacyChatId ||
+        launch.gardenSlug !== activeClusterSlug || (launch.pageKey ?? '') !== (pageKey ?? '')
+      ) return;
+      openLaunchedChatRef.current(launch.legacyChatId);
+    };
+    window.addEventListener(CHAT_SURFACE_LAUNCH_EVENT, onLaunch);
+    return () => window.removeEventListener(CHAT_SURFACE_LAUNCH_EVENT, onLaunch);
+  }, [activeClusterSlug, pageKey]);
 
   async function toggleTemporaryChat() {
     if (chatIsStreaming || !activeClusterSlug) return;

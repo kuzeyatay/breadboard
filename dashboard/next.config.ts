@@ -36,6 +36,18 @@ const gardenAssetRouteExcludes = [
   'tsconfig.tsbuildinfo',
 ];
 
+// Native pieces tracing cannot follow, shipped for every route:
+// - sharp's libvips DLLs load through the Windows loader, not require().
+// - pdf-parse/pdfjs load @napi-rs/canvas from inside an externalized package
+//   to polyfill DOMMatrix; without it every PDF fails with "DOMMatrix is not
+//   defined" on installed copies while development works. Its Skia binary
+//   also reads icudtl.dat beside it.
+const sharpNativeTraceIncludes = [
+  'node_modules/@img/sharp-win32-x64/**/*',
+  'node_modules/@napi-rs/canvas/**/*',
+  'node_modules/@napi-rs/canvas-win32-x64-msvc/**/*',
+];
+
 const dataTraceExcludes = [
   // Top-level project metadata, local state, and ad-hoc operator files are not
   // standalone program inputs. Keep package.json: Node uses it for module
@@ -217,6 +229,12 @@ const nextConfig: NextConfig = {
     '/api/markdown-videos': gardenAssetRouteExcludes,
   },
   outputFileTracingIncludes: {
+    // sharp's .node loads libvips through the Windows loader, which tracing
+    // cannot see: the standalone build shipped the .node without its DLLs and
+    // every route importing sharp (creating or opening a garden) failed with
+    // ERR_DLOPEN_FAILED on installed copies.
+    '/*': sharpNativeTraceIncludes,
+    '/**': sharpNativeTraceIncludes,
     '/api/speech/livekit': livekitRuntimeTraceIncludes(bundlerRoot),
     '/api/anydoc/status': [
       'node_modules/@firecrawl/anydoc/**/*',

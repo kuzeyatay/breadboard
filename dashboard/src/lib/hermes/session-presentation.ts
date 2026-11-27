@@ -2,6 +2,7 @@ import type { ConversationRow } from "../conversations/store.ts";
 import db from "../db.ts";
 import { isReaderAssistantPageContext } from "../pdf-assistant-scope.ts";
 import { conversationOrigin } from "./session-surface.ts";
+import { conversationSurfaceLaunch } from "./chat-surface-launch.ts";
 import {
   listConversationTranscript,
   presentConversation,
@@ -173,6 +174,10 @@ function presentSessionBase(conversation: ConversationRow) {
     filesystemMode: runtime?.filesystem_mode ?? "restricted",
     capabilityMode: runtime?.capability_mode ?? "knowledge",
     activeRun: presentActiveRun(runtime?.id ?? null),
+    launch: conversationSurfaceLaunch(conversation, {
+      pageSlug,
+      gardenSlug: origin.gardenSlug,
+    }),
   };
 }
 

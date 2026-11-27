@@ -21,7 +21,7 @@ for (const activation of ['click', 'Enter']) test(`Terminal home hydrates indepe
     import {BrowserDock} from './src/app/browser/browser-home-widgets';
     export default function App() { return <Gate>
       <input aria-label="Search the web" />
-      <BrowserDock openConnections={()=>{}} openPanel={null} setPanelOpen={()=>{}} />
+      <BrowserDock openPanel={null} setPanelOpen={()=>{}} />
       <Terminal scope="mine" restoreOwnerKey="hydration-test" initialChatId="saved-chat" />
     </Gate>; }
   `;

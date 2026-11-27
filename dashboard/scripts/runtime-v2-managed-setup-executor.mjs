@@ -309,6 +309,11 @@ function fixedClaudeCommand(context) {
   const configured = context.env.CLAUDE_CLI_PATH?.trim();
   const candidates = [
     configured ? path.resolve(configured) : null,
+    // The Claude Code that Optional components installs. Most people have no
+    // other copy, and without this Accounts said Claude Code was not installed.
+    context.dataRoot && context.platform === "win32"
+      ? path.join(managedPayloadTarget(context.dataRoot, "runtime-v2/toolchains/claude-code", context.env), executable)
+      : null,
     home ? path.join(path.resolve(home), ".local", "bin", executable) : null,
     home && context.platform !== "win32"
       ? path.join(path.resolve(home), ".claude", "local", "claude")

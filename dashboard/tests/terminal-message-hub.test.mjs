@@ -242,6 +242,47 @@ test("PDF conversations restore document scope and inline answers without a runt
   assert.equal(presentation.presentHermesSessionSummary(store.renameConversation(chat, "New title")).pageSlug, key);
 });
 
+test("PDF Assistant chats on web and opened-file PDFs are saved and listed in the terminal", async () => {
+  const { pdfAssistantDocumentKey } = await import("../src/lib/pdf-assistant.ts");
+  const api = route("route.ts");
+  // The keys the two reader paths actually use: a web PDF's stored blob, and a
+  // picked file's content hash. Neither belongs to a garden.
+  const readers = [
+    { label: "web", key: pdfAssistantDocumentKey("/api/chat-attachments/documents/doc_0123456789abcdef0123456789abcdef") },
+    { label: "file", key: pdfAssistantDocumentKey(`/open?doc=${"ab".repeat(32)}`) },
+  ];
+  const chats = [];
+  for (const { label, key } of readers) {
+    assert.ok(pdfScope.isPdfAssistantPageContext("dashboard_terminal", key));
+    const response = await api.POST(new Request("http://localhost/api/hermes/sessions", {
+      method: "POST",
+      body: JSON.stringify({ surface: "dashboard_terminal", pageSlug: key, pageTitle: `${label}.pdf`, title: `PDF · ${label}.pdf` }),
+    }));
+    assert.equal(response.status, 200);
+    const chat = store.getConversationForUser((await response.json()).session.id, 1);
+    assert.equal(chat.temporary, 0);
+    store.reserveConversationTurn({ conversation: chat, clientMessageId: `${label}-first`, surface: chat.surface, content: `Explain the ${label} PDF`, metadata: { activePageSlug: key } });
+    store.completeAssistantMessage({ conversationId: chat.id, clientMessageId: `${label}-first`, content: `The ${label} PDF explained` });
+    chats.push({ chat, key, label });
+  }
+
+  const { sessions } = await (await api.GET(new Request("http://localhost/api/hermes/sessions?surface=dashboard_terminal"))).json();
+  for (const { chat, key, label } of chats) {
+    const row = sessions.find((item) => item.id === chat.public_id);
+    assert.ok(row, `${label} PDF chat is missing from the terminal history`);
+    assert.equal(row.originLabel, "PDF Assistant");
+    assert.equal(row.pageSlug, key);
+    const opened = await route("[sessionId]/route.ts").GET(
+      new Request("http://localhost/chat?surface=dashboard_terminal"),
+      { params: Promise.resolve({ sessionId: chat.public_id }) },
+    );
+    assert.equal(opened.status, 200);
+    assert.deepEqual((await opened.json()).session.messages.map((message) => message.content), [`Explain the ${label} PDF`, `The ${label} PDF explained`]);
+  }
+  const { results } = await (await route("search/route.ts").GET(new Request("http://localhost/search?surface=dashboard_terminal&q=explained"))).json();
+  assert.deepEqual(new Set(results.map((hit) => hit.id)), new Set(chats.map(({ chat }) => chat.public_id)));
+});
+
 test("browser-created chats keep their origin through history, rename, reopen and search", async () => {
   const api = route("route.ts");
   const create = async (body) => {

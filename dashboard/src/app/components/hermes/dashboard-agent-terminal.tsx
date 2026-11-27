@@ -367,6 +367,17 @@ import AgentLaunchPrompt from "./agent-launch-prompt";
 import { SwarmActivity } from "./swarm-activity";
 import type { ChatTextSelectionReference } from "@/lib/chat-text-selection";
 import { sendDesktopTabsCommand } from "@/lib/desktop-browser-tabs";
+import { useRouter } from "next/navigation";
+import { startNavigationProgress } from "@/app/components/navigation-progress";
+import {
+  chatSurfaceLaunchable,
+  launchChatSurface,
+  parseChatSurfaceLaunch,
+  sameChatSurfaceLaunch,
+  takeBreadLaunchChat,
+  type ChatSurfaceLaunch,
+} from "@/lib/chat-surface-launch-client";
+import { ChatSurfaceLaunchButton } from "@/app/components/chat-surface-launch-button";
 import {
   CHAT_NOTIFICATION_OPEN_REQUEST_EVENT,
   takeChatNotificationReply,
@@ -430,6 +441,8 @@ interface RuntimeHistorySession {
   hooked: boolean;
   /** A plain terminal chat that can still be moved into a garden workspace. */
   movable: boolean;
+  /** The chat's own surface (its PDF, reader page, workspace), when not the Terminal. */
+  launch: ChatSurfaceLaunch | null;
 }
 
 /**
@@ -456,7 +469,8 @@ function sameHistoryList(
       x.highlight !== y.highlight ||
       x.scheduled !== y.scheduled ||
       x.hooked !== y.hooked ||
-      x.movable !== y.movable
+      x.movable !== y.movable ||
+      !sameChatSurfaceLaunch(x.launch, y.launch)
     ) {
       return false;
     }
@@ -1538,6 +1552,7 @@ function RuntimeTerminal({
     [temporaryChat, presentation, voicePresentation, newChatWorkspace, viewingWebsite, privateBrowser, scope, restoreOwnerKey],
   );
   const session = useAgentSession("dashboard_terminal", sessionCreateOptions);
+  const router = useRouter();
   const { begin: beginAttachmentPreparation, busy: extractingAttachments, error: attachmentUploadError } =
     useAttachmentPreparation(session.sessionId);
   const inlineQuestions = useInlineAgentQuestions({
@@ -1613,6 +1628,34 @@ function RuntimeTerminal({
     // Depending on this component-local function would reopen on every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialChatId]);
+
+  // Bread in VS Code: a Code chat launched from the Terminal or a Garden
+  // workspace waits on the server (Bread's page is on the extension's own
+  // origin), so Bread asks for it on arrival and every couple of seconds.
+  const openLaunchedBreadChatRef = useRef<(chatId: string) => void>(() => undefined);
+  openLaunchedBreadChatRef.current = (chatId: string) => {
+    if (chatId !== session.sessionId) openHistorySession(chatId);
+  };
+  useEffect(() => {
+    if (!codePresentation) return;
+    let disposed = false;
+    let asking = false;
+    const ask = () => {
+      if (asking || document.visibilityState === "hidden") return;
+      asking = true;
+      void takeBreadLaunchChat().then((chatId) => {
+        if (!disposed && chatId) openLaunchedBreadChatRef.current(chatId);
+      }).finally(() => { asking = false; });
+    };
+    ask();
+    const timer = window.setInterval(ask, 2_000);
+    window.addEventListener("focus", ask);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+      window.removeEventListener("focus", ask);
+    };
+  }, [codePresentation]);
 
   // A notice on this page asks for its chat without a navigation. The opener
   // is read through a ref so the listener is registered once and still calls
@@ -2071,6 +2114,7 @@ function RuntimeTerminal({
                   typeof item.hookId === "string" &&
                   item.hookId.trim().length > 0,
                 movable: item.surface === "dashboard_terminal",
+                launch: parseChatSurfaceLaunch(item.launch),
                 // The server already rejected anything outside the palette.
                 highlight:
                   typeof item.highlight === "string" ? item.highlight : null,
@@ -9530,6 +9574,36 @@ if (careerOpsAgent) {
       ? "Temporary chat is on — click to leave it. This chat is not in your history and is not used or saved as memory."
       : "Temporary chats stay out of your history and don’t use or save memory.";
   const temporaryChatLabel = temporaryChat ? "Turn off temporary chat" : "Turn on temporary chat";
+  // Once a chat is on screen, the corner switch gives way to a launch control
+  // when that chat belongs to another surface: a PDF Assistant chat opens its
+  // PDF with the assistant, a garden chat opens its workspace or reader page.
+  // Terminal chats have nowhere else to go, and a surface never offers to
+  // launch itself (the browser drawer on a browser chat). Bread in VS Code
+  // never navigates its own frame away.
+  const currentChatLaunch = (() => {
+    const chatId = session.sessionId;
+    if (!chatId || newChatPageSelected || codePresentation || embeddedPresentation || voicePresentation) return null;
+    const launch = history.find((item) => item.id === chatId)?.launch ?? null;
+    if (!launch || (browserAssistantPresentation && launch.kind === "browser")) return null;
+    return chatSurfaceLaunchable(chatId, launch) ? launch : null;
+  })();
+  const launchCurrentChatSurface = async () => {
+    const chatId = session.sessionId;
+    if (!chatId || !currentChatLaunch) return;
+    const launched = await launchChatSurface(
+      { conversationId: chatId, launch: currentChatLaunch },
+      (href) => {
+        if (href !== `${window.location.pathname}${window.location.search}`) startNavigationProgress();
+        router.push(href);
+      },
+    );
+    if (!launched) {
+      setHistoryError("This chat's page could not be opened.");
+      return;
+    }
+    // The surface opens on the page behind the dock; get out of its way.
+    if (!drawerPresentation && isOpen) toggleDock(false);
+  };
 
   return (
     <>
@@ -9644,6 +9718,13 @@ if (careerOpsAgent) {
             >
               {temporaryChatIcon("h-[18px] w-[18px]")}
             </button>
+          ) : currentChatLaunch ? (
+            <ChatSurfaceLaunchButton
+              kind={currentChatLaunch.kind}
+              onLaunch={launchCurrentChatSurface}
+              className="h-7 w-7 rounded-md text-[var(--ink-muted)] hover:bg-[var(--paper-strong)] hover:text-[var(--ink)]"
+              iconClassName="h-[17px] w-[17px]"
+            />
           ) : null}
         />
       ) : (
@@ -9856,6 +9937,14 @@ if (careerOpsAgent) {
                 switch only belongs on the new-chat page. The banner below keeps
                 an active temporary conversation identified after the switch is
                 gone. */}
+              {currentChatLaunch && !browserAssistantPresentation ? (
+                <ChatSurfaceLaunchButton
+                  kind={currentChatLaunch.kind}
+                  onLaunch={launchCurrentChatSurface}
+                  className="absolute right-3 top-2 z-20 h-10 w-10 text-[#9AAAA1] hover:text-[#172A22]"
+                  iconClassName="h-[24px] w-[24px]"
+                />
+              ) : null}
               {newChatPageSelected && !browserAssistantPresentation ? (
                 <button
                   type="button"

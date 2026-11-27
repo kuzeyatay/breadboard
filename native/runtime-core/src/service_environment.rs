@@ -1491,6 +1491,7 @@ impl TrustedWorkerEnvironmentSet {
             "GOOGLE_DRIVE_CLIENT_ID",
             "GOOGLE_DRIVE_CLIENT_SECRET",
             "GOOGLE_DRIVE_API_KEY",
+            "BREADBOARD_LOCAL_ACCOUNT",
             "BREADBOARD_MEMORY_DIAGNOSTIC_TOKEN",
             "BREADBOARD_PACKAGED_SERVICE_EVIDENCE",
             "BREADBOARD_PACKAGED_SERVICE_EVIDENCE_ENDPOINTS",
@@ -6750,6 +6751,7 @@ fn build_gateway_environment(
                     | "GOOGLE_DRIVE_CLIENT_ID"
                     | "GOOGLE_DRIVE_CLIENT_SECRET"
                     | "GOOGLE_DRIVE_API_KEY"
+                    | "BREADBOARD_LOCAL_ACCOUNT"
                     | "BREADBOARD_DASHBOARD_BUNDLER"
                     | "BREADBOARD_SUPERVISOR_CONTROL_URL"
                     | "BREADBOARD_SUPERVISOR_CONTROL_TOKEN"
@@ -6934,6 +6936,14 @@ fn build_chatmock_environment(
         ledger.join("request-receipts").into_os_string(),
     )?;
     builder.insert("CHATMOCK_ALLOW_ENV_PROVIDER_KEYS", "false")?;
+    // Subscription voice drives `codex app-server`. Point it at the Codex that
+    // Optional components installs; ChatMock checks the file on every request,
+    // so voice starts working as soon as that install finishes.
+    builder.insert(
+        "BREADBOARD_CODEX_BINARY",
+        first_use_binary_path(mode, paths, "codex.exe", "runtime-v2/toolchains/codex")
+            .into_os_string(),
+    )?;
     if config.cliproxy_mode != "disabled" {
         builder.insert(
             "CLIPROXY_BASE_URL",
@@ -7494,6 +7504,9 @@ fn build_dashboard_environment(
 
     builder.insert("NEXTAUTH_SECRET", config.next_auth_secret.as_str())?;
     builder.insert("NEXTAUTH_URL", dashboard_url.as_str())?;
+    // The dashboard listens on loopback only, so the owner may turn off the
+    // startup password in Settings. Without this the switch is ignored.
+    builder.insert("BREADBOARD_LOCAL_ACCOUNT", "1")?;
 
     builder.insert("OPENAI_BASE_URL", chatmock_v1_url.as_str())?;
     builder.insert("OPENAI_API_KEY", "local")?;
@@ -8892,6 +8905,7 @@ mod tests {
                     "COMPOSIO_API_KEY",
                     "GOOGLE_DRIVE_CLIENT_ID",
                     "GOOGLE_DRIVE_CLIENT_SECRET",
+                    "BREADBOARD_LOCAL_ACCOUNT",
                     "BREADBOARD_MEMORY_DIAGNOSTIC_TOKEN",
                     "BREADBOARD_PACKAGED_SERVICE_EVIDENCE",
                     "BREADBOARD_PACKAGED_SERVICE_EVIDENCE_ENDPOINTS",
@@ -9897,6 +9911,7 @@ mod tests {
                 "COUNCIL_LEDGER_DIR",
                 "COUNCIL_REQUEST_RECEIPT_DIR",
                 "CHATMOCK_ALLOW_ENV_PROVIDER_KEYS",
+                "BREADBOARD_CODEX_BINARY",
                 "CLIPROXY_BASE_URL",
                 "CLIPROXY_API_KEY",
             ],
@@ -10059,6 +10074,7 @@ mod tests {
                 "HERMES_CUA_DRIVER_CMD",
                 "NEXTAUTH_SECRET",
                 "NEXTAUTH_URL",
+                "BREADBOARD_LOCAL_ACCOUNT",
                 "OPENAI_BASE_URL",
                 "OPENAI_API_KEY",
                 "CHATMOCK_BASE_URL",

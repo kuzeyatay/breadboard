@@ -258,8 +258,10 @@ const PINNED_MEM0_RUNTIME = Object.freeze({
     },
   },
   closure: {
-    fileCount: 4_048,
-    sha256: "A1E1BD7B439438CE7741895F117A2D82B103D346F84F7854355B362C330525F1",
+    // Hoisted layout (createPortableGraph in prepare-app-resources.mjs): the
+    // nested one put Mem0 modules past MAX_PATH once installed.
+    fileCount: 3_143,
+    sha256: "75F2FDD742436EE4378AD302609377EAFF344E8263D587C5F73E744C0DE480B6",
     excludes: ["BREADBOARD_SOURCE_COMMIT", "runtime-artifact.json"],
   },
 });
@@ -5172,6 +5174,46 @@ if (fs.existsSync(winUnpacked)) {
 } else {
   console.log("[verify-package] release/win-unpacked not present; checked staging roots only");
 }
+
+/**
+ * NSIS cannot create a file whose full path reaches Windows' 260-character
+ * MAX_PATH and skips it without failing the install. Installed per user, a
+ * resource lives at C:\Users\<name>\AppData\Local\Programs\Breadboard\resources\...
+ * The 0.1.15 dashboard lost 249 LiveKit/OpenTelemetry files this way while
+ * every check here passed. Budget for 20-character user names.
+ */
+function checkInstalledPathLengths(resourcesRoot) {
+  const installPrefix = `C:\\Users\\${"x".repeat(20)}\\AppData\\Local\\Programs\\Breadboard\\resources\\`;
+  const limit = 259;
+  const tooLong = [];
+  const walk = (directory, relative) => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const child = relative ? `${relative}\\${entry.name}` : entry.name;
+      if (entry.isDirectory()) walk(path.join(directory, entry.name), child);
+      else if (installPrefix.length + child.length > limit) tooLong.push(child);
+    }
+  };
+  walk(resourcesRoot, "");
+  // Type declarations, docs, maps and test fixtures are never loaded at run
+  // time; losing them is harmless, so they are reported, not refused.
+  const inert = (file) =>
+    /\.(?:d\.[cm]?ts|map|md|markdown)$/iu.test(file) ||
+    /(?:^|\\)(?:__image_snapshots__|__snapshots__|\.github)(?:\\|$)/iu.test(file);
+  const runtime = tooLong.filter((file) => !inert(file));
+  if (tooLong.length > runtime.length) {
+    console.log(`[verify-package] WARNING: ${tooLong.length - runtime.length} inert file(s) (types, docs, test fixtures) exceed MAX_PATH and will not install`);
+  }
+  if (runtime.length) {
+    runtime.sort((a, b) => b.length - a.length);
+    problems.push(
+      `${runtime.length} packaged file(s) would exceed MAX_PATH once installed and be silently dropped by the installer ` +
+        `(budget ${limit - installPrefix.length} characters under resources\\). Longest: ${runtime.slice(0, 5).join(" | ")}`,
+    );
+  } else {
+    console.log(`[verify-package] installed path lengths fit MAX_PATH for user names up to 20 characters`);
+  }
+}
+if (fs.existsSync(winUnpacked)) checkInstalledPathLengths(path.join(winUnpacked, "resources"));
 
 function directoryBytes(root) {
   let total = 0;

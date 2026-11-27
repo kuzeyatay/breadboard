@@ -10,6 +10,7 @@ import type { SpotifyConnectDevice } from '@/lib/spotify/devices';
 import { ForegroundEventSource } from '@/lib/foreground-event-source';
 import { spotifyControlRequest, spotifyPlayerRequest } from '@/lib/spotify/control-request';
 import { usePublishSpotifyAmbient } from '@/app/components/spotify-ambient-context';
+import { openAuthorizationUrl } from '@/lib/auth-window';
 
 import {
   BatteryCharging,
@@ -1117,7 +1118,6 @@ function BrowserSpotifyDock({
   busy,
   error,
   control,
-  openConnections,
   open,
   setOpen,
 }: {
@@ -1126,7 +1126,6 @@ function BrowserSpotifyDock({
   busy: boolean;
   error: string;
   control: (action: SpotifyDockAction, extra?: Record<string, unknown>) => Promise<boolean>;
-  openConnections: () => void;
   open: boolean;
   setOpen: (open: boolean) => void;
 }) {
@@ -1158,6 +1157,8 @@ function BrowserSpotifyDock({
   const libraryReveal = useLoadingTextReveal(open && loading && emptyLibraryView);
   const [libraryError, setLibraryError] = useState("");
   const [playlistReconnectRequired, setPlaylistReconnectRequired] = useState(false);
+  const [connecting, setConnecting] = useState(false);
+  const [connectError, setConnectError] = useState("");
   const [sampledPalette, setSampledPalette] = useState({
     source: null as string | null,
     palette: DEFAULT_PLAYER_PALETTE,
@@ -1357,9 +1358,32 @@ function BrowserSpotifyDock({
     return () => controller.abort();
   }, [open, selectedPlaylist?.id, view]);
 
+  // Start Spotify sign-in straight from the dock, the same way Settings →
+  // Connections does; the dock's status stream picks up the new connection.
+  const connectSpotify = async () => {
+    if (connecting) return;
+    const popup = window.open("about:blank", "breadboard-spotify-oauth", "popup,width=720,height=760");
+    if (popup) popup.opener = null;
+    setConnecting(true);
+    setConnectError("");
+    try {
+      const response = await fetch("/api/hermes/connections/spotify", { method: "POST" });
+      const payload = await response.json().catch(() => ({})) as { authorizationUrl?: string; message?: string; error?: string };
+      if (!response.ok || !payload.authorizationUrl) {
+        throw new Error(payload.message ?? payload.error ?? "Spotify sign-in could not be started.");
+      }
+      openAuthorizationUrl(popup, payload.authorizationUrl);
+    } catch (cause) {
+      popup?.close();
+      setConnectError(cause instanceof Error ? cause.message : "Spotify sign-in could not be started.");
+    } finally {
+      setConnecting(false);
+    }
+  };
+
   const openPlayer = () => {
     if (!spotify?.connected) {
-      openConnections();
+      void connectSpotify();
       return;
     }
     if (!open) {
@@ -1533,7 +1557,7 @@ function BrowserSpotifyDock({
         )}
         <span ref={trackReveal} className="browser-spotify-copy">
           <strong>{initializing ? "Loading Spotify…" : track?.name ?? (spotify?.connected ? "Spotify is ready" : spotify ? "Connect Spotify" : "Spotify unavailable")}</strong>
-          <small>{initializing ? "Checking your connection" : error || track?.artist || (spotify?.connected ? (spotify.engine.ready ? "Search music or browse playlists" : "Starting player…") : spotify ? "Settings → Connections" : "Trying again shortly")}</small>
+          <small>{initializing ? "Checking your connection" : error || track?.artist || (spotify?.connected ? (spotify.engine.ready ? "Search music or browse playlists" : "Starting player…") : spotify ? (connectError || (connecting ? "Opening Spotify sign-in…" : "Sign in to play music here")) : "Trying again shortly")}</small>
           {spotify?.connected ? <button type="button" className="browser-spotify-device" title="Choose a Spotify device" aria-haspopup="dialog" aria-expanded={open && devicesOpen} aria-controls="browser-spotify-player" onClick={openDevices}>{playbackDeviceLabel}<ChevronUp aria-hidden="true" /></button> : null}
         </span>
         {spotify?.connected ? <span className="browser-spotify-open-cue" aria-hidden="true"><ChevronUp /></span> : null}
@@ -1545,7 +1569,7 @@ function BrowserSpotifyDock({
           <button type="button" aria-label="Next track" disabled={busy || !track} onClick={() => void control("next")}><SkipForward aria-hidden="true" /></button>
         </span>
       ) : spotify ? (
-        <button type="button" className="browser-spotify-connect" onClick={openConnections}>Connect</button>
+        <button type="button" className="browser-spotify-connect" disabled={connecting} aria-busy={connecting || undefined} onClick={() => void connectSpotify()}>{connectError ? "Retry" : "Connect"}</button>
       ) : null}
 
       {spotify?.connected ? (
@@ -1739,7 +1763,7 @@ function BrowserSpotifyDock({
             {displayedLibraryError ? (
               <div className="browser-spotify-error" role="alert">
                 <p ref={libraryReveal}>{displayedLibraryError}</p>
-                {playlistPermissionMissing || playlistReconnectRequired || /Reconnect Spotify/u.test(displayedLibraryError) ? <button type="button" onClick={openConnections}>Reconnect Spotify</button> : null}
+                {playlistPermissionMissing || playlistReconnectRequired || /Reconnect Spotify/u.test(displayedLibraryError) ? <button type="button" disabled={connecting} onClick={() => void connectSpotify()}>Reconnect Spotify</button> : null}
               </div>
             ) : null}
           </div>
@@ -1754,13 +1778,11 @@ function BrowserSpotifyDock({
 export function BrowserDock({
   active = true,
   preparing = false,
-  openConnections,
   openPanel,
   setPanelOpen,
 }: {
   active?: boolean;
   preparing?: boolean;
-  openConnections: () => void;
   openPanel: DockPanel | null;
   setPanelOpen: (panel: DockPanel, open: boolean) => void;
 }) {
@@ -1876,7 +1898,6 @@ export function BrowserDock({
         busy={spotifyBusy}
         error={spotifyError}
         control={controlSpotify}
-        openConnections={openConnections}
         open={active && openPanel === "spotify"}
         setOpen={setSpotifyOpen}
       />

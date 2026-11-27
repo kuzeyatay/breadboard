@@ -6,6 +6,7 @@ import {
   notifyAssistantModelsChanged,
 } from "@/app/components/use-assistant-models";
 import SettingsOpenaiWeb from "@/app/components/settings-openai-web";
+import { useOptionalComponentInstall } from "@/app/components/use-optional-component-install";
 import type { CliproxyStatus } from "@/lib/cliproxy/management";
 import {
   fetchCachedSettings,
@@ -278,6 +279,10 @@ export default function SettingsAccounts() {
       return null;
     }
   }, []);
+
+  // Claude sign-in drives the official Claude Code CLI; Optional components installs it.
+  const recheckClaude = useCallback(() => { void refreshSubscriptions(true); }, [refreshSubscriptions]);
+  const claudeInstall = useOptionalComponentInstall("claude-code", recheckClaude);
 
   useEffect(() => {
     void refresh();
@@ -1083,6 +1088,31 @@ export default function SettingsAccounts() {
             </li>
           ))}
       </ul>
+
+      {subscriptions?.claudeStatusError && providers.some((provider) => provider.id === "claude" && !provider.connected) ? (
+        <p className="text-[11px] leading-5 text-[var(--ink-muted)]">
+          Claude Code could not be checked: {subscriptions.claudeStatusError}
+        </p>
+      ) : null}
+
+      {subscriptions && !subscriptions.claudeInstalled && !subscriptions.claudeStatusError && providers.some((provider) => provider.id === "claude" && !provider.connected) ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="text-[11px] leading-5 text-[var(--ink-muted)]">
+            Connecting Claude needs Claude Code on this PC.
+          </p>
+          <button
+            type="button"
+            onClick={() => void claudeInstall.start()}
+            disabled={claudeInstall.busy}
+            className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3 py-1.5 text-xs text-[var(--ink)] transition hover:bg-[var(--paper-strong)] disabled:cursor-not-allowed disabled:opacity-55"
+          >
+            {claudeInstall.busy ? "Installing Claude Code…" : "Install Claude Code"}
+          </button>
+          {claudeInstall.message ? (
+            <span className={`text-[11px] ${claudeInstall.failed ? "text-red-400" : "text-[var(--ink-muted)]"}`}>{claudeInstall.message}</span>
+          ) : null}
+        </div>
+      ) : null}
 
       {!proxyRunning && providers.some((provider) => provider.id !== "claude" && !provider.connected) ? (
         <p className="text-[11px] leading-5 text-[var(--ink-muted)]">

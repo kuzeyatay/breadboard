@@ -1,4 +1,6 @@
 "use client";
+import { useCallback } from "react";
+import { useOptionalComponentInstall } from "./use-optional-component-install";
 import { OPENAI_SPEECH_VOICES, type SpeechCredentialStatus } from "@/lib/speech/providers";
 
 const fieldClass = "neu-inset w-full rounded-xl border border-[var(--line)] bg-[var(--paper-surface)] px-3 py-2 text-sm text-[var(--ink)]";
@@ -18,6 +20,9 @@ export default function SettingsCloudSpeech({ cloud, voice, enabled, language, r
   onUpdate: (patch: { openaiVoice?: string; enabled?: boolean; language?: string; transcriptionLanguage?: string | null }) => void;
   onCredentialsChanged: () => Promise<unknown>;
 }) {
+  // Voice and dictation drive the Codex CLI; Optional components installs it.
+  const recheck = useCallback(() => { void onCredentialsChanged(); }, [onCredentialsChanged]);
+  const install = useOptionalComponentInstall("codex", recheck);
   return (
     <section className="space-y-4 rounded-2xl border border-[var(--line)] bg-[var(--paper-surface)] p-4" aria-label="ChatGPT subscription speech">
       <div>
@@ -28,8 +33,16 @@ export default function SettingsCloudSpeech({ cloud, voice, enabled, language, r
       </div>
       <div className="space-y-2">
         <p role="status" className="text-xs leading-5 text-[var(--ink)]">{cloud?.error || (cloud?.configured ? "ChatGPT connected. Preview a voice to check the connection." : "Checking the subscription connection…")}</p>
-        <button type="button" className={buttonClass} disabled={busy} onClick={() => void onCredentialsChanged()}>Re-check connection</button>
-        {!cloud?.configured && cloud?.reason !== "sign_in_required" ? <p className="text-xs text-[var(--ink-muted)]">Voice is unavailable. Try checking the connection again.</p> : null}
+        <div className="flex flex-wrap items-center gap-2">
+          <button type="button" className={buttonClass} disabled={busy} onClick={() => void onCredentialsChanged()}>Re-check connection</button>
+          {cloud?.reason === "runtime_missing" ? (
+            <button type="button" className={buttonClass} disabled={busy || install.busy} onClick={() => void install.start()}>
+              {install.busy ? "Installing Codex…" : "Install Codex"}
+            </button>
+          ) : null}
+        </div>
+        {install.message ? <p role="status" className={`text-xs ${install.failed ? "text-red-400" : "text-[var(--ink-muted)]"}`}>{install.message}</p> : null}
+        {!cloud?.configured && cloud?.reason !== "sign_in_required" && cloud?.reason !== "runtime_missing" ? <p className="text-xs text-[var(--ink-muted)]">Voice is unavailable. Try checking the connection again.</p> : null}
       </div>
       <fieldset disabled={busy} className="space-y-3">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">

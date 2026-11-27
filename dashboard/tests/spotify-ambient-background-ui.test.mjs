@@ -27,7 +27,7 @@ test("Spotify lighting keeps paused album colors and returns to the default back
             {appearance.ambientBackground && <Background theme={appearance.theme} spotifyColors={appearance.spotifyBackground} randomColors={appearance.randomColorsBackground}/>}
           </div>
           <div id="rings" aria-hidden="true" className={'browser-start-page ' + home.rings}/>
-          <div style={{position:'relative',zIndex:2,padding:24}}><BrowserDock active={active} openPanel={null} setPanelOpen={()=>{}} openConnections={()=>{}}/></div>
+          <div style={{position:'relative',zIndex:2,padding:24}}><BrowserDock active={active} openPanel={null} setPanelOpen={()=>{}}/></div>
           <h1 style={{position:'relative',textAlign:'center',fontSize:52,marginTop:100,color:'var(--browser-wallpaper-foreground)'}}>Terminal</h1>
           <PageAppearance page="new-tab" ownerKey="ambient-test" initialOpen/>
         </div></SpotifyAmbientProvider>;

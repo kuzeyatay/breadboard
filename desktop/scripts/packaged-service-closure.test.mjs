@@ -114,9 +114,12 @@ test("packaged native services launch only reviewed immutable artifacts", () => 
   const packaged = (id) =>
     byId.get(id).launchProfiles.find(({ modes }) => modes.includes("packaged"));
 
-  assert.equal(packaged("voicebox").allowedExecutable, "bin/voicebox-server.exe");
-  assert.ok(packaged("voicebox").installProbe.files.some(({ path: value }) =>
-    value === "bin/voicebox-runtime-artifact.json"));
+  // The Voicebox server installs on first use (Optional components) into the
+  // data root; the shipped receipt that pins it stays in the runtime root.
+  assert.equal(packaged("voicebox").allowedExecutable, "runtime-v2/toolchains/voicebox/voicebox-server.exe");
+  assert.equal(packaged("voicebox").executableAuthority, "data-root");
+  assert.ok(packaged("voicebox").installProbe.files.some(({ authority, path: value }) =>
+    authority === "runtime-root" && value === "bin/voicebox-runtime-artifact.json"));
   assert.doesNotMatch(JSON.stringify(packaged("voicebox")), /python|setup-voicebox|start-voicebox/iu);
 
   // Screenpipe is never shipped: installed mode fetches it into the data root
@@ -183,8 +186,12 @@ test("packaged native services launch only reviewed immutable artifacts", () => 
   assert.match(preparer, /PINNED_MEM0_RUNTIME/u);
   assert.match(
     preparer,
-    /const source = resolvePortableDependency\(googleImagesSource, dependency\);[\s\S]*copyPortableDependency\(\{[\s\S]*target: path\.join\(googleModulesTarget/u,
+    /const googleGraph = createPortableGraph\(googleModulesTarget\);[\s\S]*const source = resolvePortableDependency\(googleImagesSource, dependency\);[\s\S]*registerPortableRoot\(googleGraph, source, target\);[\s\S]*copyPortableDependency\(\{ graph: googleGraph, \.\.\.root \}\)/u,
   );
+  // Portable graphs hoist (npm layout) instead of nesting every dependency
+  // under its parent, which pushed installed files past MAX_PATH.
+  assert.match(preparer, /const portableResolutionChain = \(graph, from, name\) =>/u);
+  assert.doesNotMatch(preparer, /target: path\.join\(target, "node_modules", \.\.\.dependency\.split\("\/"\)\),\s*copiedSet/u);
   assert.match(
     preparer,
     /Resource2Skill pinned immutable source[\s\S]*?"ls-files", "-z"[\s\S]*?maxBuffer: 8 \* 1024 \* 1024/u,
@@ -330,16 +337,19 @@ test("packaged VLM OCR is offline and binds exact bundled native and model artif
   const packaged = service.launchProfiles.find(({ modes }) => modes.includes("packaged"));
   assert.deepEqual(development.modes, ["lean", "hot"]);
   assert.deepEqual(packaged.modes, ["packaged"]);
-  for (const expected of [
-    "bin/vlm-ocr/runtime/llama-server.exe",
-    "bin/vlm-ocr/runtime-artifact.json",
-    "bin/vlm-ocr/models/HunyuanOCR-Q8_0.gguf",
-    "bin/vlm-ocr/models/mmproj-HunyuanOCR-Q8_0.gguf",
+  // The native server ships; the 1.3 GB weights install on first use into the
+  // data root (Optional components), still from a pinned local file, never a
+  // network model reference at launch.
+  for (const [authority, expected] of [
+    ["runtime-root", "bin/vlm-ocr/runtime/llama-server.exe"],
+    ["runtime-root", "bin/vlm-ocr/runtime-artifact.json"],
+    ["data-root", "runtime-v2/toolchains/vlm-ocr-models/HunyuanOCR-Q8_0.gguf"],
+    ["data-root", "runtime-v2/toolchains/vlm-ocr-models/mmproj-HunyuanOCR-Q8_0.gguf"],
   ]) {
-    assert.ok(packaged.installProbe.files.some(({ authority, path: value }) =>
-      authority === "runtime-root" && value === expected), expected);
+    assert.ok(packaged.installProbe.files.some((entry) =>
+      entry.authority === authority && entry.path === expected), expected);
   }
-  assert.doesNotMatch(JSON.stringify(packaged), /data-root|data-path|huggingface|hf_repo/iu);
+  assert.doesNotMatch(JSON.stringify(packaged), /huggingface|hf_repo/iu);
   assert.match(
     artifactAuthority,
     /export const PINNED_VLM_OCR_RUNTIME = Object\.freeze\(/u,

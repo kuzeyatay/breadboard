@@ -84,6 +84,23 @@ class SubscriptionVoiceTests(unittest.TestCase):
         self.assertEqual(status["reason"], "runtime_missing")
         self.assertIn("no new sign-in", status["error"])
 
+    def test_binary_prefers_managed_codex_then_falls_back_to_npm_install(self):
+        root = os.path.join(self.temp.name, "lookup")
+        managed = os.path.join(root, "toolchains", "codex", "codex.exe")
+        npm_exe = os.path.join(root, "Roaming", "npm", "node_modules", "@openai", "codex", "node_modules",
+                               "@openai", "codex-win32-x64", "vendor", "x86_64-pc-windows-msvc", "codex", "codex.exe")
+        os.makedirs(os.path.dirname(npm_exe))
+        open(npm_exe, "wb").close()
+        env = {"BREADBOARD_CODEX_BINARY": managed, "APPDATA": os.path.join(root, "Roaming"),
+               "LOCALAPPDATA": os.path.join(root, "Local"), "PATH": ""}
+        with patch.dict(os.environ, env), patch.object(voice.os, "name", "nt"), patch.object(voice.shutil, "which",
+                side_effect=lambda name: name if os.path.isfile(name) else None):
+            # The managed install is not there yet: the person's own npm install still works.
+            self.assertEqual(voice.binary(), npm_exe)
+            os.makedirs(os.path.dirname(managed))
+            open(managed, "wb").close()
+            self.assertEqual(voice.binary(), managed)
+
     def test_refreshable_account_is_still_signed_in(self):
         auth = ({"tokens": {"refresh_token": "private-refresh", "account_id": "account"}}, self.auth[1])
         with patch.object(voice, "selected_auth", return_value=auth), patch.object(voice, "binary", return_value="codex"), patch("chatmock.utils._refresh_chatgpt_tokens") as refresh:

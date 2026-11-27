@@ -130,13 +130,15 @@ test("Voice settings switch between Local, ChatGPT, and ElevenLabs, configure ke
     await page.getByRole("button", { name: "Re-check connection" }).click();
     await page.getByText(cloud.error, { exact: true }).waitFor();
     assert.equal(await page.getByText("Sign in under Accounts.", { exact: false }).count(), 0);
+    // A missing Codex CLI is fixable from here, not a dead end.
+    await page.getByRole("button", { name: "Install Codex", exact: true }).waitFor();
     cloud = { configured: false, source: "subscription", reason: "service_unavailable", error: "Restart Breadboard to load the subscription voice service." };
     await page.getByRole("button", { name: "Re-check connection" }).click();
     await page.getByText(cloud.error, { exact: true }).waitFor();
     await page.getByText("Voice is unavailable. Try checking the connection again.", { exact: true }).waitFor();
     cloud = { configured: true, source: "subscription" };
     await page.getByRole("button", { name: "Re-check connection" }).click();
-    await page.getByText("ChatGPT account connected.", { exact: false }).waitFor();
+    await page.getByText("ChatGPT connected.", { exact: false }).waitFor();
     await page.getByLabel("Cloud voice", { exact: true }).selectOption("maple");
     await page.getByLabel("Dictation language", { exact: true }).selectOption("zh");
     await page.waitForFunction(() => !document.querySelector('[aria-label="Reading language"]').disabled);

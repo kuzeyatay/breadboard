@@ -1,10 +1,9 @@
 use breadboard_runtime_protocol::{ResourceClass, RuntimeMode};
 use serde::{Deserialize, Serialize};
 
-/// Packaged Runtime V2 admission never authorizes jobs or services below this
-/// system-commit reserve. Development modes use the bounded adaptive reserve
-/// below so the compiler and finite workers can share machines with smaller
-/// commit limits without weakening packaged acceptance.
+/// The fixed system-commit reserve of the default policy: the fallback when a
+/// service's sealed mode disagrees with the host. Every runtime mode, packaged
+/// included, admits work against the bounded adaptive reserve below.
 pub const ADMISSION_RESERVE_FLOOR_MB: u64 = 8 * 1024;
 
 // Development admission and the Hot dashboard's live supervisor guard share
@@ -204,10 +203,13 @@ impl AdmissionPolicy {
     /// Independent bounded trees may coexist whenever measured commit
     /// headroom fits; resource-class labels no longer impose an artificial
     /// one-heavyweight-at-a-time exhaustion limit in any runtime mode.
-    pub(crate) fn for_runtime_mode(mode: RuntimeMode) -> Self {
-        if mode == RuntimeMode::Packaged {
-            return Self::default();
-        }
+    ///
+    /// Packaged builds use the same adaptive reserve. The fixed 8 GiB floor
+    /// refused the terminal and account checks outright on ordinary 16 GB
+    /// machines (about 8.2 GiB free against 9.7 GiB required) while the same
+    /// work ran fine in development. The fixed floor remains the fallback for a
+    /// mode mismatch and for callers that build the default policy.
+    pub(crate) fn for_runtime_mode(_mode: RuntimeMode) -> Self {
         Self {
             minimum_reserve_mb: DEVELOPMENT_RESERVE_FLOOR_MB,
             critical_reserve_mb: DEVELOPMENT_RESERVE_FLOOR_MB,
@@ -468,7 +470,7 @@ mod tests {
     }
 
     #[test]
-    fn packaged_mode_retains_the_fixed_architecture_reserve() {
+    fn packaged_mode_uses_the_adaptive_reserve_like_development() {
         let request = AdmissionRequest {
             resource_class: ResourceClass::DocumentProcessing,
             estimated_cold_start_commit_mb: 4_096,
@@ -479,34 +481,47 @@ mod tests {
             limit_mb: 40 * 1024,
         };
 
-        assert_eq!(
-            AdmissionPolicy::for_runtime_mode(RuntimeMode::Lean).decide(
-                request,
-                commit,
-                &empty_load()
-            ),
-            AdmissionDecision::Admitted
-        );
-        assert_eq!(
-            AdmissionPolicy::for_runtime_mode(RuntimeMode::Hot).decide(
-                request,
-                commit,
-                &empty_load()
-            ),
-            AdmissionDecision::Admitted
-        );
-        let AdmissionDecision::Denied(denial) = AdmissionPolicy::for_runtime_mode(
-            RuntimeMode::Packaged,
-        )
-        .decide(request, commit, &empty_load()) else {
-            panic!("packaged admission must retain the fixed reserve")
+        for mode in [RuntimeMode::Lean, RuntimeMode::Hot, RuntimeMode::Packaged] {
+            assert_eq!(
+                AdmissionPolicy::for_runtime_mode(mode).decide(request, commit, &empty_load()),
+                AdmissionDecision::Admitted
+            );
+        }
+        // The default policy keeps the fixed architecture floor for fallbacks.
+        let AdmissionDecision::Denied(denial) =
+            AdmissionPolicy::default().decide(request, commit, &empty_load())
+        else {
+            panic!("the default policy must retain the fixed reserve")
         };
         assert_eq!(denial.required_headroom_mb, 12_288);
         assert_eq!(denial.available_headroom_mb, 9_000);
     }
 
     #[test]
-    fn recorded_development_document_headroom_is_admitted_without_weakening_packaged() {
+    fn recorded_sixteen_gigabyte_packaged_terminal_sample_is_admitted() {
+        // A packaged user's log: the Hermes session needed 9,728 MB (8 GiB
+        // reserve + 1.5 GiB estimate) with 8,327 MB free on a ~24 GB commit limit.
+        let request = AdmissionRequest {
+            resource_class: ResourceClass::Core,
+            estimated_cold_start_commit_mb: 1_536,
+            reserve_floor_mb: None,
+        };
+        let recorded = SystemCommit {
+            total_mb: 24 * 1024 - 8_327,
+            limit_mb: 24 * 1024,
+        };
+        assert_eq!(
+            AdmissionPolicy::for_runtime_mode(RuntimeMode::Packaged).decide(
+                request,
+                recorded,
+                &empty_load()
+            ),
+            AdmissionDecision::Admitted
+        );
+    }
+
+    #[test]
+    fn recorded_development_document_headroom_is_admitted() {
         let request = AdmissionRequest {
             resource_class: ResourceClass::DocumentProcessing,
             estimated_cold_start_commit_mb: 4_096,
@@ -517,20 +532,12 @@ mod tests {
             limit_mb: 40_221,
         };
 
-        for mode in [RuntimeMode::Lean, RuntimeMode::Hot] {
+        for mode in [RuntimeMode::Lean, RuntimeMode::Hot, RuntimeMode::Packaged] {
             assert_eq!(
                 AdmissionPolicy::for_runtime_mode(mode).decide(request, recorded, &empty_load()),
                 AdmissionDecision::Admitted
             );
         }
-        let AdmissionDecision::Denied(packaged) = AdmissionPolicy::for_runtime_mode(
-            RuntimeMode::Packaged,
-        )
-        .decide(request, recorded, &empty_load()) else {
-            panic!("the recorded packaged sample must remain denied")
-        };
-        assert_eq!(packaged.required_headroom_mb, 12_288);
-        assert_eq!(packaged.available_headroom_mb, 9_249);
 
         let development_required = 2_304 + 4_096;
         let equality = SystemCommit {

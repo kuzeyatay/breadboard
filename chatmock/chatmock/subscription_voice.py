@@ -64,9 +64,13 @@ def secret_path() -> Path:
 
 
 def binary() -> str | None:
+    # The Runtime names the Codex that Optional components installs. Until that
+    # install exists, keep looking for one the person installed themselves.
     configured = os.environ.get("BREADBOARD_CODEX_BINARY")
     if configured:
-        return shutil.which(configured)
+        managed = shutil.which(configured)
+        if managed:
+            return managed
     found = shutil.which("codex")
     if found and (os.name != "nt" or found.lower().endswith(".exe")):
         return found
@@ -75,6 +79,17 @@ def binary() -> str | None:
     if os.name == "nt" and os.environ.get("LOCALAPPDATA"):
         installed = Path(os.environ["LOCALAPPDATA"]) / "OpenAI" / "Codex" / "bin"
         candidates = list(installed.glob("*/codex.exe"))
+        if candidates:
+            return str(max(candidates, key=lambda candidate: candidate.stat().st_mtime))
+    # `npm install -g @openai/codex` puts only a codex.cmd shim on PATH (and the
+    # Runtime's closed PATH hides even that). The native binary ships inside the
+    # package, under vendor/ or a platform sub-package depending on the version.
+    if os.name == "nt" and os.environ.get("APPDATA"):
+        package = Path(os.environ["APPDATA"]) / "npm" / "node_modules" / "@openai" / "codex"
+        try:
+            candidates = [candidate for candidate in package.rglob("codex.exe") if candidate.is_file()]
+        except OSError:
+            candidates = []
         if candidates:
             return str(max(candidates, key=lambda candidate: candidate.stat().st_mtime))
     return None

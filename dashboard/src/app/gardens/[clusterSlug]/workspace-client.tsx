@@ -193,7 +193,7 @@ import {
 import StarredMessagesPanel from "@/app/components/hermes/starred-messages-panel";
 import ArchivedChatsPanel from "@/app/components/hermes/archived-chats-panel";
 import { HERMES_SESSIONS_CHANGED_EVENT, notifyHermesSessionsChanged } from "@/lib/hermes/session-client";
-import { WORKSPACE_ORIGIN_LABEL } from "@/lib/conversations/origin-label";
+import { CODE_ORIGIN_LABEL, WORKSPACE_ORIGIN_LABEL } from "@/lib/conversations/origin-label";
 import { deleteChatSession } from "@/app/components/hermes/history-client";
 import { initialStarredMessageTarget, useStarredMessageJump, type StarredMessageTarget } from "@/app/components/use-starred-message-jump";
 import {
@@ -360,6 +360,15 @@ import NavbarFlowerWind from "@/app/components/navbar-flower-wind";
 import { useToast, Toaster } from "@/app/components/toast";
 import { normalizeDocumentSearch } from "@/lib/document-discovery";
 import { startNavigationProgress } from "@/app/components/navigation-progress";
+import {
+  CHAT_SURFACE_LAUNCH_EVENT,
+  chatSurfaceLaunchable,
+  launchChatSurface,
+  parseChatSurfaceLaunch,
+  type ChatSurfaceLaunch,
+  type ChatSurfaceLaunchDetail,
+} from "@/lib/chat-surface-launch-client";
+import { ChatSurfaceLaunchButton } from "@/app/components/chat-surface-launch-button";
 import { useAssistantModels } from "@/app/components/use-assistant-models";
 import {
   formatExactTokenCount,
@@ -838,6 +847,8 @@ interface LinkedGardenChat {
   pinned: boolean;
   highlight: string | null;
   active: boolean;
+  /** The chat's own surface (its PDF, its reader page), for the launch control. */
+  launch?: unknown;
 }
 
 function parseLinkedGardenChats(value: unknown): LinkedGardenChat[] | null {
@@ -5632,6 +5643,48 @@ export default function WorkspaceClient({
     openedRequestedChatRef.current = requested;
     openChatById(requested);
   }, [initialChatId, openChatById]);
+
+  // A launch aimed at one of this Garden's workspace chats while the workspace
+  // is already on screen opens it here instead of navigating to this page.
+  useEffect(() => {
+    const onLaunch = (event: Event) => {
+      const launch = (event as CustomEvent<ChatSurfaceLaunchDetail>).detail?.launch;
+      if (launch?.kind !== "workspace" || launch.gardenSlug !== clusterSlug || !launch.legacyChatId) return;
+      openChatById(String(launch.legacyChatId));
+    };
+    window.addEventListener(CHAT_SURFACE_LAUNCH_EVENT, onLaunch);
+    return () => window.removeEventListener(CHAT_SURFACE_LAUNCH_EVENT, onLaunch);
+  }, [clusterSlug, openChatById]);
+
+  // The linked chat on screen (an Explore or PDF Assistant chat) belongs to
+  // another surface; the corner control launches that surface on the chat.
+  const linkedChatLaunch = useMemo(() => {
+    if (!linkedChatId) return null;
+    const launch = parseChatSurfaceLaunch(linkedChats.find((chat) => chat.id === linkedChatId)?.launch);
+    return launch && chatSurfaceLaunchable(linkedChatId, launch) ? launch : null;
+  }, [linkedChatId, linkedChats]);
+  // A Code chat is a workspace chat too, but its own surface is Bread in VS
+  // Code, so it offers that launch even here.
+  const activeCodeChatId = !linkedChatId && !temporaryChat && activeChatId !== null
+    ? chatSessions.find((chat) => chat.id === activeChatId && chat.originLabel === CODE_ORIGIN_LABEL)?.conversationId ?? null
+    : null;
+  const surfaceLaunch: { conversationId: string; launch: ChatSurfaceLaunch } | null = linkedChatId && linkedChatLaunch
+    ? { conversationId: linkedChatId, launch: linkedChatLaunch }
+    : activeCodeChatId
+      ? { conversationId: activeCodeChatId, launch: { kind: "code", href: "/code" } }
+      : null;
+  const launchLinkedChatSurface = () => {
+    if (!surfaceLaunch) return;
+    return launchChatSurface(
+      surfaceLaunch,
+      (href) => {
+        startNavigationProgress();
+        router.push(href);
+      },
+    ).then((launched) => {
+      if (!launched) addToast("This chat's page could not be opened.");
+    });
+  };
 
   const openChatFromNotification = useCallback((
     target: ChatNotificationTarget,
@@ -19239,6 +19292,14 @@ if (careerOpsAgent) {
                 initialChatId={linkedChatId}
               />
             </div>
+          ) : null}
+          {surfaceLaunch && !newChatPageSelected ? (
+            <ChatSurfaceLaunchButton
+              kind={surfaceLaunch.launch.kind}
+              onLaunch={launchLinkedChatSurface}
+              className="absolute right-3 top-2 z-40 h-10 w-10 text-gray-500 hover:text-gray-200"
+              iconClassName="h-[22px] w-[22px]"
+            />
           ) : null}
           {newChatPageSelected ? (
             <button

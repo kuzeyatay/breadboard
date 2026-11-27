@@ -15,7 +15,7 @@ const bundle=await build({
     import {BrowserSpotifyDock,useSpotifyDock} from './src/app/browser/browser-home-widgets';
     import {spotifyPlayerRequest,spotifyControlRequest} from './src/lib/spotify/control-request';
     window.playerRequest=spotifyPlayerRequest;window.controlRequest=spotifyControlRequest;
-    function App(){return <BrowserSpotifyDock {...useSpotifyDock(true)} openConnections={()=>{}} open={false} setOpen={()=>{}}/>;}
+    function App(){return <BrowserSpotifyDock {...useSpotifyDock(true)} open={false} setOpen={()=>{}}/>;}
     createRoot(document.getElementById('root')).render(<App/>);`},
   bundle:true,write:false,outfile:'spotify-native.js',platform:'browser',format:'iife',jsx:'automatic',define:{'process.env.NODE_ENV':'"test"'},
   plugins:[{name:'dock-test-exports',setup(builder){builder.onLoad({filter:/browser-home-widgets\.tsx$/},({path:filename})=>({loader:'tsx',contents:fs.readFileSync(filename,'utf8').replace('function BrowserSpotifyDock(','export function BrowserSpotifyDock(').replace('function useSpotifyDock(','export function useSpotifyDock(')}));}}],

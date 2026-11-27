@@ -186,5 +186,15 @@ test("the app New tab shares the Browser home quote and dock", () => {
   assert.match(client, /<BrowserHomeAccessories ownerKey=\{data\.widgetOwnerKey\}/);
   assert.match(page, /widgetOwnerKey: \(userEmail \|\| String\(userId\)\)\.trim\(\)\.toLowerCase\(\)/);
   assert.match(accessories, /<BrowserDailyQuote ownerKey=\{ownerKey\}/);
-  assert.match(accessories, /<BrowserDock [^>]*openConnections=/);
+  assert.match(accessories, /<BrowserDock [^>]*setPanelOpen=/);
+});
+
+test("the dock's Spotify Connect starts sign-in directly instead of opening Settings", () => {
+  const widgets = read("../src/app/browser/browser-home-widgets.tsx");
+  const accessories = read("../src/app/browser/browser-home-accessories.tsx");
+
+  assert.match(widgets, /fetch\("\/api\/hermes\/connections\/spotify", \{ method: "POST" \}\)/);
+  assert.match(widgets, /openAuthorizationUrl\(popup, payload\.authorizationUrl\)/);
+  assert.match(widgets, /className="browser-spotify-connect"[^>]*onClick=\{\(\) => void connectSpotify\(\)\}/);
+  assert.doesNotMatch(accessories, /initialTab="connections"/);
 });

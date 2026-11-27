@@ -212,6 +212,14 @@ export async function runClaudeAccountJob(input: {
         availableHeadroomMb: evidence.availableHeadroomMb,
       });
     }
+    if (snapshot.state !== "cancelled") {
+      // The bare "interrupted" sentence hid every worker failure; keep the
+      // Runtime's own (credential-free) reason in the service log.
+      console.warn(
+        `[claude-account] ${input.operation} job ${snapshot.jobId} ended ${snapshot.state}` +
+          ` code=${snapshot.failureCode ?? "none"} message=${snapshot.failureMessage ?? "none"}`,
+      );
+    }
     throw new ClaudeAccountJobError(
       snapshot.state === "cancelled" ? 499 : 502,
       snapshot.state === "cancelled"

@@ -58,6 +58,7 @@ import privateStyles from "./browser-private.module.css";
 import homeControls from "@/app/new-tab/new-tab-controls.module.css";
 import { useBrowserContextBookmark } from "./use-browser-context-bookmark";
 import { registerClapDock } from '@/lib/speech/clap/targets';
+import { takeBrowserLaunchChat } from '@/lib/chat-surface-launch-client';
 import homeStyles from "@/app/new-tab/combined-home.module.css";
 
 const STROKE = {
@@ -521,6 +522,27 @@ export function BrowserContent({
     void sendDesktopTabsCommand({ type: "browser-terminal", open, width: terminalWidthRef.current });
   }
 
+  // A browser chat launched from the Terminal: the site opens in this tab and
+  // the drawer opens on that chat. The launch leaves its chat id behind for
+  // whichever browser tab comes forward next, and it is taken exactly once.
+  const [launchedChatId, setLaunchedChatId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!isActive || privateBrowsing) return;
+    const take = () => {
+      const chatId = takeBrowserLaunchChat();
+      if (!chatId) return;
+      setLaunchedChatId(chatId);
+      setTerminalLoaded(true);
+      setActivePanel("terminal");
+      setBrowserPanelOpen(true);
+    };
+    take();
+    window.addEventListener("storage", take);
+    return () => window.removeEventListener("storage", take);
+    // setBrowserPanelOpen only sends shell commands; it is not state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isActive, privateBrowsing]);
+
   useEffect(() => {
     if (!isActive) return;
     const reveal = () => { setTerminalLoaded(true); setActivePanel("terminal"); setBrowserPanelOpen(true); };
@@ -856,7 +878,7 @@ export function BrowserContent({
               initialDraft={selectionDraft}
               suggestion={recommendationDraft?.selectionKey === selectionKey ? recommendationDraft : null}
               onSuggestionHandled={card => setRecommendationDraft(current => current === card ? null : current)}
-              initialChatId={browser?.selection?.conversationId}
+              initialChatId={browser?.selection?.conversationId ?? launchedChatId}
               webSelection={browser?.selection?.requestId && browser.selection.reference ? {
                 requestId: browser.selection.requestId, reference: browser.selection.reference,
                 conversationId: browser.selection.conversationId,

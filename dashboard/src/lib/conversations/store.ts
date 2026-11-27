@@ -28,6 +28,8 @@ export interface ConversationRow {
   surface: HermesSurface;
   scope_kind: ConversationScopeKind;
   origin_label?: string | null;
+  /** Same-origin address of the page this chat's own surface lives on (PDF Assistant). */
+  surface_href?: string | null;
   default_garden_id: number | null;
   active_agency_agent_slug: string | null;
   scheduled_chat_job_id: number | null;

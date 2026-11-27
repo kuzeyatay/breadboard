@@ -59,7 +59,7 @@ export const OPTIONAL_COMPONENTS = Object.freeze([
   {
     id: "codex",
     name: "Codex coding agent",
-    detail: "OpenAI's Codex CLI for the Codex terminal, HyperFrames and OpenMontage. 148 MB download.",
+    detail: "OpenAI's Codex CLI for ChatGPT voice and dictation, the Codex terminal, HyperFrames and OpenMontage. 148 MB download.",
     probe: "runtime-v2/toolchains/codex/codex.exe",
   },
   {

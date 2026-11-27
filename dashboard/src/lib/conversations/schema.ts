@@ -210,6 +210,9 @@ export function ensureConversationSchema(database: Database.Database): void {
   ensureColumn(database, "conversations", "highlight", "highlight TEXT");
   // Display provenance for companions that use the shared terminal runtime.
   ensureColumn(database, "conversations", "origin_label", "origin_label TEXT");
+  // Where a reader assistant's chat lives (the PDF it was asked about), so the
+  // Terminal can launch that surface on the chat. Recorded by the surface.
+  ensureColumn(database, "conversations", "surface_href", "surface_href TEXT");
   // Use is evidence. A memory that keeps reaching prompts is one the user's
   // questions keep needing, and ranking treats that as the same kind of signal
   // as a fresh confirmation: retrieval stamps the rows it selected, and the

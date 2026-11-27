@@ -88,12 +88,39 @@ export function parseClaudeCodeStatus(value: unknown): ClaudeCodeStatus {
   };
 }
 
+type ClaudeCodeAccountsStatus = ClaudeCodeStatus & { accounts: ClaudeProfile[] };
+
+// Every status read is a Runtime job: a Node worker plus the Claude CLI, with
+// a 512 MB commit reservation. Settings, the model list and catalog sync all
+// ask, so uncached reads ran thousands of jobs a day and starved memory-tight
+// machines. Share one in-flight read and keep the answer briefly.
+const STATUS_TTL_MS = 30_000;
+const statusCache = new Map<number, { at: number; value: Promise<ClaudeCodeAccountsStatus> }>();
+
+/** Account changes must be visible on the next read. */
+export function forgetClaudeCodeStatus(userId: number): void {
+  statusCache.delete(userId);
+}
+
 /** Read authentication through Claude Code itself; never open its credential. */
 export async function readClaudeCodeStatus(
   userId: number,
-  signal?: AbortSignal,
-): Promise<ClaudeCodeStatus & { accounts: ClaudeProfile[] }> {
-  const result = await runClaudeAccountJob({ userId, operation: "profiles", signal });
+  // Accepted for callers' symmetry; the shared read outlives any one request.
+  _signal?: AbortSignal,
+): Promise<ClaudeCodeAccountsStatus> {
+  const cached = statusCache.get(userId);
+  if (cached && Date.now() - cached.at < STATUS_TTL_MS) return cached.value;
+  const value = readClaudeCodeStatusUncached(userId);
+  statusCache.set(userId, { at: Date.now(), value });
+  value.catch(() => {
+    // A failed read is retried by the next caller rather than cached.
+    if (statusCache.get(userId)?.value === value) statusCache.delete(userId);
+  });
+  return value;
+}
+
+async function readClaudeCodeStatusUncached(userId: number): Promise<ClaudeCodeAccountsStatus> {
+  const result = await runClaudeAccountJob({ userId, operation: "profiles" });
   try {
     const parsed = JSON.parse(result.detail);
     const status = parseClaudeCodeStatus(parsed);
@@ -122,11 +149,15 @@ export function isClaudeCodeLoginState(state: string): boolean {
 export async function isClaudeCodeLoginComplete(userId: number, state: string, cancel = false) {
   const jobId = state.slice(CLAUDE_LOGIN_STATE_PREFIX.length);
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(jobId)) throw new ClaudeAccountJobError(400, "Invalid Claude sign-in.");
-  return pollClaudeAccountLogin(userId, jobId, cancel);
+  const complete = await pollClaudeAccountLogin(userId, jobId, cancel);
+  if (complete) forgetClaudeCodeStatus(userId);
+  return complete;
 }
 
 export async function changeClaudeProfile(userId: number, operation: "activate" | "logout", profile: string, signal?: AbortSignal) {
+  forgetClaudeCodeStatus(userId);
   const result = await runClaudeAccountJob({ userId, operation, profile, signal });
+  forgetClaudeCodeStatus(userId);
   if (!result.ok) throw new ClaudeAccountJobError(409, result.message);
 }
 

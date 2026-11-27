@@ -7,7 +7,8 @@ import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import { externalRuntimeSpawn as spawn } from "../external-runtime-process.ts";
 import { claudeRoot, profileDir, profileRows, restProfile, sessionTranscript } from "../../../scripts/claude-profiles.mjs";
 import type { ChatTokenUsage } from "../chat-token-usage.ts";
-import { repositoryRoot } from "../runtime-paths.ts";
+import { dashboardDataDir, repositoryRoot } from "../runtime-paths.ts";
+import { managedPayloadTarget } from "../../../scripts/runtime-v2-bulk-paths.mjs";
 import { tierAllows, type AutonomyTier } from "../hermes/autonomy.ts";
 import { CLAUDE_CODE_AGENT_NAME } from "./identity.ts";
 
@@ -53,11 +54,21 @@ const MAX_EVENTS = 5_000;
 const RETENTION_MS = 30 * 60 * 1000;
 
 /** Where the official CLI installs itself; the same list ChatMock and the Runtime probe. */
+function managedClaudeExecutable(name: string, env: NodeJS.ProcessEnv): string {
+  try {
+    return path.join(managedPayloadTarget(dashboardDataDir(), "runtime-v2/toolchains/claude-code", env), name);
+  } catch {
+    return "";
+  }
+}
+
 export function claudeExecutable(env: NodeJS.ProcessEnv = process.env): string | null {
   const name = process.platform === "win32" ? "claude.exe" : "claude";
   const home = env.USERPROFILE?.trim() || env.HOME?.trim() || os.homedir();
   const candidates = [
     env.CLAUDE_CLI_PATH?.trim(),
+    // The copy Settings → Optional components installs on packaged builds.
+    managedClaudeExecutable(name, env),
     path.join(home, ".local", "bin", name),
     env.APPDATA ? path.join(env.APPDATA, "SPB_Data", ".local", "bin", name) : "",
     env.LOCALAPPDATA ? path.join(env.LOCALAPPDATA, "Programs", "claude", name) : "",

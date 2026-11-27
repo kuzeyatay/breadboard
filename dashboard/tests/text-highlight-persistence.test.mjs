@@ -624,7 +624,7 @@ for (const view of ['dashboard','embedded Quartz']) test(`${view} saves while al
 });
 
 test('installed Quartz builds the same persistence client without development repository imports', async()=>{
-  const {stageQuartzHighlightAssets}=await import('../../desktop/scripts/quartz-highlight-assets.mjs');
+  const {closeQuartzTemplateImports}=await import('../../desktop/scripts/quartz-template-closure.mjs');
   const target=path.join(root,'quartz-template');
   const scripts=path.join(target,'quartz','components','scripts');fs.mkdirSync(scripts,{recursive:true});
   for(const name of ['highlighter.inline.ts','highlightPalette.ts','highlightNoteTooltip.ts','mathAnnotationSource.ts','generatedVisualHost.ts','pageUnderstanding.inline.ts','explorer.inline.ts','pageExports.inline.ts']) {
@@ -632,7 +632,8 @@ test('installed Quartz builds the same persistence client without development re
   }
   const utilities=path.join(target,'quartz','util');fs.mkdirSync(utilities,{recursive:true});
   for(const name of ['editorMarkdown.ts','mathAnnotation.ts']) fs.copyFileSync(new URL('../../quartz/quartz/util/'+name,import.meta.url),path.join(utilities,name));
-  stageQuartzHighlightAssets(fileURLToPath(new URL('../../',import.meta.url)),target);
+  const repoRoot=fileURLToPath(new URL('../../',import.meta.url));
+  closeQuartzTemplateImports({repoRoot,templateSource:path.join(repoRoot,'quartz'),templateTarget:target});
   // The installed template includes Quartz's node_modules; resolve those same
   // dependencies here without copying the full package tree into the fixture.
   const bundled=await build({entryPoints:[path.join(scripts,'highlighter.inline.ts')],nodePaths:[fileURLToPath(new URL('../../quartz/node_modules',import.meta.url))],bundle:true,write:false,platform:'browser',format:'iife'});
@@ -642,5 +643,5 @@ test('installed Quartz builds the same persistence client without development re
   const pageExports=await build({entryPoints:[path.join(scripts,'pageExports.inline.ts')],bundle:true,write:false,platform:'browser',format:'iife'});
   assert.ok(pageExports.outputFiles[0].text.includes('Copy Markdown'));
   assert.ok(pageExports.outputFiles[0].text.includes('/api/markdown-to-pdf'));
-  assert.equal(fs.readFileSync(path.join(scripts,'text-highlight-client.ts'),'utf8'),fs.readFileSync(new URL('../src/lib/text-highlight-client.ts',import.meta.url),'utf8'));
+  assert.equal(fs.readFileSync(path.join(target,'quartz','external','dashboard','src','lib','text-highlight-client.ts'),'utf8'),fs.readFileSync(new URL('../src/lib/text-highlight-client.ts',import.meta.url),'utf8'));
 });
