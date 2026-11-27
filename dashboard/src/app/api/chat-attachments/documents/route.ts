@@ -11,6 +11,7 @@ import {
 import {
   DocumentBlobError,
   findDocumentBlob,
+  linkDocumentBlob,
   markWebPdfBlob,
   removeDocumentBlob,
   writeDocumentBlob,
@@ -24,12 +25,57 @@ import {
 } from "@/lib/document-structure/index.ts";
 import { externalRuntimeFilesystem as fs } from "@/lib/external-runtime-filesystem";
 import { readPdfAttachment } from "@/lib/pdf-attachment-reader.ts";
-import { storeDocumentText } from "@/lib/conversations/document-reading-store.ts";
+import { readStoredDocumentText, storeDocumentText } from "@/lib/conversations/document-reading-store.ts";
+import { pdfReadingCovers, pdfReadingPages } from "@/lib/pdf-preparation.ts";
 import { STORE_ONLY_HEADER, sweepOpenedFiles } from "@/lib/conversations/opened-files.ts";
 import { shareFreshUpload } from "@/lib/storage/service.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+
+const SOURCE_BLOB_HEADER = "x-document-source-blob";
+
+/**
+ * The chat gets its own hard-linked blob. A saved reading of the source that
+ * covers the asked pages is reused as is; otherwise only what it lacks is read,
+ * and the result is saved on the source so the next question starts from it.
+ */
+async function readStoredPdf(request: Request, userId: number, sourceBlobId: string, ocrPages: number[] | undefined) {
+  const source = findDocumentBlob({ userId, blobId: sourceBlobId });
+  if (!source || source.format !== "pdf") {
+    throw new ApiError(404, "document_not_found", "This PDF is no longer stored. Reopen it and try again.");
+  }
+  const saved = readStoredDocumentText({ userId, blobId: source.blobId });
+  const covered = saved !== null && (ocrPages
+    ? ocrPages.every(page => pdfReadingCovers(saved, { wholeDocument: false, page }))
+    : pdfReadingCovers(saved, { wholeDocument: true }));
+  const stored = linkDocumentBlob({ userId, source });
+  let text = saved ?? "";
+  let warning = "";
+  if (!covered) {
+    const reading = await readPdfAttachment(stored.path, {
+      userId,
+      signal: request.signal,
+      ocrPages,
+      pageReadings: saved ? pdfReadingPages(saved) : undefined,
+    }).catch((error) => {
+      removeDocumentBlob({ userId, blobId: stored.blobId });
+      throw new ApiError(422, "document_read_failed", error instanceof Error ? error.message : "The PDF could not be read. Retry the attachment.");
+    });
+    ({ text, warning } = reading);
+    try { storeDocumentText({ userId, blobId: source.blobId }, text); } catch { /* Only a shortcut. */ }
+  }
+  storeDocumentText({ userId, blobId: stored.blobId }, text);
+  return {
+    blobId: stored.blobId,
+    format: stored.format,
+    sizeBytes: stored.byteSize,
+    text,
+    summary: null,
+    figures: [],
+    warnings: warning ? [warning] : [],
+  };
+}
 
 /**
  * POST: store an attached document and read it, in one round trip.
@@ -80,9 +126,6 @@ export async function POST(request: Request) {
     if (Number.isFinite(declared) && declared > MAX_DOCUMENT_ATTACHMENT_BYTES) {
       throw new ApiError(413, "document_too_large", `That document is larger than ${MAX_DOCUMENT_ATTACHMENT_BYTES / (1024 * 1024)} MB.`);
     }
-    if (!request.body) {
-      throw new ApiError(400, "document_body_required", "No document was received.");
-    }
 
     let ocrPages: number[] | undefined;
     const requestedPages = request.headers.get("x-pdf-ocr-pages");
@@ -94,6 +137,18 @@ export async function POST(request: Request) {
         throw new ApiError(400, "invalid_pdf_ocr_pages", "Choose up to eight valid PDF pages to read.");
       }
       ocrPages = [...new Set(pages as number[])];
+    }
+    // A PDF this server already stores (opened from the + button) is read in
+    // place: the browser need not pull a whole book down only to send it back.
+    const sourceBlobId = request.headers.get(SOURCE_BLOB_HEADER);
+    if (sourceBlobId !== null) {
+      if (format !== "pdf") {
+        throw new ApiError(400, "invalid_document_source", "Only stored PDFs can be read in place.");
+      }
+      return NextResponse.json(await readStoredPdf(request, userId, sourceBlobId, ocrPages));
+    }
+    if (!request.body) {
+      throw new ApiError(400, "document_body_required", "No document was received.");
     }
     const stored = await writeDocumentBlob({ userId, format, body: request.body });
     // The same document attached again shares the first copy's bytes on disk.

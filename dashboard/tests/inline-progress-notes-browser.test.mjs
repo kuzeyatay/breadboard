@@ -109,3 +109,58 @@ test('a held-back answer types in as a normal message; other answers show whole'
   await page.evaluate((text) => window.finish('c2', text), answer);
   assert.equal(await page.locator('[data-answer="c2"]').innerText(), answer);
 });
+
+test('Garden turns: a steer sits among the live notes with a reading dot, then above the finished turn', {timeout: 90_000}, async t => {
+  const css = (await postcss([tailwindcss({base: root})]).process(readFileSync(stylesheet, 'utf8'), {from: stylesheet})).css;
+  const bundle = await build({bundle: true, write: false, platform: 'browser', format: 'iife', jsx: 'automatic',
+    alias: {'@': path.join(root, 'src')}, logLevel: 'silent', stdin: {resolveDir: root, loader: 'tsx', contents: `
+    import React,{useState} from 'react';import {createRoot} from 'react-dom/client';
+    import {IntermediateTurn} from '@/app/components/hermes/inline-progress-notes';
+    function App(){
+      const [state,setState]=useState({live:true,notes:['I jumped to the update too quickly.'],corrections:[]});
+      window.set=(next)=>setState(current=>({...current,...next}));
+      return <main style={{maxWidth:640,margin:'40px auto'}}>
+        <IntermediateTurn live={state.live} notes={state.notes} answer={state.live?'':'Final answer.'} corrections={state.corrections}
+          renderPanel={()=> <div data-panel>Thinking</div>}/>
+        {state.live?null:<p data-answer>Final answer.</p>}
+      </main>;
+    }
+    createRoot(document.getElementById('root')).render(<App/>);`}});
+  const executablePath = [chromium.executablePath(), 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe'].find(existsSync);
+  const browser = await chromium.launch({headless: true, ...(executablePath ? {executablePath} : {})});
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  // The preference request fails here, which keeps the default: on.
+  await page.route('http://localhost:53169/**', (route) => route.request().url().endsWith('/')
+    ? route.fulfill({contentType: 'text/html', body: '<!doctype html><html><body><div id="root"></div></body></html>'})
+    : route.fulfill({status: 404, body: ''}));
+  await page.goto('http://localhost:53169/');
+  await page.addStyleTag({content: css});
+  await page.addScriptTag({content: bundle.outputFiles[0].text});
+
+  const steer = {id: 'steer:1', content: 'give one clear connected example', offset: 0, noteIndex: 1};
+  await page.evaluate((correction) => window.set({corrections: [correction]}), steer);
+  const progress = page.locator('[data-inline-progress]');
+  // Order: the note, then the steer bubble, then the pulsing reading dot.
+  await expect(progress).toContainText('I jumped to the update too quickly.');
+  await expect(progress).toContainText(steer.content);
+  await expect(page.locator('[data-progress-waiting]')).toContainText('Reading your message');
+  const order = await progress.evaluate((el) => el.innerText.indexOf('I jumped') < el.innerText.indexOf('give one') &&
+    el.innerText.indexOf('give one') < el.innerText.indexOf('Reading your message'));
+  assert.ok(order, 'note, steer, reading dot');
+
+  // Bread answers the steer with a new note: the reading dot goes away.
+  await page.evaluate(() => window.set({notes: ['I jumped to the update too quickly.', 'Starting again from the OR gate.']}));
+  await expect(page.locator('[data-progress-waiting]')).toHaveCount(0);
+
+  // The turn ends: the steer sits above the Thinking row, no inline notes.
+  await page.evaluate(() => window.set({live: false}));
+  await expect(page.locator('[data-inline-progress]')).toHaveCount(0);
+  await expect(page.locator('[data-turn-corrections]')).toContainText(steer.content);
+  const above = await page.evaluate(() => {
+    const bubble = document.querySelector('[data-turn-corrections]');
+    const panel = document.querySelector('[data-panel]');
+    return Boolean(bubble.compareDocumentPosition(panel) & Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+  assert.ok(above, 'the steer is above the Thinking row');
+});

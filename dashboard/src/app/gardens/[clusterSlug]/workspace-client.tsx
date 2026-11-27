@@ -166,7 +166,7 @@ import {
   delegatedTurnTotalUsage,
   supersededDelegationAssistantIndices,
 } from "@/lib/hermes/super-agent-activity";
-import { isClarificationAnswerMessage } from "@/lib/steered-response";
+import { isClarificationAnswerMessage, type CourseCorrectionBoundary } from "@/lib/steered-response";
 import { interactiveVisualizerCommandForArtifact } from "@/lib/hermes/interactive-visualizer-skills";
 import ChatJumpToBottom from "@/app/components/chat-jump-to-bottom";
 import ChatMessageRail, {
@@ -641,6 +641,10 @@ interface Message {
   activityLabel?: string;
   /** Runtime input that answered the assistant's own mid-turn question. */
   clarificationAnswer?: boolean;
+  /** A steer sent while a turn ran; drawn inside that turn, not as its own row. */
+  courseCorrection?: boolean;
+  /** Progress notes the turn had written when this steer was sent. */
+  courseCorrectionNoteIndex?: number;
   /**
    * Selected assistant text this turn quotes ("Ask in chat") or answers in
    * place ("Ask here"). Inline turns are hidden from the transcript and read
@@ -2121,6 +2125,32 @@ const transcriptRowHeight = (row: TranscriptRow) =>
  * turns dropped here are exactly what makes a row index differ from a message
  * index.
  */
+/** A steer sent mid-turn (saved as `steer:<id>`), shown inside the turn it steered. */
+function isSteerMessage(message: Message | undefined): boolean {
+  return Boolean(
+    message?.role === "user" &&
+      (message.courseCorrection === true || message.clientMessageId?.startsWith("steer:")),
+  );
+}
+
+/**
+ * The steers that belong to the assistant row at `index`: the run of steer
+ * messages directly before it (inserted while it streamed) and directly after
+ * it (where the saved transcript orders them), oldest first.
+ */
+function turnCorrections(messages: readonly Message[], index: number): CourseCorrectionBoundary[] {
+  const found: Array<{ message: Message; at: number }> = [];
+  for (let at = index - 1; at >= 0 && isSteerMessage(messages[at]); at -= 1) found.unshift({ message: messages[at], at });
+  for (let at = index + 1; at < messages.length && isSteerMessage(messages[at]); at += 1) found.push({ message: messages[at], at });
+  return found.map(({ message, at }) => ({
+    id: message.clientMessageId ?? message.id ?? `steer-${at}`,
+    content: message.content,
+    offset: 0,
+    ...(typeof message.courseCorrectionNoteIndex === "number" ? { noteIndex: message.courseCorrectionNoteIndex } : {}),
+    ...(message.textSelection ? { textSelection: message.textSelection } : {}),
+  }));
+}
+
 function buildTranscriptRows(messages: readonly Message[]): TranscriptRow[] {
   const rows: TranscriptRow[] = [];
   const supersededDelegationAssistants =
@@ -2135,6 +2165,9 @@ function buildTranscriptRows(messages: readonly Message[]): TranscriptRow[] {
         storedMessage.internalAgentContinuation === true) ||
       (storedMessage.role === "user" &&
         isClarificationAnswerMessage(storedMessage)) ||
+      // Steers are drawn inside the turn they steered (turnCorrections).
+      (isSteerMessage(storedMessage) &&
+        messages.some((candidate) => candidate.role === "assistant")) ||
       // An "Ask here" turn is read inside its highlight's popover, not as
       // transcript rows.
       storedMessage.textSelection?.mode === "inline" ||
@@ -2895,6 +2928,7 @@ const ChatTranscript = memo(function ChatTranscript({
                               live={i === lastAssistantIndex && !delegatedAgentActive && isLiveConnection(connection)}
                               notes={msg.progressNotes}
                               answer={storedAssistantContent}
+                              corrections={turnCorrections(messages, i)}
                               renderPanel={(hideNotes, notesOnly) => (
                             <ActivityPanel
                               activities={
@@ -9197,8 +9231,11 @@ export default function WorkspaceClient({
     }
 
     let accepted = false;
+    // The server saves the steer as `steer:<id>`; the copy drawn here (and
+    // saved with this turn) uses the same id, so the two are one message.
+    const steerRequestId = crypto.randomUUID();
     try {
-      accepted = await agentActivity.steer(correction, attachments, textSelection);
+      accepted = await agentActivity.steer(correction, attachments, textSelection, steerRequestId);
     } catch (error) {
       addToast(
         error instanceof Error
@@ -9217,6 +9254,8 @@ export default function WorkspaceClient({
     const correctionMessage: Message = {
       role: "user",
       content: correction,
+      clientMessageId: `steer:${steerRequestId}`,
+      courseCorrection: true,
       ...(textSelection ? { textSelection } : {}),
       createdAt: new Date().toISOString(),
       ...(attachments.length > 0
@@ -9236,9 +9275,11 @@ export default function WorkspaceClient({
         pendingAssistantIndex -= 1;
       }
       if (pendingAssistantIndex < 0) return [...current, correctionMessage];
+      // Where the steer falls among the notes, so it is drawn between them.
+      const noteIndex = (current[pendingAssistantIndex]?.progressNotes ?? []).filter((note) => note.trim()).length;
       return [
         ...current.slice(0, pendingAssistantIndex),
-        correctionMessage,
+        { ...correctionMessage, courseCorrectionNoteIndex: noteIndex },
         ...current.slice(pendingAssistantIndex),
       ];
     });

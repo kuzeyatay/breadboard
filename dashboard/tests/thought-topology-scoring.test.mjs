@@ -289,6 +289,29 @@ test("electromagnetics fixture prefers justified pairs over broad field vocabula
   }
 });
 
+test("streamed pair scores preserve the full distribution and all authored, inferred and anchor edges", () => {
+  const { documents } = JSON.parse(fs.readFileSync(new URL("./fixtures/thought-topology/electromagnetism.json", import.meta.url), "utf8"));
+  for (const pages of [[], documents.slice(0, 2), documents]) {
+    for (const semantic of [false, true]) {
+      const pairs = scoring.scoreAffinityPairs(pages, semantic);
+      const weakest = [...pairs].sort((a, b) => a.score - b.score)[0];
+      const authored = weakest ? [{ source: weakest.target, target: weakest.source, origin: "provenance" }] : [];
+      const centering = semantic ? scoring.embeddingCentering(pages).strength : 0;
+      const scores = pairs.map(pair => pair.score);
+      const scale = scoring.thresholdScale(centering);
+      const center = scoring.median(scores);
+      const mad = scoring.median(scores.map(score => Math.abs(score - center)));
+      const config = scoring.THOUGHT_TOPOLOGY_SCORING.threshold;
+      const threshold = scores.length < config.minimumDistributionSize ? scale.smallGardenFallback
+        : scoring.clamp(center + config.madMultiplier * config.madConsistency * mad, scale.minimum, scale.maximum);
+      const inferred = scoring.selectSparseInferredEdges(pairs.filter(pair => pair !== weakest), threshold, scoring.documentCapacities(pages), centering);
+      assert.deepEqual(scoring.scoreAndSelectConnections(pages, authored, semantic), {
+        threshold, selected: scoring.mergeAuthoredPairs(inferred, authored, pairs),
+      });
+    }
+  }
+});
+
 test("corpus centring removes the shared component and ramps with Garden size", () => {
   const unit = (values) => {
     const norm = Math.hypot(...values);

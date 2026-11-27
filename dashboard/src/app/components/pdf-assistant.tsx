@@ -37,6 +37,7 @@ import PdfSelectionLayer, {
 } from "./pdf-selection-layer";
 import {
   attachDocumentFile,
+  attachStoredPdf,
   attachmentOnlyMessageText,
   CHAT_ATTACHMENT_ACCEPT,
   extractChatAttachments,
@@ -63,7 +64,7 @@ import {
   type PdfPinNote as PdfPinNoteValue,
   type PdfViewportSnapshot,
 } from "@/lib/pdf-assistant";
-import { runPdfPreparationStep } from "@/lib/pdf-preparation";
+import { pdfReadingCovers, pdfUploadTimeoutMs, runPdfPreparationStep } from "@/lib/pdf-preparation";
 import { requestPdfViewDecision } from "@/lib/pdf-assistant-view-decision";
 import {
   loadHermesSessionSummaries,
@@ -108,6 +109,24 @@ interface Props {
 type SentPdfView = Promise<{ snapshot: PdfViewportSnapshot; error?: never } | { snapshot?: never; error: unknown }>;
 
 const recordedSurfaceHrefs = new Set<string>();
+
+/** The stored blob behind a PDF opened from the + button, if this is one. */
+function storedPdfBlobId(sourceUrl: string | undefined): string | null {
+  if (!sourceUrl) return null;
+  try {
+    const { pathname } = new URL(sourceUrl, window.location.origin);
+    return /^\/api\/chat-attachments\/documents\/(doc_[0-9a-f]{32})$/.exec(pathname)?.[1] ?? null;
+  } catch { return null; }
+}
+
+/** Readings by file hash, kept across reopenings so a book is not re-uploaded
+ * per question. A few entries only: each holds up to ~2 MB of text. */
+const pdfReadings = new Map<string, ChatAttachment>();
+function rememberPdfReading(hash: string, attachment: ChatAttachment) {
+  pdfReadings.delete(hash);
+  pdfReadings.set(hash, attachment);
+  while (pdfReadings.size > 4) pdfReadings.delete(pdfReadings.keys().next().value!);
+}
 
 /**
  * The address that reopens this document with its assistant: the viewer route
@@ -183,10 +202,6 @@ export default function PdfAssistant({
   const pageNumberRef = useRef(pageNumber);
   pageNumberRef.current = pageNumber;
   const sentViewsRef = useRef(new WeakMap<ChatAttachment, SentPdfView>());
-  const documentAttachmentRef = useRef<{
-    hash: string;
-    attachment: ChatAttachment;
-  } | null>(null);
   const session = useAgentSession("dashboard_terminal", {
     concurrentInline: true,
     pageTitle:title, gardenSlug,
@@ -570,61 +585,93 @@ export default function PdfAssistant({
           return result.snapshot;
         })
       : null;
-    const bytes = await step("Preparing the PDF file", () => getBytes());
-    signal.throwIfAborted();
     const readWholeDocument = decision.readWholeDocument === true;
     let documentAttachment: ChatAttachment | undefined;
-    if (bytes.byteLength > MAX_DOCUMENT_ATTACHMENT_BYTES) {
-      // An open book can exceed the upload limit. Its size must not block a
-      // question about a passage we can already read. Avoid copying/hashing
-      // the oversized file and keep the model's evidence scope explicit.
-      if (!snapshot && !pageText.trim() && !selection?.quote.trim()) {
-        snapshot = await step("Preparing the sent PDF view", async () => {
-          const result = await viewAtSend;
-          if (!result.snapshot) throw result.error;
-          return result.snapshot;
-        });
-      }
-      if (readWholeDocument) {
-        documentAttachment = {
-          type: "text",
-          name: "PDF text excerpt.txt",
-          text: await step("Reading the PDF text", (stepSignal) =>
-            pdfDocumentExcerpt(pdf, stepSignal), 180_000),
-        };
-      }
-    } else {
-      const ownedBytes = new Uint8Array(bytes);
-      const digest = await step("Checking the PDF file", () => crypto.subtle.digest("SHA-256", ownedBytes));
-      const hash = Array.from(new Uint8Array(digest), (byte) =>
-        byte.toString(16).padStart(2, "0"),
-      ).join("");
+    // A PDF opened from the + button already lives on the server. Reading it
+    // there avoids pulling a whole streamed book into this tab and back again.
+    const storedBlobId = storedPdfBlobId(sourceUrl);
+    if (storedBlobId && pdf.annotationStorage.size === 0) {
       const ocrPages = readWholeDocument ? undefined : snapshot ? [] : [currentPage];
-      const readingKey = `${hash}:${readWholeDocument ? "all" : snapshot ? "view" : currentPage}`;
-      documentAttachment = documentAttachmentRef.current?.hash === readingKey
-        ? documentAttachmentRef.current.attachment : undefined;
+      const readingKey = `blob:${storedBlobId}`;
+      const saved = pdfReadings.get(readingKey);
+      documentAttachment = saved?.type === "document" && pdfReadingCovers(saved.text, {
+        wholeDocument: readWholeDocument,
+        page: snapshot ? undefined : currentPage,
+      }) ? saved : undefined;
       if (!documentAttachment) {
-        // Keep every byte and all embedded text, but do not make a page question
-        // wait for OCR of an entire scanned book. A requested screenshot supplies
-        // the visible scan directly; whole-document requests still opt into OCR.
-        const attachment = await step("Uploading and reading the PDF", (stepSignal) =>
-          attachDocumentFile(
-            new File(
-              [ownedBytes],
-              /\.pdf$/i.test(fileName) ? fileName : `${fileName}.pdf`,
-              { type: "application/pdf" },
-            ),
-            "pdf",
+        const attachment = await step("Reading the PDF", (stepSignal) =>
+          attachStoredPdf(
+            storedBlobId,
+            /\.pdf$/i.test(fileName) ? fileName : `${fileName}.pdf`,
             stepSignal,
-            false,
             ocrPages,
-            sourceUrl,
           ),
-          readWholeDocument ? Math.max(180_000, pdf.numPages * 95_000) : 180_000,
+          pdfUploadTimeoutMs(0, pdf.numPages, readWholeDocument),
         );
         signal.throwIfAborted();
-        documentAttachmentRef.current = { hash: readingKey, attachment };
+        rememberPdfReading(readingKey, attachment);
         documentAttachment = attachment;
+      }
+    } else {
+      // A streamed PDF downloads its remaining ranges here, so allow for size.
+      const { length } = await pdf.getDownloadInfo();
+      const bytes = await step("Preparing the PDF file", () => getBytes(),
+        30_000 + Math.ceil(length / (1024 * 1024)) * 1_000);
+      signal.throwIfAborted();
+      if (bytes.byteLength > MAX_DOCUMENT_ATTACHMENT_BYTES) {
+        // An open book can exceed the upload limit. Its size must not block a
+        // question about a passage we can already read. Avoid copying/hashing
+        // the oversized file and keep the model's evidence scope explicit.
+        if (!snapshot && !pageText.trim() && !selection?.quote.trim()) {
+          snapshot = await step("Preparing the sent PDF view", async () => {
+            const result = await viewAtSend;
+            if (!result.snapshot) throw result.error;
+            return result.snapshot;
+          });
+        }
+        if (readWholeDocument) {
+          documentAttachment = {
+            type: "text",
+            name: "PDF text excerpt.txt",
+            text: await step("Reading the PDF text", (stepSignal) =>
+              pdfDocumentExcerpt(pdf, stepSignal), 180_000),
+          };
+        }
+      } else {
+        const ownedBytes = new Uint8Array(bytes);
+        const digest = await step("Checking the PDF file", () => crypto.subtle.digest("SHA-256", ownedBytes));
+        const hash = Array.from(new Uint8Array(digest), (byte) =>
+          byte.toString(16).padStart(2, "0"),
+        ).join("");
+        const ocrPages = readWholeDocument ? undefined : snapshot ? [] : [currentPage];
+        const saved = pdfReadings.get(hash);
+        documentAttachment = saved?.type === "document" && pdfReadingCovers(saved.text, {
+          wholeDocument: readWholeDocument,
+          page: snapshot ? undefined : currentPage,
+        }) ? saved : undefined;
+        if (!documentAttachment) {
+          // Keep every byte and all embedded text, but do not make a page question
+          // wait for OCR of an entire scanned book. A requested screenshot supplies
+          // the visible scan directly; whole-document requests still opt into OCR.
+          const attachment = await step("Uploading and reading the PDF", (stepSignal) =>
+            attachDocumentFile(
+              new File(
+                [ownedBytes],
+                /\.pdf$/i.test(fileName) ? fileName : `${fileName}.pdf`,
+                { type: "application/pdf" },
+              ),
+              "pdf",
+              stepSignal,
+              false,
+              ocrPages,
+              sourceUrl,
+            ),
+            pdfUploadTimeoutMs(ownedBytes.byteLength, pdf.numPages, readWholeDocument),
+          );
+          signal.throwIfAborted();
+          rememberPdfReading(hash, attachment);
+          documentAttachment = attachment;
+        }
       }
     }
     signal.throwIfAborted();

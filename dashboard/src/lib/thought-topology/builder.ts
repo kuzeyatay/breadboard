@@ -26,13 +26,8 @@ import {
 } from "./cache.ts";
 import { buildGardenProjection, DOCUMENT_SUMMARY_VERSION, gardenContentFingerprint, type GardenProjection, type ProjectedTopologyNode } from "./projection.ts";
 import {
-  adaptiveThreshold,
-  documentCapacities,
   edgeVisualStyle,
-  embeddingCentering,
-  mergeAuthoredPairs,
-  scoreAffinityPairs,
-  selectSparseInferredEdges,
+  scoreAndSelectConnections,
   stableHashText,
   THOUGHT_TOPOLOGY_SCORING,
 } from "./scoring.ts";
@@ -374,25 +369,6 @@ async function embedChangedNodes(
   };
 }
 
-function selectTopologyConnections(
-  projection: GardenProjection,
-  embeddingAvailable: boolean,
-  additions: ReadonlySet<string> | null,
-) {
-  const candidates = scoreAffinityPairs(projection.nodes, embeddingAvailable);
-  // Centred cosine is used when the Garden has enough pages.
-  const centering = embeddingAvailable ? embeddingCentering(projection.nodes).strength : 0;
-  const threshold = adaptiveThreshold(candidates.map((candidate) => candidate.score), centering);
-  // Authored links already exist, so they don't consume inferred anchors.
-  const authoredKeys = new Set(projection.authoredEdges.map((edge) => [edge.source, edge.target].sort().join("\u0000")));
-  const inferable = candidates.filter((candidate) => !authoredKeys.has([candidate.source, candidate.target].sort().join("\u0000")));
-  const inferred = selectSparseInferredEdges(inferable, threshold, documentCapacities(projection.nodes), centering);
-  // A pure addition preserves relationships between existing pages.
-  const selected = mergeAuthoredPairs(inferred, projection.authoredEdges, candidates)
-    .filter((candidate) => additions === null || additions.has(candidate.source) || additions.has(candidate.target));
-  return { threshold, selected };
-}
-
 export async function buildThoughtTopologyFromProjection(input: {
   clusterId: number;
   gardenId: string;
@@ -487,7 +463,8 @@ export async function buildThoughtTopologyFromProjection(input: {
     ? addedNodeIds(input.previousTopology, input.projection)
     : null;
   // Only retain the selected pairs while the model generates explanations.
-  const { threshold, selected } = selectTopologyConnections(input.projection, embedding.available, additions);
+  const { threshold, selected: connections } = scoreAndSelectConnections(input.projection.nodes, input.projection.authoredEdges, embedding.available);
+  const selected = additions === null ? connections : connections.filter(pair => additions.has(pair.source) || additions.has(pair.target));
   const byId = new Map(input.projection.nodes.map((node) => [node.id, node]));
   const nextEdgeCache: ThoughtTopologyCache["edges"] = {};
   // The model explains a long document's edge from the part that matched,

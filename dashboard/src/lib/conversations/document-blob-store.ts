@@ -288,6 +288,27 @@ export function findDocumentBlob(input: {
   return null;
 }
 
+/**
+ * A chat's own copy of a document the server already stores, such as a PDF
+ * opened from the + button. A hard link costs no space and no time, and gives
+ * the chat a blob the opened file's 30-day sweep cannot remove. A volume that
+ * refuses links gets a real copy.
+ */
+export function linkDocumentBlob(input: {
+  userId: number;
+  source: StoredDocumentBlob;
+  root?: string;
+}): StoredDocumentBlob {
+  const blobId = newDocumentBlobId();
+  const target = documentBlobPath({ userId: input.userId, blobId, format: input.source.format, root: input.root });
+  try {
+    fs.linkSync(input.source.path, target);
+  } catch {
+    fs.copyFileSync(input.source.path, target, fs.constants.COPYFILE_EXCL);
+  }
+  return { blobId, format: input.source.format, byteSize: input.source.byteSize, path: target };
+}
+
 export function removeDocumentBlob(input: {
   userId: number;
   blobId: string;

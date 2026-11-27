@@ -45,6 +45,18 @@ test("blank notes are ignored and nothing renders without notes", () => {
   assert.deepEqual(r.leading.map((x) => x.id), ["s"]);
 });
 
+test("Garden steers are drawn inside the turn they steered, not as their own rows", async () => {
+  const fs = await import("node:fs");
+  const workspace = fs.readFileSync(new URL("../src/app/gardens/[clusterSlug]/workspace-client.tsx", import.meta.url), "utf8");
+  assert.match(workspace, /corrections=\{turnCorrections\(messages, i\)\}/);
+  assert.match(workspace, /\(isSteerMessage\(storedMessage\) &&/);
+  assert.match(workspace, /clientMessageId: `steer:\$\{steerRequestId\}`/);
+  assert.match(workspace, /agentActivity\.steer\(correction, attachments, textSelection, steerRequestId\)/);
+  assert.match(workspace, /courseCorrectionNoteIndex: noteIndex/);
+  const hook = fs.readFileSync(new URL("../src/app/components/hermes/use-legacy-agent-activity.ts", import.meta.url), "utf8");
+  assert.match(hook, /clientRequestId: string = crypto\.randomUUID\(\)/);
+});
+
 test("every Hermes chat surface shows notes inline only while the turn runs", async () => {
   const fs = await import("node:fs");
   const read = (path) => fs.readFileSync(new URL(path, import.meta.url), "utf8");

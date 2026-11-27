@@ -1235,6 +1235,38 @@ export async function attachDocumentFile(
     body: file,
     duplex: 'half',
   } as RequestInit & { duplex: 'half' });
+  return documentAttachmentFromResponse(response, file.name, format, file.size);
+}
+
+/**
+ * Read a PDF the server already stores (one opened from the + button) without
+ * sending its bytes: the server links it as this chat's own blob and reuses
+ * any reading it saved before.
+ */
+export async function attachStoredPdf(
+  sourceBlobId: string,
+  name: string,
+  signal?: AbortSignal,
+  ocrPages?: number[],
+): Promise<ChatAttachment> {
+  const response = await fetch('/api/chat-attachments/documents', {
+    method: 'POST',
+    signal,
+    headers: {
+      [DOCUMENT_FILENAME_HEADER]: encodeURIComponent(name),
+      'X-Document-Source-Blob': sourceBlobId,
+      ...(ocrPages ? { 'X-PDF-OCR-Pages': JSON.stringify(ocrPages) } : {}),
+    },
+  });
+  return documentAttachmentFromResponse(response, name, 'pdf', 0);
+}
+
+async function documentAttachmentFromResponse(
+  response: Response,
+  name: string,
+  format: DocumentAttachmentFormat,
+  fallbackSize: number,
+): Promise<ChatAttachment> {
   const data = (await response.json().catch(() => ({}))) as DocumentUploadResponse;
   if (!response.ok || data.error) {
     throw new Error(
@@ -1255,10 +1287,10 @@ export async function attachDocumentFile(
   const summary = normalizeDocumentSummary(data.summary);
   return {
     type: 'document',
-    name: file.name,
+    name,
     blobId: data.blobId,
     format: data.format,
-    sizeBytes: typeof data.sizeBytes === 'number' ? data.sizeBytes : file.size,
+    sizeBytes: typeof data.sizeBytes === 'number' ? data.sizeBytes : fallbackSize,
     text: typeof data.text === 'string' ? data.text : '',
     ...(summary ? { summary } : {}),
     ...(Array.isArray(data.figures) && data.figures.length

@@ -204,24 +204,56 @@ export function IntermediateTurn({
   live,
   notes,
   answer,
+  corrections = [],
   renderPanel,
 }: {
   live: boolean;
   notes?: readonly string[];
   answer: string;
+  /**
+   * Steers the user sent during this turn. While it runs they sit between the
+   * notes where they happened, and one not yet answered gets a pulsing
+   * "Reading your message…" dot; afterwards they sit above the Thinking row.
+   * A steer without a recorded note position falls after the latest note.
+   */
+  corrections?: readonly CourseCorrectionBoundary[];
   renderPanel: (hideNotes: boolean, notesOnly: boolean) => ReactNode;
 }) {
   const enabled = useIntermediateResponses();
   const liveNotes = enabled && live;
   const notesOnly = enabled && Boolean(notes?.some((note) => note.trim()));
-  const timeline = useMemo(
-    () => (liveNotes && notes?.length ? interleaveProgressNotes<CourseCorrectionBoundary>(notes, [], answer).timeline : []),
-    [liveNotes, notes, answer],
-  );
+  const timeline = useMemo(() => {
+    if (!liveNotes) return [];
+    const noteCount = (notes ?? []).filter((note) => note.trim()).length;
+    const placed = corrections.map((correction) => ({
+      ...correction,
+      offset: 0,
+      noteIndex: correction.noteIndex ?? noteCount,
+    }));
+    const layout = interleaveProgressNotes<CourseCorrectionBoundary>(notes ?? [], placed, answer);
+    return [
+      // Sent before Bread wrote any note.
+      ...layout.leading.map((correction) => ({ kind: "correction" as const, correction })),
+      ...layout.timeline,
+    ];
+  }, [liveNotes, notes, answer, corrections]);
+  const waiting = liveNotes && timeline.at(-1)?.kind === "correction";
   return (
     <>
+      {!liveNotes && corrections.length ? (
+        <div data-turn-corrections>
+          {corrections.map((correction) => (
+            <CourseCorrectionBubble
+              key={`steer-${correction.id}`}
+              id={correction.id}
+              content={correction.content}
+              textSelection={correction.textSelection}
+            />
+          ))}
+        </div>
+      ) : null}
       <ThinkingRow locked={liveNotes}>{renderPanel(liveNotes, notesOnly)}</ThinkingRow>
-      {liveNotes ? <InlineProgressNotes timeline={timeline} live /> : null}
+      {liveNotes ? <InlineProgressNotes timeline={timeline} live waiting={waiting} /> : null}
     </>
   );
 }

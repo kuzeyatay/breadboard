@@ -502,10 +502,10 @@ function compareEmbeddingSections(
   return sections ? { value, sections } : { value };
 }
 
-export function scoreAffinityPairs(
+function* affinityPairs(
   documents: readonly ScoringDocument[],
   embeddingAvailable: boolean,
-): AffinityCandidate[] {
+): Generator<AffinityCandidate> {
   const idf = buildConceptIdf(documents);
   const lexical = buildTfidfVectors(documents);
   const centering = embeddingAvailable
@@ -522,7 +522,6 @@ export function scoreAffinityPairs(
     centered.set(vector, value);
     return value;
   };
-  const pairs: AffinityCandidate[] = [];
   for (let leftIndex = 0; leftIndex < documents.length; leftIndex += 1) {
     for (
       let rightIndex = leftIndex + 1;
@@ -543,7 +542,7 @@ export function scoreAffinityPairs(
         ),
       };
       const conceptAvailable = hasConcepts(left) && hasConcepts(right);
-      pairs.push({
+      yield {
         source: left.id,
         target: right.id,
         sourceFolderId: left.folderId,
@@ -551,19 +550,25 @@ export function scoreAffinityPairs(
         components,
         score: combinedAffinity(components, embeddingAvailable, conceptAvailable),
         ...(embedding.sections ? { sections: embedding.sections } : {}),
-      });
+      };
     }
   }
-  return pairs;
 }
 
-export function median(values: readonly number[]): number {
-  if (values.length === 0) return 0;
-  const sorted = [...values].sort((left, right) => left - right);
+export function scoreAffinityPairs(documents: readonly ScoringDocument[], embeddingAvailable: boolean): AffinityCandidate[] {
+  return Array.from(affinityPairs(documents, embeddingAvailable));
+}
+
+function sortedMedian(sorted: ArrayLike<number>): number {
+  if (sorted.length === 0) return 0;
   const middle = Math.floor(sorted.length / 2);
   return sorted.length % 2 === 0
     ? (sorted[middle - 1] + sorted[middle]) / 2
     : sorted[middle];
+}
+
+export function median(values: readonly number[]): number {
+  return sortedMedian([...values].sort((left, right) => left - right));
 }
 
 /**
@@ -575,17 +580,45 @@ export function adaptiveThreshold(
   scores: readonly number[],
   centering = 1,
 ): number {
+  return thresholdFromScoreBuffer(Float64Array.from(scores), centering);
+}
+
+function thresholdFromScoreBuffer(scores: Float64Array, centering: number): number {
   const config = THOUGHT_TOPOLOGY_SCORING.threshold;
   const scale = thresholdScale(centering);
   if (scores.length < config.minimumDistributionSize)
     return scale.smallGardenFallback;
-  const center = median(scores);
-  const deviation = median(scores.map((score) => Math.abs(score - center)));
+  const center = sortedMedian(scores.sort());
+  for (let index = 0; index < scores.length; index++) scores[index] = Math.abs(scores[index] - center);
+  const deviation = sortedMedian(scores.sort());
   return clamp(
     center + config.madMultiplier * config.madConsistency * deviation,
     scale.minimum,
     scale.maximum,
   );
+}
+
+export function scoreAndSelectConnections(
+  documents: readonly ScoringDocument[], authored: readonly AuthoredCandidate[], embeddingAvailable: boolean,
+) {
+  const centering = embeddingAvailable ? embeddingCentering(documents).strength : 0;
+  const floor = thresholdScale(centering).minimum;
+  const scores = new Float64Array(documents.length * (documents.length - 1) / 2);
+  const authoredKeys = new Set(authored.map(edge => unorderedPairKey(edge.source, edge.target)));
+  const authoredScores: AffinityCandidate[] = [];
+  const inferable: AffinityCandidate[] = [];
+  let index = 0;
+  for (const pair of affinityPairs(documents, embeddingAvailable)) {
+    // Every score contributes to median/MAD. The absolute floor is shared
+    // by threshold selection and anchors, so lower unauthored pairs can be
+    // released immediately without changing either endpoint's choices.
+    scores[index++] = pair.score;
+    if (authoredKeys.has(unorderedPairKey(pair.source, pair.target))) authoredScores.push(pair);
+    else if (pair.score >= floor) inferable.push(pair);
+  }
+  const threshold = thresholdFromScoreBuffer(scores, centering);
+  const inferred = selectSparseInferredEdges(inferable, threshold, documentCapacities(documents), centering);
+  return { threshold, selected: mergeAuthoredPairs(inferred, authored, authoredScores) };
 }
 
 function unorderedPairKey(source: string, target: string): string {

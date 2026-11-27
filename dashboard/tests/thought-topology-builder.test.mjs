@@ -14,6 +14,7 @@ const { buildThoughtTopologyInRuntimeWorker } =
   await import("../src/lib/thought-topology/builder.ts");
 const {
   commitThoughtTopology,
+  openThoughtTopologyBuildCache,
   readThoughtTopology,
   readThoughtTopologyCache,
   rendererArtifactContainsVector,
@@ -933,6 +934,36 @@ test("a build explains every selected connection before publishing one complete 
   fs.writeFileSync(path.join(gardenDir, "e.md"), markdown("Epsilon", "A new flux example.", ["a"]));
   assert.equal((await build(4)).status, "built");
   assert.equal(thoughtTopologyHasCompleteConnections(readThoughtTopology(gardenDir)), true);
+});
+
+test("large private caches and journals retain completed explanations across restarts", (t) => {
+  const gardenDir = fs.mkdtempSync(path.join(isolatedRoot, "large-checkpoint-"));
+  t.after(() => fs.rmSync(gardenDir, { recursive: true, force: true }));
+  const privateDir = path.join(gardenDir, ".breadboard");
+  const journal = path.join(privateDir, "thought-topology-build-journal.jsonl");
+  const checkpoint = openThoughtTopologyBuildCache(gardenDir, null);
+  const edge = { pairHash: "first", explanation: { state: "ready", text: "Flux Φ" } };
+  checkpoint.edge(edge);
+  const padding = Buffer.alloc(256 * 1024, " ");
+  padding.write("{}");
+  padding[padding.length - 1] = 10;
+  const handle = fs.openSync(journal, "a");
+  try { for (let i = 0; i < 256; i++) fs.writeFileSync(handle, padding); }
+  finally { fs.closeSync(handle); }
+  checkpoint.edge({ ...edge, pairHash: "last" });
+  const recovered = openThoughtTopologyBuildCache(gardenDir, null).cache;
+  assert.deepEqual(recovered.edges.first, edge);
+  assert.equal(recovered.edges.last.explanation.text, "Flux Φ");
+  assert.equal(fs.statSync(journal).size, 0);
+
+  const snapshot = path.join(privateDir, "thought-topology-build-cache.json");
+  padding.fill(32);
+  const snapshotHandle = fs.openSync(snapshot, "a");
+  try { for (let i = 0; i < 256; i++) fs.writeFileSync(snapshotHandle, padding); }
+  finally { fs.closeSync(snapshotHandle); }
+  fs.linkSync(snapshot, path.join(privateDir, "thought-topology-cache.json"));
+  assert.deepEqual(readThoughtTopologyCache(gardenDir).edges.first, edge);
+  assert.deepEqual(openThoughtTopologyBuildCache(gardenDir, null).cache.edges.first, edge);
 });
 
 test("an interrupted build resumes durable explanations, tolerates a torn journal, and publishes only when complete", async () => {

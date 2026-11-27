@@ -1,5 +1,6 @@
 import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
 import { externalRuntimePath as path } from "../external-runtime-path.ts";
+import { StringDecoder } from "node:string_decoder";
 
 import { THOUGHT_TOPOLOGY_SCHEMA_VERSION, type ThoughtTopology, type ThoughtTopologyCache, type ThoughtTopologyCacheNode, type ThoughtTopologyCacheEdge } from "./types.ts";
 
@@ -7,11 +8,22 @@ export const TOPOLOGY_ARTIFACT_REL_PATH = ".breadboard/thought-topology.json";
 export const TOPOLOGY_CACHE_REL_PATH = ".breadboard/thought-topology-cache.json";
 const BUILD_CACHE_REL_PATH = ".breadboard/thought-topology-build-cache.json";
 const BUILD_JOURNAL_REL_PATH = ".breadboard/thought-topology-build-journal.jsonl";
+const MAX_RENDERER_BYTES = 64 * 1024 * 1024;
+// The private cache also carries vectors and passages for every page.
+const MAX_CACHE_BYTES = 256 * 1024 * 1024;
 
-function readJson<T>(filePath: string): T | null {
+function readJson<T>(filePath: string, maxBytes = MAX_RENDERER_BYTES): T | null {
+  let size: number;
   try {
     const stat = fs.statSync(filePath);
-    if (!stat.isFile() || stat.size > 64 * 1024 * 1024) return null;
+    if (!stat.isFile()) return null;
+    size = stat.size;
+  } catch { return null; }
+  if (size > maxBytes) {
+    if (maxBytes === MAX_CACHE_BYTES) throw new Error("Thought Topology cache exceeds its read limit.");
+    return null;
+  }
+  try {
     return JSON.parse(fs.readFileSync(filePath, "utf8")) as T;
   } catch {
     return null;
@@ -55,10 +67,44 @@ export function readThoughtTopology(gardenDir: string): ThoughtTopology | null {
 }
 
 export function readThoughtTopologyCache(gardenDir: string): ThoughtTopologyCache | null {
-  const value = readJson<ThoughtTopologyCache>(path.join(gardenDir, TOPOLOGY_CACHE_REL_PATH));
+  const value = readJson<ThoughtTopologyCache>(path.join(gardenDir, TOPOLOGY_CACHE_REL_PATH), MAX_CACHE_BYTES);
   return value?.schemaVersion === THOUGHT_TOPOLOGY_SCHEMA_VERSION && value.nodes && value.edges
     ? value
     : null;
+}
+
+function replayBuildJournal(filePath: string, cache: ThoughtTopologyCache): void {
+  let handle: number;
+  try { handle = fs.openSync(filePath, "r"); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  const replayLine = (line: string) => {
+    if (!line) return;
+    try {
+      const entry = JSON.parse(line);
+      if (entry?.schemaVersion !== THOUGHT_TOPOLOGY_SCHEMA_VERSION) return;
+      if (entry.kind === "node" && typeof entry.value?.id === "string" && entry.value.summary) cache.nodes[entry.value.id] = entry.value;
+      if (entry.kind === "edge" && typeof entry.value?.pairHash === "string" && entry.value.explanation) cache.edges[entry.value.pairHash] = entry.value;
+    } catch { /* A process killed mid-append can leave a torn final record. */ }
+  };
+  // Replay a large journal a chunk at a time. Its total length grows even
+  // when the worker saves the same page several times during a single pass.
+  try {
+    const buffer = Buffer.allocUnsafe(256 * 1024);
+    const decoder = new StringDecoder("utf8");
+    let tail = "";
+    let length: number;
+    while ((length = fs.readSync(handle, buffer, 0, buffer.length, null)) > 0) {
+      const lines = decoder.write(buffer.subarray(0, length)).split("\n");
+      lines[0] = tail + lines[0];
+      tail = lines.pop()!;
+      if (tail.length > MAX_RENDERER_BYTES) throw new Error("Thought Topology journal record exceeds its read limit.");
+      for (const line of lines) replayLine(line);
+    }
+    replayLine(tail + decoder.end());
+  } finally { fs.closeSync(handle); }
 }
 
 /** Private, resumable work. The published cache/artifact remain untouched until
@@ -67,7 +113,7 @@ export function readThoughtTopologyCache(gardenDir: string): ThoughtTopologyCach
 export function openThoughtTopologyBuildCache(gardenDir: string, published: ThoughtTopologyCache | null) {
   const snapshotPath = path.join(gardenDir, BUILD_CACHE_REL_PATH);
   const journalPath = path.join(gardenDir, BUILD_JOURNAL_REL_PATH);
-  const saved = readJson<ThoughtTopologyCache>(snapshotPath);
+  const saved = readJson<ThoughtTopologyCache>(snapshotPath, MAX_CACHE_BYTES);
   const resume = saved?.schemaVersion === THOUGHT_TOPOLOGY_SCHEMA_VERSION && saved.nodes && saved.edges ? saved : null;
   const cache: ThoughtTopologyCache = {
     schemaVersion: THOUGHT_TOPOLOGY_SCHEMA_VERSION,
@@ -76,21 +122,7 @@ export function openThoughtTopologyBuildCache(gardenDir: string, published: Thou
     nodes: { ...published?.nodes, ...resume?.nodes },
     edges: { ...published?.edges, ...resume?.edges },
   };
-  try {
-    if (fs.statSync(journalPath).size <= 64 * 1024 * 1024) {
-      for (const line of fs.readFileSync(journalPath, "utf8").split("\n")) {
-        // A process killed mid-append can leave one truncated final record.
-        try {
-          const entry = JSON.parse(line);
-          if (entry.schemaVersion !== THOUGHT_TOPOLOGY_SCHEMA_VERSION) continue;
-          if (entry.kind === "node" && typeof entry.value?.id === "string" && entry.value.summary) cache.nodes[entry.value.id] = entry.value;
-          if (entry.kind === "edge" && typeof entry.value?.pairHash === "string" && entry.value.explanation) cache.edges[entry.value.pairHash] = entry.value;
-        } catch { /* Keep every complete record preceding a torn append. */ }
-      }
-    }
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-  }
+  replayBuildJournal(journalPath, cache);
   // Compact before reopening the journal. A crash between these writes only
   // replays duplicate records, which are idempotent by their cache keys.
   atomicJson(snapshotPath, cache);

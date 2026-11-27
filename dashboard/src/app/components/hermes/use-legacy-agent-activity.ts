@@ -398,6 +398,9 @@ export function useLegacyAgentActivity(restored?: {
     text: string,
     attachments: readonly ChatAttachment[] = [],
     textSelection?: ChatTextSelectionReference,
+    // The Garden draws its own copy of the steer under `steer:<id>`; sending
+    // that id makes the server's saved steer the same message, not a second one.
+    clientRequestId: string = crypto.randomUUID(),
   ): Promise<boolean> => {
     const sessionId = runtimeSessionId.current;
     const runId = runtimeRunId.current;
@@ -412,7 +415,7 @@ export function useLegacyAgentActivity(restored?: {
         text: trimmed,
         attachments: attachmentsForRequest(attachments),
         textSelection,
-        clientRequestId: crypto.randomUUID(),
+        clientRequestId,
       }),
     });
     const body = (await response.json().catch(() => ({}))) as {

@@ -669,3 +669,20 @@ test("only website PDFs left unopened past their lifetime are swept", async () =
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("a chat's link to an opened PDF outlives the opened file's sweep", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "document-blob-test-"));
+  try {
+    const store = await import("../src/lib/conversations/document-blob-store.ts");
+    const opened = await store.writeDocumentBlob({ userId: 7, format: "pdf", body: new Blob(["%PDF-1.4 book"]).stream(), root });
+    store.markWebPdfBlob(opened);
+    const linked = store.linkDocumentBlob({ userId: 7, source: opened, root });
+    assert.notEqual(linked.blobId, opened.blobId);
+    assert.equal(fs.readFileSync(linked.path, "utf8"), "%PDF-1.4 book");
+    assert.equal(store.isMarkedWebBlob(linked), false);
+    assert.equal(store.sweepWebPdfBlobs(7, root, Date.now() + store.WEB_PDF_LIFETIME_MS + 60_000), 1);
+    assert.equal(fs.readFileSync(store.findDocumentBlob({ userId: 7, blobId: linked.blobId, root }).path, "utf8"), "%PDF-1.4 book");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
