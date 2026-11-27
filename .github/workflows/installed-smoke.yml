@@ -1,0 +1,97 @@
+name: Installed smoke
+
+# Installs a published release on a clean Windows runner: first as an upgrade
+# over an older release that was just running (the path users take), then
+# through the full installed smoke test. Nothing runs on a developer machine.
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Release to verify
+        required: true
+        default: v0.1.17-prebeta
+      upgrade_from_tag:
+        description: Older release installed first (empty skips the upgrade check)
+        required: false
+        default: v0.1.15-prebeta
+
+permissions:
+  contents: read
+
+jobs:
+  installed:
+    name: Installed smoke (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 150
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.14.1'
+
+      - name: Download installers
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force D:\smoke\new, D:\smoke\old | Out-Null
+          gh release download '${{ inputs.release_tag }}' --pattern 'Breadboard-Setup-*-x64.exe' --dir D:\smoke\new
+          if ('${{ inputs.upgrade_from_tag }}') {
+            gh release download '${{ inputs.upgrade_from_tag }}' --pattern 'Breadboard-Setup-*-x64.exe' --dir D:\smoke\old
+          }
+          Get-ChildItem D:\smoke -Recurse -File | Format-Table FullName, Length
+
+      - name: Upgrade over a just-closed older release
+        if: inputs.upgrade_from_tag != ''
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $old = (Get-ChildItem D:\smoke\old\*.exe)[0].FullName
+          $new = (Get-ChildItem D:\smoke\new\*.exe)[0].FullName
+          $dir = Join-Path $env:LOCALAPPDATA 'Programs\Breadboard'
+          $exe = Join-Path $dir 'Breadboard.exe'
+
+          $p = Start-Process $old -ArgumentList '/S' -PassThru -Wait
+          if ($p.ExitCode -ne 0 -or -not (Test-Path $exe)) { throw "old installer failed ($($p.ExitCode))" }
+          Write-Host "old installed: $((Get-Item $exe).VersionInfo.ProductVersion)"
+
+          # Run it long enough to start its runtime and services, then close
+          # the window and start setup while it is still shutting down.
+          $app = Start-Process $exe -PassThru
+          $deadline = (Get-Date).AddMinutes(4)
+          do { Start-Sleep 5; $app.Refresh() } until ($app.MainWindowHandle -ne 0 -or (Get-Date) -gt $deadline)
+          Start-Sleep 60
+          $children = @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -like "$dir\*" })
+          Write-Host "processes from the install folder before closing: $($children.Count)"
+          [void]$app.CloseMainWindow()
+          Start-Sleep 2
+
+          $started = Get-Date
+          $p = Start-Process $new -ArgumentList '/S' -PassThru -Wait
+          Write-Host "new installer exit $($p.ExitCode) after $([int]((Get-Date) - $started).TotalSeconds) s"
+          if ($p.ExitCode -ne 0) { throw "upgrade install failed ($($p.ExitCode))" }
+          $version = (Get-Item $exe).VersionInfo.ProductVersion
+          Write-Host "installed after upgrade: $version"
+          $expected = ('${{ inputs.release_tag }}' -replace '^v','' -replace '-.*$','')
+          if (-not $version.StartsWith($expected)) { throw "expected $expected, found $version" }
+
+          # Also the plain case: the app closed long ago, setup run again.
+          $p = Start-Process $new -ArgumentList '/S' -PassThru -Wait
+          if ($p.ExitCode -ne 0) { throw "reinstall over a closed app failed ($($p.ExitCode))" }
+          Write-Host "reinstall over a closed app: ok"
+
+      - name: Installed smoke test
+        shell: pwsh
+        run: |
+          $new = (Get-ChildItem D:\smoke\new\*.exe)[0].FullName
+          node desktop/scripts/installed-smoke-test.mjs $new D:\smoke\evidence
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: installed-smoke-evidence
+          path: D:\smoke\evidence
+          if-no-files-found: ignore
