@@ -96,7 +96,7 @@
     "qa:runtime-v2:entrypoints": "node qa/runtime-v2/validate-dev-entrypoints.mjs",
     "qa:runtime-v2:control-contract": "node qa/runtime-v2/validate-runtime-control-contract.mjs",
     "qa:runtime-v2:manifests": "node --test qa/runtime-v2/validate-runtime-manifests.test.mjs && node qa/runtime-v2/validate-runtime-manifests.mjs",
-    "test:scripts": "node --test scripts/*.test.mjs desktop/scripts/*.test.mjs",
+    "test:scripts": "node --test scripts/*.test.mjs desktop/scripts/staged-import-closure.test.mjs desktop/scripts/packaged-*.test.mjs desktop/scripts/freecad-assets.test.mjs desktop/scripts/verify-package-resource-roots.test.mjs",
     "qa:selftest": "node qa/harness-selftest/run-selftest.mjs",
     "qa:selftest:unit": "node --test qa/harness-selftest/*.test.mjs",
     "qa:selftest:harness": "node qa/electron/run-qa.mjs --project=selftest --skip-desktop-build",
