@@ -126,6 +126,13 @@ export function gpuSwitches(state: GpuState, now: number): GpuSwitch[] {
   if (prefersSoftwareGl(state, now)) {
     // Stop feeding the driver that keeps taking the GPU process down with it.
     switches.push({ name: "use-angle", value: "swiftshader" });
+    // ANGLE on SwiftShader alone leaves GPU compositing "enabled", so every
+    // frame of every window is composited by an emulated GPU. The animated,
+    // blurred 3-D startup scene then cost 1.5-12 cores (617 CPU-seconds in the
+    // first minute) and on a four-core laptop the window stayed dark at ~90%
+    // CPU without ever painting. Chromium's own software compositor draws the
+    // same scene at 60 fps for 23 CPU-seconds; WebGL still gets SwiftShader.
+    switches.push({ name: "disable-gpu-compositing" });
   }
   return switches;
 }

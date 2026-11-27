@@ -69,6 +69,7 @@ test("the software-GL opt-in rides along on every launch, healthy GPU or not", (
   assert.equal(result.softwareGl, false);
   // A healthy machine keeps its hardware GPU.
   assert.ok(!switches.some((entry) => entry.startsWith("use-angle")), switches.join(" "));
+  assert.ok(!switches.includes("disable-gpu-compositing"), switches.join(" "));
 });
 
 test("repeated recent GPU crashes pin the next launch to SwiftShader", () => {
@@ -80,6 +81,9 @@ test("repeated recent GPU crashes pin the next launch to SwiftShader", () => {
   assert.equal(result.softwareGl, true);
   assert.ok(switches.includes("use-angle=swiftshader"), switches.join(" "));
   assert.ok(switches.includes("enable-unsafe-swiftshader"), switches.join(" "));
+  // Compositing through emulated-GPU SwiftShader saturated a four-core laptop
+  // (dark window, ~90% CPU); Chromium's software compositor draws it cheaply.
+  assert.ok(switches.includes("disable-gpu-compositing"), switches.join(" "));
 });
 
 test("an isolated crash, or the burst Chromium recovers from, keeps the GPU", () => {
