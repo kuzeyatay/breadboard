@@ -213,6 +213,16 @@ export type NormalizedAgentEvent =
       };
     }
   | {
+      // The question was answered from another surface (a notification or
+      // another window); a card still showing this request should close.
+      type: "clarify.answered";
+      sessionId: string;
+      timestamp: string;
+      payload: {
+        requestId: string;
+      };
+    }
+  | {
       type: "verification.updated";
       sessionId: string;
       timestamp: string;

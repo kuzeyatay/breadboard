@@ -120,6 +120,10 @@ class DetachedEventPump {
     });
   }
 
+  publish(chunk: Uint8Array): void {
+    this.emit(chunk);
+  }
+
   private emit(chunk: Uint8Array): void {
     if (this.closed) return;
     this.chunks.push(chunk);
@@ -192,6 +196,14 @@ function settlingPumps(): Set<DetachedEventPump> {
 export function captureEventPumpRetirement(key: string): (terminalFrame?: Uint8Array) => void {
   const pump = registry().get(key);
   return (terminalFrame) => pump?.retire(terminalFrame);
+}
+
+/** Append a frame to a live pump, so attached viewers and every later replay
+ * see it. Used when a decision for the turn arrives outside the runtime stream
+ * (a question answered from a notification). No-op without an open pump. */
+export function publishToEventPump(key: string, chunk: Uint8Array): void {
+  const pump = registry().get(key);
+  if (pump && !pump.isClosed) pump.publish(chunk);
 }
 
 export function acquireDetachedEventPump(

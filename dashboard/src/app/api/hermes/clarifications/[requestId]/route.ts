@@ -20,6 +20,8 @@ import {
   getActiveRuntimeRun,
   parseRuntimeRunDispatch,
 } from "@/lib/hermes/run-store.ts";
+import { publishToEventPump } from "@/lib/hermes/detached-event-pump.ts";
+import { encodeSseEvent } from "@/lib/hermes/events.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -70,6 +72,14 @@ export async function POST(
     });
 
     resolveQuestionNotification(db, session.row.id, requestId);
+    // Close the card in every view of this chat, including ones reopened later
+    // from the stream's replay buffer, which still holds the original question.
+    publishToEventPump(`hermes:${session.row.id}`, new TextEncoder().encode(encodeSseEvent({
+      type: "clarify.answered",
+      sessionId: session.hermesSessionId,
+      timestamp: new Date().toISOString(),
+      payload: { requestId },
+    })));
     const activeRun = getActiveRuntimeRun(session.row.id);
     const courseCorrectionTargetClientMessageId = activeRun
       ? parseRuntimeRunDispatch(activeRun).clientMessageId

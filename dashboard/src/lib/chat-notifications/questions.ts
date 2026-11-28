@@ -51,6 +51,14 @@ export function recordQuestionNotification(database: Database.Database, input: {
     requestId: input.requestId, question, createdAt: new Date().toISOString() });
 }
 
+/** True once a question was answered (from any surface) or expired. */
+export function isQuestionResolved(database: Database.Database, runtimeSessionId: number, requestId: string): boolean {
+  ensureQuestionNotificationSchema(database);
+  const row = database.prepare(`SELECT resolved FROM chat_question_notifications
+    WHERE runtime_session_id = ? AND request_id = ?`).get(runtimeSessionId, requestId) as { resolved: number } | undefined;
+  return row?.resolved === 1;
+}
+
 export function resolveQuestionNotification(database: Database.Database, runtimeSessionId: number, requestId: string): void {
   ensureQuestionNotificationSchema(database);
   clearRuntimeClarification(database, runtimeSessionId, requestId);

@@ -24,7 +24,7 @@ import path from "node:path";
 import db from "../db.ts";
 import { readerClarityTurn, reviseForReader } from "../conversations/reader-clarity.ts";
 import { persistAssistantProgress } from "../conversations/live-progress.ts";
-import { recordQuestionNotification, resolveQuestionNotification } from "../chat-notifications/questions.ts";
+import { isQuestionResolved, recordQuestionNotification, resolveQuestionNotification } from "../chat-notifications/questions.ts";
 import { recordApprovalNotification } from "../chat-notifications/approvals.ts";
 import { normalizeChatTokenUsage } from "../chat-token-usage.ts";
 import { requireUserId } from "../server-auth.ts";
@@ -2080,7 +2080,11 @@ function legacyGardenEventStream(
               payload: { permission: event.payload.permission },
             });
           }
-          if (event.type === "clarify.requested") {
+          // A replayed question already answered from a notification stays closed.
+          if (
+            event.type === "clarify.requested" &&
+            !isQuestionResolved(db, session.row.id, event.payload.requestId)
+          ) {
             recordQuestionNotification(db, {
               runtimeSessionId: session.row.id,
               runId,

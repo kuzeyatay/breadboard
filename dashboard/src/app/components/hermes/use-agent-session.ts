@@ -2865,6 +2865,23 @@ export function useAgentSession(
               }
               break;
             }
+            case "clarify.answered": {
+              // Answered from a notification or another window.
+              const requestId = String(payload.requestId);
+              if (pendingClarificationRef.current?.requestId === requestId) {
+                setPendingClarification(null);
+                if (!stopWasRequested()) transition("running");
+              }
+              setActivities((current) =>
+                current.map((item) =>
+                  item.id === `clarify-${requestId}` &&
+                  item.status === "permission_required"
+                    ? { ...item, status: "completed", completedAt: new Date().toISOString() }
+                    : item,
+                ),
+              );
+              break;
+            }
             case "clarify.expired": {
               const requestId = String(payload.requestId);
               if (pendingClarificationRef.current?.requestId === requestId) {

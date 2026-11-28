@@ -13,7 +13,7 @@ import { productSearchTurnEvent } from "../product-search/turn.ts";
 import db from "../db.ts";
 import { persistAssistantProgress } from "../conversations/live-progress.ts";
 import { intermediateResponsesEnabled } from "./intermediate-responses.ts";
-import { recordQuestionNotification, resolveQuestionNotification } from "../chat-notifications/questions.ts";
+import { isQuestionResolved, recordQuestionNotification, resolveQuestionNotification } from "../chat-notifications/questions.ts";
 import { recordApprovalNotification } from "../chat-notifications/approvals.ts";
 import { getAgentRuntimeByKind } from "../agent-runtime/runtime.ts";
 import { runtimeStartupResourceFailure } from "../agent-runtime/startup-error.ts";
@@ -312,6 +312,8 @@ function driveSessionEventPump(
   // say nothing at all until they do. Anything else the runtime sends means the
   // request was resolved and the turn is moving again.
   let awaitingPermission = false;
+  // The clarify question this stream last showed, until it is answered or expires.
+  let openClarifyRequestId: string | null = null;
   let lastHeartbeatWrittenAt = 0;
   // Breadboard's pre-dispatch decision that this turn needs verified map data.
   // Read off the durable run rather than recomputed here, so the obligation is
@@ -1093,6 +1095,39 @@ function driveSessionEventPump(
         for await (const event of subscribeAcrossRebinds()) {
           sawRuntimeEvent = true;
           lastRuntimeEventAt = Date.now();
+          // A question answered elsewhere (the notification, another window)
+          // is closed. A reopened chat replays the runtime's buffered events,
+          // and that replay must not show the answered question again.
+          if (
+            event.type === "clarify.requested" &&
+            isQuestionResolved(db, session.row.id, event.payload.requestId)
+          ) {
+            continue;
+          }
+          // While this view still shows a question, the runtime speaking again
+          // means it got an answer; if that answer came from another surface,
+          // tell the client so its card closes instead of asking twice.
+          if (
+            openClarifyRequestId &&
+            event.type !== "clarify.requested" &&
+            isQuestionResolved(db, session.row.id, openClarifyRequestId)
+          ) {
+            emit({
+              type: "clarify.answered",
+              sessionId: session.hermesSessionId,
+              timestamp: new Date().toISOString(),
+              payload: { requestId: openClarifyRequestId },
+            });
+            openClarifyRequestId = null;
+          }
+          if (event.type === "clarify.requested") {
+            openClarifyRequestId = event.payload.requestId;
+          } else if (
+            event.type === "clarify.expired" &&
+            event.payload.requestId === openClarifyRequestId
+          ) {
+            openClarifyRequestId = null;
+          }
           // Only the request itself may leave the turn waiting: once the
           // runtime speaks again the decision has landed, one way or the other.
           // A clarify question is the same kind of silence: the model is

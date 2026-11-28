@@ -5,7 +5,7 @@ import { isChatNotificationRecord, isNotificationClarification } from '../src/li
 import { notificationHistoryItem } from '../src/lib/notification-history.ts';
 import { listNotificationHistory, saveNotificationHistory, markNotificationHistoryRead } from '../src/lib/chat-notifications/history.ts';
 import { dismissQuestionNotifications, listPendingQuestionNotifications, questionNotificationId,
-  recordQuestionNotification, resolveQuestionNotification } from '../src/lib/chat-notifications/questions.ts';
+  isQuestionResolved, recordQuestionNotification, resolveQuestionNotification } from '../src/lib/chat-notifications/questions.ts';
 import { ensureChatNotificationSchema, listPendingChatNotifications } from '../src/lib/chat-notifications/store.ts';
 import { readChatRuntimeControl } from '../src/lib/hermes/chat-runtime-control.ts';
 
@@ -210,4 +210,18 @@ test('answer notices are headed by the prompt, or by the channel for messaging c
   assert.equal(listPendingChatNotifications(db,1).at(-1).chatTitle, 'How do tides work?');
   db.exec("UPDATE conversations SET origin_label='WhatsApp' WHERE id=1");
   assert.equal(listPendingChatNotifications(db,1).at(-1).chatTitle, 'WhatsApp');
+});
+
+test('a question answered from a notification reads as resolved, so a reopened chat does not ask again', t => {
+  const db = database(t);
+  ask(db);
+  assert.equal(isQuestionResolved(db, 1, 'request1'), false);
+  resolveQuestionNotification(db, 1, 'request1');
+  assert.equal(isQuestionResolved(db, 1, 'request1'), true);
+  // The runtime's replayed request neither revives the receipt nor the control snapshot.
+  ask(db);
+  assert.equal(isQuestionResolved(db, 1, 'request1'), true);
+  assert.equal(JSON.parse(db.prepare("SELECT dispatch_json FROM hermes_runs WHERE id='run1'").get().dispatch_json)
+    .pendingClarification, null);
+  assert.equal(isQuestionResolved(db, 1, 'unknown'), false);
 });
