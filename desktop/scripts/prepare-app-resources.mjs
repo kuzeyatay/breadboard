@@ -354,8 +354,8 @@ const PINNED_MEM0_RUNTIME = Object.freeze({
   closure: {
     // Hoisted layout (see createPortableGraph in prepare-app-resources.mjs):
     // the nested one put Mem0 modules past MAX_PATH once installed.
-    fileCount: 3_143,
-    sha256: "75F2FDD742436EE4378AD302609377EAFF344E8263D587C5F73E744C0DE480B6",
+    fileCount: 3_137,
+    sha256: "9C5CB6A95234FB327A4148EEE10BA41F635240AE70D6A5DAD2164F63B7642662",
     excludes: ["BREADBOARD_SOURCE_COMMIT", "runtime-artifact.json"],
   },
 });
