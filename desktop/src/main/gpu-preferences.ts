@@ -39,31 +39,74 @@ import type { CommandLine } from "electron";
 import type { ChildProcessGoneDetails } from "./gpu-diagnostics";
 
 const STATE_FILE = "gpu-state.json";
-// Older records counted every non-clean exit, including OS shutdown, and have
-// no reason/exit code with which to distinguish those events from real faults.
-const STATE_VERSION = 2;
+// Version 1 (no version field) counted every non-clean exit, including OS
+// shutdown, and cannot tell those apart from real faults: ignored. Version 2
+// holds bare timestamps, all of them on the hardware backend. Version 3 tags
+// each crash with the backend it happened on.
+const STATE_VERSION = 3;
 
-/** Crashes older than this stop counting; a fixed driver earns its GPU back. */
+/** Crashes older than this stop counting at all. */
 export const GPU_CRASH_WINDOW_MS = 24 * 60 * 60 * 1_000;
 
 /**
- * Software rendering is slower, so it is a last resort, not a first response.
- * One crash is ordinary — a machine waking from sleep, a driver replaced under
- * the running app. Two is the burst Chromium already recovers from by itself.
- * Three inside a day means the driver is not going to settle, and a slower
- * renderer beats another frozen window.
+ * Leaving the default driver path is a response to a pattern, not an
+ * incident. One crash is ordinary — a machine waking from sleep, a driver
+ * replaced under the running app. Two is the burst Chromium already recovers
+ * from by itself. Three inside a day means that driver path is not going to
+ * settle.
  */
 export const GPU_CRASH_SOFTWARE_THRESHOLD = 3;
+
+/**
+ * The alternate backend is already the second attempt, so it gets less
+ * patience before the last resort.
+ */
+export const GPU_ALTERNATE_CRASH_THRESHOLD = 2;
+
+/**
+ * A fallback is re-tested one step closer to the hardware default after this
+ * long without a crash, instead of waiting out the whole crash window. A failed
+ * test costs one crash, which re-escalates straight away because the earlier
+ * crashes still count; a passed test gives the GPU back hours sooner.
+ */
+export const GPU_RETRY_AFTER_MS = 4 * 60 * 60 * 1_000;
 
 /** Bound on the retained history so a crash loop cannot grow the file. */
 const MAX_RECORDED_CRASHES = 16;
 
+/**
+ * - hardware: Chromium's default ANGLE backend (Direct3D 11 on Windows).
+ * - alternate: the same GPU through a different driver path. On Windows that
+ *   is Direct3D 11 on 12, which runs on the D3D12 driver instead of the D3D11
+ *   one where these crashes happen. Measured on an AMD laptop: WebGL2, GPU
+ *   rasterization and 60 fps all kept. (OpenGL also ran but lost GPU
+ *   rasterization; Direct3D 9 lost it and WebGL2 and cost twice the CPU.)
+ * - software: SwiftShader, with Chromium's software compositor. Last resort.
+ */
+export type GpuBackend = "hardware" | "alternate" | "software";
+
+export interface GpuCrash {
+  /** Epoch milliseconds. */
+  readonly at: number;
+  /** The backend the launch was using when its GPU process crashed. */
+  readonly backend: Exclude<GpuBackend, "software">;
+}
+
 export interface GpuState {
-  /** Epoch milliseconds of recent GPU-process crashes, oldest first. */
-  readonly crashes: readonly number[];
+  /** Recent GPU-process crashes, oldest first. */
+  readonly crashes: readonly GpuCrash[];
 }
 
 export const EMPTY_GPU_STATE: GpuState = { crashes: [] };
+
+/** The alternate ANGLE backend for this platform, if it has a useful one. */
+export function alternateAngleBackend(platform: NodeJS.Platform): string | undefined {
+  return platform === "win32" ? "d3d11on12" : undefined;
+}
+
+function validTime(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
 
 /**
  * Tolerant parse: this file is advisory. Anything unreadable, truncated by a
@@ -72,28 +115,72 @@ export const EMPTY_GPU_STATE: GpuState = { crashes: [] };
  */
 export function parseGpuState(raw: unknown): GpuState {
   if (typeof raw !== "object" || raw === null) return EMPTY_GPU_STATE;
-  if ((raw as { version?: unknown }).version !== STATE_VERSION) return EMPTY_GPU_STATE;
+  const version = (raw as { version?: unknown }).version;
   const candidate = (raw as { crashes?: unknown }).crashes;
   if (!Array.isArray(candidate)) return EMPTY_GPU_STATE;
-  const crashes = candidate
-    .filter((value): value is number => typeof value === "number" && Number.isFinite(value) && value > 0)
-    .sort((left, right) => left - right)
-    .slice(-MAX_RECORDED_CRASHES);
-  return { crashes };
+  let crashes: GpuCrash[];
+  if (version === 2) {
+    crashes = candidate.filter(validTime).map((at) => ({ at, backend: "hardware" as const }));
+  } else if (version === STATE_VERSION) {
+    crashes = candidate.flatMap((entry): GpuCrash[] => {
+      if (typeof entry !== "object" || entry === null) return [];
+      const { at, backend } = entry as { at?: unknown; backend?: unknown };
+      if (!validTime(at) || (backend !== "hardware" && backend !== "alternate")) return [];
+      return [{ at, backend }];
+    });
+  } else {
+    return EMPTY_GPU_STATE;
+  }
+  crashes.sort((left, right) => left.at - right.at);
+  return { crashes: crashes.slice(-MAX_RECORDED_CRASHES) };
 }
 
 /** Drop crashes that have aged out of the window. */
-export function recentCrashes(state: GpuState, now: number): readonly number[] {
-  return state.crashes.filter((at) => now - at < GPU_CRASH_WINDOW_MS && at <= now);
+export function recentCrashes(state: GpuState, now: number): readonly GpuCrash[] {
+  return state.crashes.filter((crash) => now - crash.at < GPU_CRASH_WINDOW_MS && crash.at <= now);
 }
 
-export function prefersSoftwareGl(state: GpuState, now: number): boolean {
-  return recentCrashes(state, now).length >= GPU_CRASH_SOFTWARE_THRESHOLD;
+/**
+ * The backend this launch should use. Escalates hardware -> alternate ->
+ * software on repeated crashes, and steps back one level for every
+ * GPU_RETRY_AFTER_MS without a crash.
+ */
+export function decideGpuBackend(
+  state: GpuState,
+  now: number,
+  platform: NodeJS.Platform = process.platform,
+): GpuBackend {
+  const ladder: GpuBackend[] = alternateAngleBackend(platform)
+    ? ["hardware", "alternate", "software"]
+    : ["hardware", "software"];
+  const recent = recentCrashes(state, now);
+  if (recent.length === 0) return "hardware";
+  const onHardware = recent.filter((crash) => crash.backend === "hardware").length;
+  const onAlternate = recent.filter((crash) => crash.backend === "alternate").length;
+  let level = 0;
+  if (onHardware >= GPU_CRASH_SOFTWARE_THRESHOLD) level = 1;
+  // Without an alternate backend, the first escalation is already software.
+  if (ladder.length === 3 && onAlternate >= GPU_ALTERNATE_CRASH_THRESHOLD) level = 2;
+  const quietFor = now - recent[recent.length - 1]!.at;
+  level = Math.max(0, level - Math.floor(quietFor / GPU_RETRY_AFTER_MS));
+  return ladder[Math.min(level, ladder.length - 1)]!;
 }
 
-export function withGpuCrash(state: GpuState, now: number): GpuState {
+export function prefersSoftwareGl(
+  state: GpuState,
+  now: number,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  return decideGpuBackend(state, now, platform) === "software";
+}
+
+export function withGpuCrash(
+  state: GpuState,
+  now: number,
+  backend: GpuCrash["backend"] = "hardware",
+): GpuState {
   return {
-    crashes: [...recentCrashes(state, now), now].slice(-MAX_RECORDED_CRASHES),
+    crashes: [...recentCrashes(state, now), { at: now, backend }].slice(-MAX_RECORDED_CRASHES),
   };
 }
 
@@ -106,7 +193,11 @@ export interface GpuSwitch {
  * The switches this launch should carry. Pure, so the decision can be asserted
  * without starting Chromium.
  */
-export function gpuSwitches(state: GpuState, now: number): GpuSwitch[] {
+export function gpuSwitches(
+  state: GpuState,
+  now: number,
+  platform: NodeJS.Platform = process.platform,
+): GpuSwitch[] {
   const switches: GpuSwitch[] = [
     // The embedder's opt-in to software GL. Unused while the GPU is healthy,
     // and insurance for the day Chromium starts requiring it before handing a
@@ -123,7 +214,13 @@ export function gpuSwitches(state: GpuState, now: number): GpuSwitch[] {
     // driverBugWorkarounds, not merely the browser's command line.
     { name: "disable_direct_composition_video_overlays" },
   ];
-  if (prefersSoftwareGl(state, now)) {
+  const backend = decideGpuBackend(state, now, platform);
+  const alternate = alternateAngleBackend(platform);
+  if (backend === "alternate" && alternate) {
+    // Same GPU, different driver path: keeps hardware speed.
+    switches.push({ name: "use-angle", value: alternate });
+  }
+  if (backend === "software") {
     // Stop feeding the driver that keeps taking the GPU process down with it.
     switches.push({ name: "use-angle", value: "swiftshader" });
     // ANGLE on SwiftShader alone leaves GPU compositing "enabled", so every
@@ -172,8 +269,8 @@ export function writeGpuState(userDataDir: string, state: GpuState): void {
  * Apply this launch's GPU switches. Must run before Chromium starts, i.e.
  * before `app.whenReady()`, alongside the other pre-ready switch setup.
  *
- * Returns whether this launch is pinned to software GL so the caller can say
- * so in the log.
+ * Returns the backend this launch uses so the caller can say so in the log
+ * and charge any crash to it.
  */
 export function configureGpuPreferences(
   commandLine: Pick<CommandLine, "appendSwitch" | "getSwitchValue">,
@@ -181,8 +278,9 @@ export function configureGpuPreferences(
   now: number = Date.now(),
   state: GpuState = readGpuState(userDataDir),
   platform: NodeJS.Platform = process.platform,
-): { softwareGl: boolean; applied: GpuSwitch[] } {
-  const applied = gpuSwitches(state, now);
+): { backend: GpuBackend; softwareGl: boolean; applied: GpuSwitch[] } {
+  const backend = decideGpuBackend(state, now, platform);
+  const applied = gpuSwitches(state, now, platform);
   if (platform === "win32") {
     // In Electron 33 an occluded WebContentsView can hide its native child
     // HWND while backgroundThrottling:false keeps its renderer "visible".
@@ -199,7 +297,7 @@ export function configureGpuPreferences(
     if (entry.value === undefined) commandLine.appendSwitch(entry.name);
     else commandLine.appendSwitch(entry.name, entry.value);
   }
-  return { softwareGl: prefersSoftwareGl(state, now), applied };
+  return { backend, softwareGl: backend === "software", applied };
 }
 
 export function describeGpuSwitches(applied: readonly GpuSwitch[]): string {
@@ -212,7 +310,12 @@ export function describeGpuSwitches(applied: readonly GpuSwitch[]): string {
 
 export interface GpuCrashRecorderHost {
   onChildProcessGone(listener: (details: ChildProcessGoneDetails) => void): void;
-  shouldRecordCrashes(): boolean;
+  /**
+   * The backend to charge a crash to, or null when crashes must not count:
+   * while quitting, and on software rendering, which has no driver to blame
+   * and must not renew its own fallback.
+   */
+  recordingBackend(): GpuCrash["backend"] | null;
 }
 
 /** A terminated process says nothing about the health of the graphics driver. */
@@ -240,19 +343,22 @@ export function installGpuCrashRecorder(
   userDataDir: string,
   write: (line: string) => void,
   now: () => number = Date.now,
+  platform: NodeJS.Platform = process.platform,
 ): void {
   host.onChildProcessGone((details) => {
     try {
-      // Failures while quitting or already using SwiftShader must not renew
-      // the hardware-driver fallback and trap future launches on the CPU.
-      if (!host.shouldRecordCrashes() || !isGpuDriverFailure(details)) return;
+      const backend = host.recordingBackend();
+      if (!backend || !isGpuDriverFailure(details)) return;
       const at = now();
-      const next = withGpuCrash(readGpuState(userDataDir), at);
+      const next = withGpuCrash(readGpuState(userDataDir), at, backend);
       writeGpuState(userDataDir, next);
-      if (prefersSoftwareGl(next, at)) {
+      const nextBackend = decideGpuBackend(next, at, platform);
+      if (nextBackend !== backend) {
         write(
           `[desktop] gpu process crashed ${next.crashes.length}x recently; ` +
-            "the next launch will render WebGL through SwiftShader",
+            (nextBackend === "software"
+              ? "the next launch will render WebGL through SwiftShader"
+              : `the next launch will try the ${alternateAngleBackend(platform)} graphics backend`),
         );
       }
     } catch {

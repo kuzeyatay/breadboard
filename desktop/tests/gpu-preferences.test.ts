@@ -5,9 +5,12 @@ import * as os from "node:os";
 import * as path from "node:path";
 import {
   EMPTY_GPU_STATE,
+  GPU_ALTERNATE_CRASH_THRESHOLD,
   GPU_CRASH_SOFTWARE_THRESHOLD,
   GPU_CRASH_WINDOW_MS,
+  GPU_RETRY_AFTER_MS,
   configureGpuPreferences,
+  decideGpuBackend,
   describeGpuSwitches,
   installGpuCrashRecorder,
   isGpuDriverFailure,
@@ -21,6 +24,15 @@ import {
 import type { ChildProcessGoneDetails } from "../src/main/gpu-diagnostics";
 
 const NOW = 1_800_000_000_000;
+const HOUR = 60 * 60 * 1_000;
+
+function crashes(backend: "hardware" | "alternate", ...at: number[]): GpuState {
+  return { crashes: at.map((when) => ({ at: when, backend })) };
+}
+
+function merge(...states: GpuState[]): GpuState {
+  return { crashes: states.flatMap((state) => state.crashes).sort((a, b) => a.at - b.at) };
+}
 
 function recordingCommandLine(disabledFeatures = ""): {
   commandLine: { appendSwitch: (name: string, value?: string) => void; getSwitchValue: (name: string) => string };
@@ -72,11 +84,28 @@ test("the software-GL opt-in rides along on every launch, healthy GPU or not", (
   assert.ok(!switches.includes("disable-gpu-compositing"), switches.join(" "));
 });
 
-test("repeated recent GPU crashes pin the next launch to SwiftShader", () => {
-  const state: GpuState = { crashes: [NOW - 90_000, NOW - 60_000, NOW - 30_000] };
+test("repeated crashes on the default backend move Windows to another driver path, not the CPU", () => {
+  const state = crashes("hardware", NOW - 90_000, NOW - 60_000, NOW - 30_000);
   const { commandLine, switches } = recordingCommandLine();
 
-  const result = configureGpuPreferences(commandLine, tempUserData(), NOW, state);
+  const result = configureGpuPreferences(commandLine, tempUserData(), NOW, state, "win32");
+
+  assert.equal(result.backend, "alternate");
+  assert.equal(result.softwareGl, false);
+  assert.ok(switches.includes("use-angle=d3d11on12"), switches.join(" "));
+  assert.ok(!switches.includes("use-angle=swiftshader"), switches.join(" "));
+  assert.ok(!switches.includes("disable-gpu-compositing"), switches.join(" "));
+});
+
+test("crashes on the alternate backend too pin the next launch to SwiftShader", () => {
+  const state = merge(
+    crashes("hardware", NOW - 5 * 60_000, NOW - 4 * 60_000, NOW - 3 * 60_000),
+    crashes("alternate", NOW - 2 * 60_000, NOW - 60_000),
+  );
+  assert.equal(GPU_ALTERNATE_CRASH_THRESHOLD, 2);
+  const { commandLine, switches } = recordingCommandLine();
+
+  const result = configureGpuPreferences(commandLine, tempUserData(), NOW, state, "win32");
 
   assert.equal(result.softwareGl, true);
   assert.ok(switches.includes("use-angle=swiftshader"), switches.join(" "));
@@ -84,35 +113,85 @@ test("repeated recent GPU crashes pin the next launch to SwiftShader", () => {
   // Compositing through emulated-GPU SwiftShader saturated a four-core laptop
   // (dark window, ~90% CPU); Chromium's software compositor draws it cheaply.
   assert.ok(switches.includes("disable-gpu-compositing"), switches.join(" "));
+  assert.equal(decideGpuBackend(crashes("alternate", NOW - 60_000), NOW, "win32"), "hardware",
+    "one alternate crash on its own is not a pattern");
+});
+
+test("without an alternate backend, repeated crashes go straight to SwiftShader", () => {
+  const state = crashes("hardware", NOW - 90_000, NOW - 60_000, NOW - 30_000);
+  const { commandLine, switches } = recordingCommandLine();
+
+  const result = configureGpuPreferences(commandLine, tempUserData(), NOW, state, "linux");
+
+  assert.equal(result.backend, "software");
+  assert.ok(switches.includes("use-angle=swiftshader"), switches.join(" "));
+  assert.ok(switches.includes("disable-gpu-compositing"), switches.join(" "));
 });
 
 test("an isolated crash, or the burst Chromium recovers from, keeps the GPU", () => {
   assert.equal(GPU_CRASH_SOFTWARE_THRESHOLD, 3);
-  assert.equal(prefersSoftwareGl({ crashes: [NOW - 1_000] }, NOW), false);
-  assert.equal(prefersSoftwareGl({ crashes: [NOW - 2_000, NOW - 1_000] }, NOW), false);
+  for (const platform of ["win32", "linux"] as const) {
+    assert.equal(decideGpuBackend(crashes("hardware", NOW - 1_000), NOW, platform), "hardware");
+    assert.equal(decideGpuBackend(crashes("hardware", NOW - 2_000, NOW - 1_000), NOW, platform), "hardware");
+  }
 });
 
 test("crashes outside the window stop counting, so a fixed driver is used again", () => {
-  const stale: GpuState = {
-    crashes: [
-      NOW - GPU_CRASH_WINDOW_MS - 1,
-      NOW - GPU_CRASH_WINDOW_MS - 2,
-      NOW - GPU_CRASH_WINDOW_MS - 3,
-    ],
-  };
+  const stale = crashes(
+    "hardware",
+    NOW - GPU_CRASH_WINDOW_MS - 3,
+    NOW - GPU_CRASH_WINDOW_MS - 2,
+    NOW - GPU_CRASH_WINDOW_MS - 1,
+  );
 
-  assert.equal(prefersSoftwareGl(stale, NOW), false);
+  assert.equal(decideGpuBackend(stale, NOW, "win32"), "hardware");
+  assert.equal(prefersSoftwareGl(stale, NOW, "linux"), false);
 });
 
-test("a recorded crash is persisted and read back", () => {
+test("a quiet fallback steps back toward the GPU every few hours instead of after a day", () => {
+  assert.equal(GPU_RETRY_AFTER_MS, 4 * HOUR);
+  const state = merge(
+    crashes("hardware", NOW - 3, NOW - 2, NOW - 1),
+    crashes("alternate", NOW, NOW),
+  );
+  assert.equal(decideGpuBackend(state, NOW + 1, "win32"), "software");
+  assert.equal(decideGpuBackend(state, NOW + 4 * HOUR - 1, "win32"), "software");
+  assert.equal(decideGpuBackend(state, NOW + 4 * HOUR, "win32"), "alternate");
+  assert.equal(decideGpuBackend(state, NOW + 8 * HOUR, "win32"), "hardware");
+
+  const linux = crashes("hardware", NOW - 2, NOW - 1, NOW);
+  assert.equal(decideGpuBackend(linux, NOW + 4 * HOUR - 1, "linux"), "software");
+  assert.equal(decideGpuBackend(linux, NOW + 4 * HOUR, "linux"), "hardware");
+});
+
+test("a failed retry costs one crash and re-escalates at once", () => {
+  // Software since NOW; after four quiet hours the alternate backend is retried.
+  const base = merge(crashes("hardware", NOW - 3, NOW - 2, NOW - 1), crashes("alternate", NOW, NOW));
+  const retryAt = NOW + 4 * HOUR + 1_000;
+  assert.equal(decideGpuBackend(base, retryAt, "win32"), "alternate");
+  assert.equal(decideGpuBackend(withGpuCrash(base, retryAt, "alternate"), retryAt + 1, "win32"), "software");
+
+  // Four more quiet hours: the default backend is retried; one crash there sends it back.
+  const hardwareAt = NOW + 8 * HOUR + 1_000;
+  assert.equal(decideGpuBackend(base, hardwareAt, "win32"), "hardware");
+  assert.equal(decideGpuBackend(withGpuCrash(base, hardwareAt, "hardware"), hardwareAt + 1, "win32"), "software",
+    "the alternate backend's crashes still count inside the day");
+  const onlyHardware = crashes("hardware", NOW - 2, NOW - 1, NOW);
+  assert.equal(decideGpuBackend(withGpuCrash(onlyHardware, NOW + 4 * HOUR + 1, "hardware"), NOW + 4 * HOUR + 2, "win32"),
+    "alternate");
+});
+
+test("a recorded crash is persisted and read back with its backend", () => {
   const dir = tempUserData();
 
   writeGpuState(dir, withGpuCrash(readGpuState(dir), NOW));
   writeGpuState(dir, withGpuCrash(readGpuState(dir), NOW + 1_000));
-  writeGpuState(dir, withGpuCrash(readGpuState(dir), NOW + 2_000));
+  writeGpuState(dir, withGpuCrash(readGpuState(dir), NOW + 2_000, "alternate"));
 
-  assert.equal(readGpuState(dir).crashes.length, 3);
-  assert.equal(prefersSoftwareGl(readGpuState(dir), NOW + 3_000), true);
+  assert.deepEqual(readGpuState(dir).crashes.map((crash) => crash.backend), ["hardware", "hardware", "alternate"]);
+  writeGpuState(dir, withGpuCrash(readGpuState(dir), NOW + 3_000));
+  assert.equal(decideGpuBackend(readGpuState(dir), NOW + 4_000, "win32"), "alternate");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dir, "gpu-state.json"), "utf8")).version, 3);
 });
 
 test("unreadable or hand-edited state is treated as no history", () => {
@@ -121,20 +200,25 @@ test("unreadable or hand-edited state is treated as no history", () => {
 
   assert.deepEqual(readGpuState(dir), EMPTY_GPU_STATE);
   assert.deepEqual(parseGpuState({ version: 2, crashes: ["yesterday", -1, null] }), EMPTY_GPU_STATE);
+  assert.deepEqual(parseGpuState({ version: 3, crashes: [NOW, { at: NOW, backend: "software" }, { at: "x", backend: "hardware" }] }),
+    EMPTY_GPU_STATE);
+  assert.deepEqual(parseGpuState({ version: 4, crashes: [{ at: NOW, backend: "hardware" }] }), EMPTY_GPU_STATE);
   assert.deepEqual(parseGpuState(null), EMPTY_GPU_STATE);
 });
 
-test("the crash recorder writes through and reports the fallback once it is due", () => {
+test("the crash recorder tags crashes and reports each step of the fallback once it is due", () => {
   const dir = tempUserData();
   const lines: string[] = [];
   let listener: ((details: ChildProcessGoneDetails) => void) | null = null;
   let clock = NOW;
+  let backend: "hardware" | "alternate" = "hardware";
 
   installGpuCrashRecorder(
-    { onChildProcessGone: (fn) => void (listener = fn), shouldRecordCrashes: () => true },
+    { onChildProcessGone: (fn) => void (listener = fn), recordingBackend: () => backend },
     dir,
     (line) => lines.push(line),
     () => clock,
+    "win32",
   );
 
   assert.ok(listener, "no crash listener was registered");
@@ -147,12 +231,19 @@ test("the crash recorder writes through and reports the fallback once it is due"
 
   clock = NOW + 10_000;
   crash();
-
   assert.equal(readGpuState(dir).crashes.length, 3);
-  assert.ok(
-    lines.some((line) => line.includes("SwiftShader")),
-    lines.join(" | "),
-  );
+  assert.ok(lines.at(-1)?.includes("d3d11on12"), lines.join(" | "));
+
+  // The next launch runs on the alternate backend.
+  backend = "alternate";
+  clock = NOW + 60_000;
+  crash();
+  assert.equal(lines.length, 1, "one alternate crash is not yet a pattern");
+  clock = NOW + 70_000;
+  crash();
+  assert.ok(lines.at(-1)?.includes("SwiftShader"), lines.join(" | "));
+  assert.deepEqual(readGpuState(dir).crashes.map((entry) => entry.backend),
+    ["hardware", "hardware", "hardware", "alternate", "alternate"]);
 });
 
 test("the applied switches render as a readable command line", () => {
@@ -163,23 +254,33 @@ test("the applied switches render as a readable command line", () => {
   assert.equal(describeGpuSwitches([]), "none");
 });
 
-test("legacy unclassified exit history cannot force software rendering after an upgrade", () => {
+test("legacy unclassified exit history cannot force a fallback after an upgrade", () => {
   const dir = tempUserData();
-  const crashes = [NOW - 90_000, NOW - 60_000, NOW - 30_000];
-  fs.writeFileSync(path.join(dir, "gpu-state.json"), JSON.stringify({ crashes }));
+  const at = [NOW - 90_000, NOW - 60_000, NOW - 30_000];
+  fs.writeFileSync(path.join(dir, "gpu-state.json"), JSON.stringify({ crashes: at }));
   const { commandLine, switches } = recordingCommandLine();
-  assert.equal(configureGpuPreferences(commandLine, dir, NOW).softwareGl, false);
-  assert.ok(!switches.includes("use-angle=swiftshader"));
+  assert.equal(configureGpuPreferences(commandLine, dir, NOW, undefined, "win32").backend, "hardware");
+  assert.ok(!switches.some((entry) => entry.startsWith("use-angle")));
+});
 
-  writeGpuState(dir, { crashes });
-  assert.deepEqual(readGpuState(dir), { crashes });
-  assert.equal(configureGpuPreferences(recordingCommandLine().commandLine, dir, NOW).softwareGl, true);
+test("version 2 history from 0.1.18 and earlier carries over as hardware crashes", () => {
+  const dir = tempUserData();
+  const at = [NOW - 90_000, NOW - 60_000, NOW - 30_000];
+  fs.writeFileSync(path.join(dir, "gpu-state.json"), JSON.stringify({ version: 2, crashes: at }));
+  assert.deepEqual(readGpuState(dir), crashes("hardware", ...at));
+  // A machine that 0.1.18 put on SwiftShader now tries the other driver path first.
+  assert.equal(configureGpuPreferences(recordingCommandLine().commandLine, dir, NOW, undefined, "win32").backend, "alternate");
+  assert.equal(configureGpuPreferences(recordingCommandLine().commandLine, dir, NOW, undefined, "linux").softwareGl, true);
 });
 
 test("versioned crash history is sanitized and bounded", () => {
   assert.deepEqual(parseGpuState({ version: 2, crashes: [NOW, null, -1, "bad", NOW - 1, Infinity] }),
-    { crashes: [NOW - 1, NOW] });
+    crashes("hardware", NOW - 1, NOW));
   assert.equal(parseGpuState({ version: 2, crashes: Array.from({ length: 30 }, (_, i) => NOW + i) }).crashes.length, 16);
+  assert.deepEqual(
+    parseGpuState({ version: 3, crashes: [{ at: NOW, backend: "alternate" }, { at: NOW - 1, backend: "hardware" }, null] }),
+    merge(crashes("hardware", NOW - 1), crashes("alternate", NOW)),
+  );
 });
 
 test("shutdown, memory pressure and unrelated child exits are not driver failures", () => {
@@ -206,7 +307,7 @@ test("the observed context loss and shutdown sequence does not trigger SwiftShad
   let recording = true;
   installGpuCrashRecorder({
     onChildProcessGone: (listener) => { fire = listener; },
-    shouldRecordCrashes: () => recording,
+    recordingBackend: () => (recording ? "hardware" : null),
   }, dir, () => {}, () => clock);
 
   fire({ type: "GPU", reason: "crashed", exitCode: 34 });
@@ -214,11 +315,11 @@ test("the observed context loss and shutdown sequence does not trigger SwiftShad
   fire({ type: "GPU", reason: "killed", exitCode: 1073807364 });
   clock += 136;
   fire({ type: "GPU", reason: "crashed", exitCode: -1073741205 });
-  assert.deepEqual(readGpuState(dir), { crashes: [NOW] });
-  assert.equal(prefersSoftwareGl(readGpuState(dir), clock), false);
+  assert.deepEqual(readGpuState(dir), crashes("hardware", NOW));
+  assert.equal(decideGpuBackend(readGpuState(dir), clock, "win32"), "hardware");
 
   // Quit and software-rendering launches disable recording at the host.
   recording = false;
   for (let i = 0; i < 4; i++) fire({ type: "GPU", reason: "crashed", exitCode: 2 });
-  assert.deepEqual(readGpuState(dir), { crashes: [NOW] });
+  assert.deepEqual(readGpuState(dir), crashes("hardware", NOW));
 });

@@ -576,9 +576,11 @@ export class AppLifecycle {
     if (this.gpuPreferences) {
       supervisorLog.write(
         `[desktop] gpu switches: ${describeGpuSwitches(this.gpuPreferences.applied)}` +
-          (this.gpuPreferences.softwareGl
+          (this.gpuPreferences.backend === "software"
             ? " (software GL: the GPU process crashed repeatedly on recent launches)"
-            : ""),
+            : this.gpuPreferences.backend === "alternate"
+              ? " (alternate graphics backend: the GPU process crashed repeatedly on the default one)"
+              : ""),
       );
     }
 
@@ -590,7 +592,10 @@ export class AppLifecycle {
           void app.on("child-process-gone", (_event, details) => {
             listener(details);
           }),
-        shouldRecordCrashes: () => !this.quitting && !this.gpuPreferences?.softwareGl,
+        recordingBackend: () => {
+          const backend = this.gpuPreferences?.backend ?? "hardware";
+          return this.quitting || backend === "software" ? null : backend;
+        },
       },
       app.getPath("userData"),
       (line) => supervisorLog.write(line),
