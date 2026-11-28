@@ -76,6 +76,23 @@ const GBRAIN_FIXTURE_QUERY = "voltage current resistance";
 // being enabled (a gbrain URL was published), which is the default. When an
 // install has turned it off it records a single explicit skip so the report is
 // honest.
+/**
+ * GBrain starts on demand (the dashboard acquires it, e.g. at sign-in), and a
+ * fresh database first runs ~120 schema migrations: 54 s on a GitHub runner.
+ * One request with a 10 s timeout reported a healthy install as broken.
+ */
+async function waitForGbrainHealth(urls, maxMs = 5 * 60 * 1000) {
+  const deadline = Date.now() + maxMs;
+  let body = null;
+  while (Date.now() < deadline) {
+    const health = await fetchOk(`${urls.gbrain}/health`, {}, 10_000);
+    body = health && health.ok ? await health.json().catch(() => null) : null;
+    if (body?.ready) return body;
+    await delay(3000);
+  }
+  return body;
+}
+
 async function gbrainInitialChecks(urls) {
   if (!urls.gbrain) {
     record("GBrain lifecycle (disabled for this install via desktop-config gbrainMode)", true, "skipped: GBrain not enabled");
@@ -83,8 +100,7 @@ async function gbrainInitialChecks(urls) {
   }
   const secret = gbrainSecret();
   // 1. adapter process started + 2. real engine initialized + 3. health ready.
-  const health = await fetchOk(`${urls.gbrain}/health`, {}, 10_000);
-  const body = health && health.ok ? await health.json().catch(() => null) : null;
+  const body = await waitForGbrainHealth(urls);
   record("GBrain adapter is up and ready", Boolean(body?.ready), body ? `backend ${body.backend}, mode ${body.mode}` : "no /health");
   record("GBrain uses the real vendored engine backend", body?.backend === "gbrain", `backend ${body?.backend}`);
   // 4. mutable data under the installed user-data area.
@@ -92,6 +108,7 @@ async function gbrainInitialChecks(urls) {
   record("GBrain data lives under the installed user-data dir", fs.existsSync(gbrainDataDir), gbrainDataDir);
   // 5. a fixture garden can be indexed.
   let indexed = false;
+  let indexDetail = secret ? "" : "no adapter secret";
   if (secret) {
     const reg = await fetchOk(`${urls.gbrain}/register-source`, {
       method: "POST",
@@ -102,10 +119,11 @@ async function gbrainInitialChecks(urls) {
         pages: [{ pageId: "ohms", title: "Ohm's Law", path: "ohms.md", content: "Voltage equals current times resistance across a resistor." }],
       }),
     }, 30_000);
-    const regBody = reg && reg.ok ? await reg.json().catch(() => null) : null;
-    indexed = regBody?.data?.pagesIndexed === 1;
+    const regBody = reg ? await reg.json().catch(() => null) : null;
+    indexed = reg?.ok === true && regBody?.data?.pagesIndexed === 1;
+    indexDetail = reg ? `status ${reg.status}; ${JSON.stringify(regBody).slice(0, 300)}` : "no response";
   }
-  record("GBrain indexes a fixture garden", indexed);
+  record("GBrain indexes a fixture garden", indexed, indexDetail);
   // 9. secrets do not appear in logs.
   try {
     const log = fs.readFileSync(path.join(userData, "Data", "logs", "desktop.log"), "utf8");
@@ -124,6 +142,7 @@ async function gbrainRetrievalAfterRestart(urls) {
     record("GBrain fixture is retrievable after restart", false, "no adapter secret");
     return;
   }
+  await waitForGbrainHealth(urls);
   const res = await fetchOk(`${urls.gbrain}/search`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${secret}` },
@@ -205,9 +224,52 @@ function launchApp() {
   child.unref();
 }
 
+// Quit like a person clicking X: send WM_CLOSE to the app's visible main
+// window. `taskkill /pid` without /f posts it to whichever top-level window of
+// the process it enumerates first, usually a hidden helper (dictation, voice,
+// visible-region) that rightly ignores it, and Process.CloseMainWindow picks a
+// window heuristically, which also missed on a later run. Either way the app
+// never heard a quit, and every later check failed with it.
+const CLOSE_MAIN_WINDOW_PS = String.raw`
+Add-Type @"
+using System; using System.Text; using System.Runtime.InteropServices;
+public static class BreadboardSmokeWindows {
+  delegate bool EnumProc(IntPtr h, IntPtr l);
+  [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc f, IntPtr l);
+  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+  [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32.dll")] static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
+  public static int CloseMain(uint target) {
+    int closed = 0;
+    EnumWindows((h, l) => {
+      uint pid; GetWindowThreadProcessId(h, out pid);
+      if (pid != target || !IsWindowVisible(h)) return true;
+      var title = new StringBuilder(256); GetWindowText(h, title, 256);
+      if (!string.Equals(title.ToString(), "Breadboard", StringComparison.OrdinalIgnoreCase)) return true;
+      PostMessage(h, 0x0010, IntPtr.Zero, IntPtr.Zero); closed++; return true;
+    }, IntPtr.Zero);
+    return closed;
+  }
+}
+"@
+`;
+
 function closeApp() {
   if (appPid !== null) {
-    spawnSync("taskkill", ["/pid", String(appPid)], { encoding: "utf8" });
+    const result = spawnSync(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-Command",
+        CLOSE_MAIN_WINDOW_PS +
+          `$n = [BreadboardSmokeWindows]::CloseMain(${appPid}); ` +
+          `if ($n -eq 0) { $p = Get-Process -Id ${appPid} -ErrorAction SilentlyContinue; if ($p) { [void]$p.CloseMainWindow() } }; ` +
+          `Write-Output "closed $n"`,
+      ],
+      { encoding: "utf8" },
+    );
+    console.log(`[smoke] main window close: ${(result.stdout ?? "").trim() || (result.stderr ?? "").trim()}`);
   }
 }
 
@@ -480,9 +542,6 @@ async function main() {
     `published keys ${Object.keys(urls).sort().join(",")}`,
   );
 
-  // GBrain adapter lifecycle (index a fixture; retrieval after restart is checked
-  // below). Gated on GBrain being enabled — records an explicit skip otherwise.
-  const gbrainEnabled = await gbrainInitialChecks(urls);
 
   // Auth: a fresh install sets up its one account from the sign-in page, with
   // a name and a password or PIN. After that there is no second account.
@@ -536,14 +595,18 @@ async function main() {
     }
   }
   record("credentials login yields a session", sessionUser !== null, `user ${sessionUser}`);
-  const runtimeHealth = sessionUser
-    ? await fetchOk(`${base}/api/hermes/health`, {
-        headers: { Cookie: cookieHeader() },
-      }, 20_000)
-    : null;
-  const runtimeHealthBody = runtimeHealth?.ok
-    ? await runtimeHealth.json().catch(() => null)
-    : null;
+  let runtimeHealth = null;
+  let runtimeHealthBody = null;
+  for (const deadline = Date.now() + 5 * 60 * 1000; sessionUser && Date.now() < deadline; await delay(3000)) {
+    // GET only reports an on-demand Hermes as "available-but-stopped"; POST is
+    // the Terminal's connect path, which asks the supervisor to start it.
+    runtimeHealth = await fetchOk(`${base}/api/hermes/health`, {
+      method: "POST",
+      headers: { Cookie: cookieHeader(), Origin: base },
+    }, 120_000);
+    runtimeHealthBody = runtimeHealth?.ok ? await runtimeHealth.json().catch(() => null) : null;
+    if (runtimeHealthBody?.healthy === true) break;
+  }
   record(
     "Hermes is healthy through the existing authenticated runtime API",
     runtimeHealthBody?.healthy === true && runtimeHealthBody?.runtime === "hermes",
@@ -625,6 +688,11 @@ async function main() {
     record("ingested source exists under sources/", found, sourcesDir);
   }
 
+  // GBrain adapter lifecycle (index a fixture; retrieval after restart is checked
+  // below). Gated on GBrain being enabled — records an explicit skip otherwise.
+  // GBrain is an on-demand service: the ingestion above is what starts it.
+  const gbrainEnabled = await gbrainInitialChecks(urls);
+
   // Restart: quit, verify cleanup, relaunch, verify persistence.
   closeApp();
   await delay(30000);
@@ -675,6 +743,20 @@ async function main() {
       if (session2?.ok) persisted = (await session2.json())?.user?.name != null;
     }
     record("database persists across restart (login works)", persisted);
+    if (clusterSlug && persisted) {
+      // GBrain is on demand and nothing has needed it since the relaunch. Ask
+      // the dashboard to sync the garden (what a person's edit would do), which
+      // acquires GBrain, so the durability check below has an engine to query.
+      await fetchOk(`${base2}/api/gbrain/sync`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Origin: base2,
+          Cookie: [...jar2.entries()].map(([k, v]) => `${k}=${v}`).join("; "),
+        },
+        body: JSON.stringify({ gardenId: clusterSlug }),
+      }, 120_000);
+    }
     if (clusterSlug) {
       const contentDir = path.join(userData, "Data", "quartz", "content", clusterSlug);
       record("user files persist across restart", fs.existsSync(contentDir));
@@ -700,7 +782,7 @@ async function main() {
   }
 
   // GBrain durability: the fixture indexed before the restart must still retrieve.
-  await gbrainRetrievalAfterRestart(urls);
+  await gbrainRetrievalAfterRestart(urls2 ?? urls);
 
   closeApp();
   await delay(30000);
