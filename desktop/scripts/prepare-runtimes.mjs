@@ -220,6 +220,30 @@ const CHATMOCK_PINNED_DEPS = [
   "werkzeug==3.1.3",
 ];
 
+// ChatMock's `embeddings` extra: the local, keyless /v1/embeddings model that
+// GBrain (and semantic retrieval) use in the packaged app. Without it every
+// embedding request answered 503 and GBrain indexed nothing, so installed
+// gardens had no search index while the dev stack (whose venv has the extra)
+// worked. Versions are the set resolved and verified against the bundled
+// CPython 3.13; the model weights (~65 MB) download into ChatMock's home on
+// first use.
+const CHATMOCK_EMBEDDING_DEPS = [
+  "fastembed==0.8.0",
+  "filelock==4.3.2",
+  "flatbuffers==25.12.19",
+  "fsspec==2026.9.0",
+  "hf-xet==1.8.0",
+  "huggingface-hub==1.33.0",
+  "loguru==0.7.3",
+  "mmh3==5.3.1",
+  "numpy==2.5.5",
+  "onnxruntime==1.32.0",
+  "protobuf==7.36.2",
+  "py-rust-stemmers==0.1.8",
+  "tokenizers==0.23.3",
+  "win32-setctime==1.2.1",
+];
+
 function ensureHermesImportPath(target) {
   ensureHermesSourceHook(target);
 }
@@ -1071,7 +1095,10 @@ async function preparePython() {
 
   const target = path.join(runtimesDir, "python");
   const stampFile = path.join(target, ".breadboard-python-version");
-  const expectedStamp = `${fullVersion}\nhermes=${hermesCommit}\nifixai=${ifixAiCommit}`;
+  // The ChatMock dependency set is part of the identity: a cached runtime
+  // assembled before the embedding extra was added must be rebuilt, not reused.
+  const chatmockDeps = [...CHATMOCK_PINNED_DEPS, ...CHATMOCK_EMBEDDING_DEPS].join(",");
+  const expectedStamp = `${fullVersion}\nhermes=${hermesCommit}\nifixai=${ifixAiCommit}\nchatmock=${chatmockDeps}`;
   if (
     fs.existsSync(stampFile) &&
     fs.readFileSync(stampFile, "utf8").trim() === expectedStamp
@@ -1131,6 +1158,7 @@ async function preparePython() {
       "--python",
       path.join(target, "python.exe"),
       ...CHATMOCK_PINNED_DEPS,
+      ...CHATMOCK_EMBEDDING_DEPS,
     ],
     { encoding: "utf8", stdio: "inherit" },
   );

@@ -4950,6 +4950,18 @@ function checkResourcesRoot(resources, binRoot, label) {
       const output = `${chatMockImport.stderr ?? ""}\n${chatMockImport.stdout ?? ""}`.trim();
       problems.push(`${label} bundled Python cannot import ChatMock: ${output || "unknown error"}`);
     }
+    // GBrain's vectors come from ChatMock's local model; without fastembed the
+    // installed app answered every /v1/embeddings request with 503.
+    const embeddingImport = spawnSync(python, ["-c", "import fastembed, onnxruntime"], {
+      cwd: chatMockRoot,
+      encoding: "utf8",
+      windowsHide: true,
+      env: { ...process.env, BREADBOARD_CHATMOCK_SOURCE_ROOT: chatMockRoot },
+    });
+    if (embeddingImport.status !== 0) {
+      const output = `${embeddingImport.stderr ?? ""}\n${embeddingImport.stdout ?? ""}`.trim();
+      problems.push(`${label} bundled Python cannot load ChatMock's local embedding model: ${output || "unknown error"}`);
+    }
   }
   requireFile(
     path.join(resources, "app-services", "hermes-config", "system", "main-assistant.md"),
