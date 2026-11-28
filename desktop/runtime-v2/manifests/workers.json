@@ -681,45 +681,12 @@
       "exitAfterJob": true
     },
     {
-      "kind": "gbrain-sync-node",
-      "jobTypes": ["gbrain-sync"],
-      "capabilityIds": ["workflow:gbrain-indexing"],
-      "submissionAuthority": "user",
-      "environmentSource": "gbrain-sync",
-      "serviceDependencies": [
-        {
-          "serviceId": "gbrain",
-          "condition": "gbrain-sync-always"
-        }
-      ],
-      "allowedExecutable": "runtimes/node/node.exe",
-      "allowedEntrypoint": "dashboard/scripts/runtime-v2-gbrain-sync-worker.mjs",
-      "protocolVersion": 1,
-      "resourceClass": "document-processing",
-      "estimatedColdStartCommitMb": 1024,
-      "softCommitLimitMb": 2048,
-      "hardCommitLimitMb": 3072,
-      "maximumConcurrency": 1,
-      "minimumInputBlobs": 0,
-      "maximumInputBlobs": 0,
-      "workspacePolicy": "private-per-job",
-      "readyTimeoutMs": 30000,
-      "heartbeatTimeoutMs": 30000,
-      "gracefulCancellationMs": 30000,
-      "maximumRuntimeMs": 1800000,
-      "exitAfterJob": true
-    },
-    {
       "kind": "thought-topology-node",
       "jobTypes": ["thought-topology"],
       "capabilityIds": ["workflow:thought-topology"],
       "submissionAuthority": "user",
       "environmentSource": "gbrain-sync",
       "serviceDependencies": [
-        {
-          "serviceId": "gbrain",
-          "condition": "always"
-        },
         {
           "serviceId": "chatmock",
           "condition": "always"

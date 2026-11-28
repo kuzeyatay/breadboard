@@ -29,17 +29,6 @@ const hermesCapabilitySecret =
   process.env.HERMES_CAPABILITY_SECRET?.trim() ||
   crypto.randomBytes(32).toString("hex");
 
-// GBrain (garden knowledge retrieval). On by default: `preferred` runs but never
-// blocks the stack; `required` fails startup if the adapter is not reachable;
-// `disabled` must be asked for explicitly and starts nothing. A per-launch
-// adapter secret is shared with the dashboard through the environment so the
-// browser never sees it.
-const gbrainMode = process.env.GBRAIN_MODE?.trim().toLowerCase() || "preferred";
-const gbrainEnabled = gbrainMode === "preferred" || gbrainMode === "required";
-const gbrainPort = /^\d+$/.test(process.env.GBRAIN_ADAPTER_PORT ?? "") ? process.env.GBRAIN_ADAPTER_PORT : "7717";
-const gbrainSecret = process.env.GBRAIN_ADAPTER_SECRET || crypto.randomBytes(24).toString("hex");
-const gbrainAdapterUrl = process.env.GBRAIN_ADAPTER_URL || `http://127.0.0.1:${gbrainPort}`;
-
 // Deep Research (iterative web research agent). Optional and never blocking: the
 // dashboard reports a specific unavailable/misconfigured state until the service
 // is healthy. Its LLM is ChatMock; its search backend is Firecrawl.
@@ -231,13 +220,8 @@ const runtimeEnv = {
     process.env.HERMES_SKILLS_CONDITIONAL || path.join(repoRoot, ".agents", "skills-conditional"),
   HERMES_FIRST_PARTY_SKILLS_ROOT:
     process.env.HERMES_FIRST_PARTY_SKILLS_ROOT || path.join(repoRoot, "hermes-skills", "prebuilt"),
-  // GBrain: mode + the shared per-launch secret + adapter URL flow to both the
-  // adapter process and the dashboard so they agree without the browser ever
-  // seeing the secret.
-  GBRAIN_MODE: gbrainMode,
-  GBRAIN_ADAPTER_PORT: gbrainPort,
-  GBRAIN_ADAPTER_SECRET: gbrainSecret,
-  GBRAIN_ADAPTER_URL: gbrainAdapterUrl,
+  // GBrain was removed; pin it off over anything left in `.env.local`.
+  GBRAIN_MODE: "disabled",
   // Deep Research: the same per-launch secret reaches the service and the
   // dashboard so they agree without the browser ever seeing it.
   DEEP_RESEARCH_MODE: deepResearchMode,
@@ -539,38 +523,6 @@ async function main() {
     }
   }
 
-  // GBrain adapter starts before Hermes so knowledge tools are ready when a
-  // session opens. In `preferred` a failure is surfaced but non-fatal; in
-  // `required` it aborts the stack.
-  if (gbrainEnabled) {
-    // /health is unauthenticated, so it cannot tell our adapter from one
-    // holding a different secret. Every other route is a POST behind the
-    // bearer: an empty body reaches the handler only once the secret matched.
-    await startUnlessRunning(
-      "gbrain",
-      {
-        url: `${gbrainAdapterUrl}/search`,
-        method: "POST",
-        body: "{}",
-        headers: {
-          Authorization: `Bearer ${gbrainSecret}`,
-          "Content-Type": "application/json",
-        },
-        acceptStatuses: AUTHENTICATED,
-      },
-      process.execPath,
-      [path.join(repoRoot, "scripts", "start-gbrain.mjs")],
-    );
-    try {
-      await waitFor(`${gbrainAdapterUrl}/health`, {}, 30_000);
-      process.stdout.write("[stack] GBrain adapter healthy\n");
-    } catch (error) {
-      if (gbrainMode === "required") throw error;
-      process.stderr.write(
-        `[stack] GBrain adapter unavailable in preferred mode; the dashboard reports a degraded/unavailable knowledge state: ${error instanceof Error ? error.message : String(error)}\n`,
-      );
-    }
-  }
   // Hermes is never a hard dependency of the stack: an unhealthy runtime makes
   // agent routes return the sanitized unavailable error while Gardens and every
   // unrelated feature stay usable (mirrors the desktop supervisor).

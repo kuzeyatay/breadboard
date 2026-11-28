@@ -221,10 +221,9 @@ const CHATMOCK_PINNED_DEPS = [
 ];
 
 // ChatMock's `embeddings` extra: the local, keyless /v1/embeddings model that
-// GBrain (and semantic retrieval) use in the packaged app. Without it every
-// embedding request answered 503 and GBrain indexed nothing, so installed
-// gardens had no search index while the dev stack (whose venv has the extra)
-// worked. Versions are the set resolved and verified against the bundled
+// Garden search and the knowledge graph use in the packaged app. Without it
+// every embedding request answered 503 while the dev stack (whose venv has the
+// extra) worked. Versions are the set resolved and verified against the bundled
 // CPython 3.13; the model weights (~65 MB) download into ChatMock's home on
 // first use.
 const CHATMOCK_EMBEDDING_DEPS = [

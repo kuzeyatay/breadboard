@@ -601,70 +601,22 @@ test("no secret values leak into non-secret env keys or args", () => {
   }
 });
 
-test("GBrain is present by default, absent only when explicitly disabled", () => {
-  // On by default: the sidecar is registered and the dashboard is told to use it.
-  const byDefault = fixture("packaged");
-  const defaultGbrain = byDefault.definitions.find((d) => d.id === "gbrain");
-  assert.ok(defaultGbrain);
-  assert.equal(defaultGbrain.startPolicy, "on-demand");
-  assert.equal(defaultGbrain.idleTtlMs, 10 * 60_000);
-  assert.deepEqual(defaultGbrain.dependsOn, ["chatmock"]);
-  const dashDefault = byDefault.definitions.find((d) => d.id === "dashboard");
-  assert.ok(dashDefault);
-  assert.equal(dashDefault.env["GBRAIN_MODE"], "preferred");
-
-  // Explicitly off: no gbrain service, and the dashboard is told not to probe one.
-  const off = fixture("packaged", { gbrainMode: "disabled" });
-  assert.ok(!off.definitions.some((d) => d.id === "gbrain"));
-  const dashOff = off.definitions.find((d) => d.id === "dashboard");
-  assert.ok(dashOff);
-  assert.equal(dashOff.env["GBRAIN_MODE"], "disabled");
-
-  // Enabled: a supervised bundled-Node sidecar with a per-install secret, loopback health,
-  // and mutable data under the desktop data dir (never in packaged resources).
-  const on = fixture("packaged", { gbrainMode: "preferred" });
-  const gbrain = on.definitions.find((d) => d.id === "gbrain");
-  if (!gbrain) throw new Error("gbrain service should be registered when enabled");
-  if (!gbrain.healthCheck || gbrain.healthCheck.type !== "http") {
-    throw new Error("gbrain should use an HTTP health check");
-  }
-  assert.equal(gbrain.command, "C:/rt/node.exe");
-  assert.deepEqual(gbrain.args, [
-    "--no-warnings",
-    "--experimental-transform-types",
-    path.join(on.paths.appRoot, "gbrain-adapter", "src", "node-entrypoint.mjs"),
-  ]);
-  assert.match(gbrain.healthCheck.url, /^http:\/\/127\.0\.0\.1:\d+\/health$/);
-  assert.equal(gbrain.env["GBRAIN_ADAPTER_SECRET"], on.config.persistent.gbrainAdapterSecret);
-  assert.ok((gbrain.env["GBRAIN_ADAPTER_SECRET"] ?? "").length >= 8);
-  assert.ok((gbrain.env["GBRAIN_DATA_DIR"] ?? "").startsWith(on.paths.dataRoot));
-  // Mutable data must not live inside packaged resources.
-  assert.ok(!(gbrain.env["GBRAIN_DATA_DIR"] ?? "").includes("bb-res"));
-  // Embeddings match the dev stack: real vectors from the supervised ChatMock,
-  // with every field the vendored gateway needs (any missing one degrades it to
-  // lexical). The base URL must follow ChatMock's dynamically allocated port.
-  assert.equal(gbrain.env["GBRAIN_BACKEND"], "gbrain");
-  assert.equal(gbrain.env["GBRAIN_EMBEDDING_PROVIDER"], "openai-compatible");
-  assert.equal(gbrain.env["GBRAIN_EMBEDDING_BASE_URL"], `http://127.0.0.1:${on.config.ports.chatmock}/v1`);
-  assert.equal(gbrain.env["GBRAIN_EMBEDDING_MODEL"], "local/bge-small-en-v1.5");
-  assert.equal(gbrain.env["GBRAIN_EMBEDDING_DIMENSIONS"], "384");
-  assert.ok((gbrain.env["GBRAIN_EMBEDDING_API_KEY"] ?? "").length > 0);
-  assert.equal(gbrain.pressureSheddable, true);
-
-  // The dashboard learns the adapter URL + shared secret, but the secret never
-  // appears in a non-secret place unexpectedly (it is the per-install secret).
-  const dashOn = on.definitions.find((d) => d.id === "dashboard");
-  assert.ok(dashOn);
-  assert.equal(dashOn.env["GBRAIN_MODE"], "preferred");
-  assert.equal(dashOn.env["GBRAIN_ADAPTER_SECRET"], on.config.persistent.gbrainAdapterSecret);
+test("GBrain is gone: no service, and the dashboard is told it is off", () => {
+  const { definitions } = fixture("packaged");
+  assert.ok(!definitions.some((d) => d.id === "gbrain"));
+  const dashboard = definitions.find((d) => d.id === "dashboard");
+  assert.ok(dashboard);
+  assert.equal(dashboard.env["GBRAIN_MODE"], "disabled");
+  assert.equal(dashboard.env["GBRAIN_ADAPTER_URL"], undefined);
+  assert.equal(dashboard.env["GBRAIN_ADAPTER_SECRET"], undefined);
 });
 
-test("disabled desktop GBrain mode overrides an inherited dev mode", () => {
+test("an inherited dev GBRAIN_MODE cannot turn GBrain back on", () => {
   const previous = process.env["GBRAIN_MODE"];
   try {
     process.env["GBRAIN_MODE"] = "preferred";
 
-    const off = fixture("packaged", { gbrainMode: "disabled" });
+    const off = fixture("packaged");
     const paths = { ...off.paths, mode: "dev" as const };
     const definitions = buildServiceDefinitions({ paths, config: off.config, binaries: off.binaries });
     assert.ok(!definitions.some((definition) => definition.id === "gbrain"));

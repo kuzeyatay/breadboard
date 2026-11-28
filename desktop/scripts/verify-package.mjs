@@ -288,32 +288,6 @@ const PINNED_RUFLO_RUNTIME = {
     size: 337_672_352,
   },
 };
-const PINNED_GBRAIN_RUNTIME = {
-  schemaVersion: 1,
-  adapter: {
-    package: "@breadboard/gbrain-adapter",
-    version: "0.1.0",
-    sourceGitTree: "f65ce755659ac1b9a806ad6c603e0d8d890248e7",
-    sourceSha256: "98C70B4598BF65CE9CE1EAF136ADF51E4515D31FB7FF1FEB7856D053BC1132D8",
-    sourceFileCount: 13,
-    packageSha256: "3FBB7B271E513887BE51AF945DDBAADA302856715347B911319B0A71BF60BFBB",
-    bunLockSha256: "346D47609DC78FD25DEF4D49A74865689B68A0B0BD27F46BA2857CA8F28F2AE2",
-    pgliteVersion: "0.2.17",
-  },
-  engine: {
-    package: "gbrain",
-    version: "0.42.62.0",
-    sourceGitTree: "6789d243367aa1eeccceb0cdae187025a31008b5",
-    sourceSha256: "8277B0589741F7E6A0E5F80D0DBB6FEA97611D9203A5EC04A7FFF90E6020DEAC",
-    sourceFileCount: 804,
-    packageSha256: "A152629DC16865A5DC6B4472DC896A9AEACECE5577515BAA9345D9B242E78CFA",
-    bunLockSha256: "696B19255646ABE2139DFE464532B5768F142FF06D0740D71425A9D31E4E4B38",
-    licenseSha256: "E56FBB5B3D95756F3FA1CFEFA24732EC79F18ECE1AD08A4E79E00DF57E8B198C",
-    upstreamReceiptSha256: "98CED2E74C270E8EF1843638CF213AB40DB825AE5ADFCBAFB9F6D9656E86A370",
-    versionFileSha256: "6FC457AC62712991A592105719DFA806E0DAB830DBD1E308374B0FE058C34221",
-    pgliteVersion: "0.4.3",
-  },
-};
 const PACKAGED_SERVICE_UV_VERSION = "0.12.5";
 const PACKAGED_PYTHON_SERVICES = Object.freeze([
   {
@@ -831,7 +805,6 @@ const PACKAGED_SERVICE_CLOSURE_POLICIES = Object.freeze({
   chatmock: { dataRoot: "none", bootstrap: ["app-root:chatmock/chatmock.py", "app-root:chatmock/breadboard_runtime.py"] },
   dashboard: { dataRoot: "none", bootstrap: ["app-root:dashboard-standalone/dashboard/server.js"] },
   hermes: { dataRoot: "none", bootstrap: ["app-root:hermes-agent/breadboard_runtime.py", "app-root:hermes-agent/hermes_cli/main.py"] },
-  gbrain: { dataRoot: "none", bootstrap: ["app-root:gbrain/runtime-artifact.json"] },
   // Source only: the interpreter is built under the data root on first use.
   comfyui: {
     dataRoot: "managed-install",
@@ -2526,7 +2499,6 @@ function checkResourcesRoot(resources, binRoot, label) {
     "runtime-v2-agent-reach-setup-worker.mjs",
     "runtime-v2-agent-reach-setup-executor.mjs",
     "runtime-v2-agent-reach-configure.py",
-    "runtime-v2-gbrain-sync-worker.mjs",
     "runtime-v2-thought-topology-worker.mjs",
     "runtime-v2-agent-reach-worker.mjs",
     "runtime-v2-praxist-worker.mjs",
@@ -2975,11 +2947,6 @@ function checkResourcesRoot(resources, binRoot, label) {
   for (const source of [
     ["lib", "db.ts"],
     ["lib", "knowledge.ts"],
-    ["lib", "gbrain", "sync-executor.ts"],
-    ["lib", "gbrain", "client.ts"],
-    ["lib", "gbrain", "config.ts"],
-    ["lib", "gbrain", "mapping.ts"],
-    ["lib", "gbrain", "types.ts"],
     ["lib", "thought-topology", "executor.ts"],
     ["lib", "thought-topology", "builder.ts"],
     ["lib", "thought-topology", "projection.ts"],
@@ -2988,7 +2955,7 @@ function checkResourcesRoot(resources, binRoot, label) {
   ]) {
     requireFile(
       path.join(dashboard, "worker-src", ...source),
-      `${label} GBrain sync worker source ${source.join("/")}`,
+      `${label} Thought Topology worker source ${source.join("/")}`,
     );
   }
   for (const source of [
@@ -4457,148 +4424,6 @@ function checkResourcesRoot(resources, binRoot, label) {
     path.join(resources, "app-services", "chatmock", "chatmock.py"),
     `${label} ChatMock entrypoint`,
   );
-  const gbrainAdapter = path.join(resources, "app-services", "gbrain-adapter");
-  const gbrainEngine = path.join(resources, "app-services", "gbrain");
-  requireDirectFile(
-    path.join(gbrainAdapter, "src", "node-entrypoint.mjs"),
-    `${label} GBrain adapter entrypoint`,
-  );
-  requireDirectFile(
-    path.join(gbrainAdapter, "src", "node-loader.mjs"),
-    `${label} GBrain adapter Node loader`,
-  );
-  requireDirectFile(
-    path.join(gbrainAdapter, "src", "node-server.ts"),
-    `${label} GBrain adapter Node transport`,
-  );
-  requireDirectFile(
-    path.join(gbrainAdapter, "src", "request-handler.ts"),
-    `${label} GBrain adapter request boundary`,
-  );
-  requireDirectFile(
-    path.join(gbrainEngine, "src", "core", "engine-factory.ts"),
-    `${label} vendored GBrain engine`,
-  );
-  const gbrainReceipt = path.join(gbrainEngine, "runtime-artifact.json");
-  requireDirectFile(gbrainReceipt, `${label} GBrain immutable runtime receipt`);
-  if (fs.existsSync(gbrainReceipt)) {
-    try {
-      const receipt = JSON.parse(fs.readFileSync(gbrainReceipt, "utf8"));
-      if (JSON.stringify(receipt) !== JSON.stringify(PINNED_GBRAIN_RUNTIME)) {
-        problems.push(`${label} GBrain immutable runtime receipt does not match the reviewed closure`);
-      }
-    } catch (error) {
-      problems.push(
-        `${label} GBrain immutable runtime receipt is invalid: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-    }
-  }
-  for (const [root, expected, runtimeLabel] of [
-    [gbrainAdapter, PINNED_GBRAIN_RUNTIME.adapter, "adapter"],
-    [gbrainEngine, PINNED_GBRAIN_RUNTIME.engine, "engine"],
-  ]) {
-    const packagePath = path.join(root, "package.json");
-    const lockPath = path.join(root, "bun.lock");
-    const pglitePath = path.join(root, "node_modules", "@electric-sql", "pglite", "package.json");
-    requireDirectFile(packagePath, `${label} GBrain ${runtimeLabel} package metadata`);
-    requireDirectFile(lockPath, `${label} GBrain ${runtimeLabel} frozen Bun lock`);
-    requireDirectFile(
-      pglitePath,
-      `${label} vendored GBrain PGLite dependency (${runtimeLabel})`,
-    );
-    if (fs.existsSync(packagePath)) {
-      try {
-        const manifest = JSON.parse(fs.readFileSync(packagePath, "utf8"));
-        if (manifest.name !== expected.package || manifest.version !== expected.version) {
-          problems.push(`${label} GBrain ${runtimeLabel} package identity is not pinned`);
-        }
-      } catch (error) {
-        problems.push(`${label} GBrain ${runtimeLabel} package metadata is invalid JSON`);
-      }
-    }
-    if (fs.existsSync(pglitePath)) {
-      try {
-        const manifest = JSON.parse(fs.readFileSync(pglitePath, "utf8"));
-        if (manifest.version !== expected.pgliteVersion) {
-          problems.push(
-            `${label} GBrain ${runtimeLabel} PGLite is ${manifest.version ?? "unknown"}, expected ${expected.pgliteVersion}`,
-          );
-        }
-      } catch (error) {
-        problems.push(`${label} GBrain ${runtimeLabel} PGLite metadata is invalid JSON`);
-      }
-    }
-    if (fs.existsSync(packagePath)) {
-      hashChecks.push({
-        filePath: packagePath,
-        expectedHash: expected.packageSha256,
-        label: `${label} GBrain ${runtimeLabel} package metadata`,
-        canonical: true,
-      });
-    }
-    if (fs.existsSync(lockPath)) {
-      hashChecks.push({
-        filePath: lockPath,
-        expectedHash: expected.bunLockSha256,
-        label: `${label} GBrain ${runtimeLabel} frozen Bun lock`,
-        canonical: true,
-      });
-    }
-    const sourceRoot = path.join(root, "src");
-    if (fs.existsSync(sourceRoot)) {
-      treeHashChecks.push({
-        root: sourceRoot,
-        expectedHash: expected.sourceSha256,
-        expectedFileCount: expected.sourceFileCount,
-        label: `${label} GBrain ${runtimeLabel} source closure`,
-      });
-    }
-  }
-  for (const [relativePath, expectedHash, artifactLabel] of [
-    ["LICENSE", PINNED_GBRAIN_RUNTIME.engine.licenseSha256, "license"],
-    ["UPSTREAM.json", PINNED_GBRAIN_RUNTIME.engine.upstreamReceiptSha256, "upstream receipt"],
-    ["VERSION", PINNED_GBRAIN_RUNTIME.engine.versionFileSha256, "version file"],
-  ]) {
-    const artifactPath = path.join(gbrainEngine, relativePath);
-    requireDirectFile(artifactPath, `${label} GBrain ${artifactLabel}`);
-    if (fs.existsSync(artifactPath)) {
-      hashChecks.push({
-        filePath: artifactPath,
-        expectedHash,
-        label: `${label} GBrain ${artifactLabel}`,
-        canonical: true,
-      });
-    }
-  }
-  const gbrainImportInputs = [
-    bun,
-    path.join(gbrainAdapter, "src", "config.ts"),
-    path.join(gbrainAdapter, "node_modules", "@electric-sql", "pglite", "package.json"),
-    path.join(gbrainEngine, "src", "core", "engine-factory.ts"),
-  ];
-  if (gbrainImportInputs.every((entry) => fs.existsSync(entry))) {
-    const gbrainImport = spawnSync(
-      bun,
-      [
-        "--eval",
-        [
-          "const [{ PGlite }, adapter, engine] = await Promise.all([",
-          "  import('@electric-sql/pglite'),",
-          "  import('./src/config.ts'),",
-          "  import('../gbrain/src/core/engine-factory.ts'),",
-          "])",
-          "if (typeof PGlite !== 'function' || typeof adapter.resolveConfig !== 'function' || typeof engine.createEngine !== 'function') process.exit(2)",
-        ].join("\n"),
-      ],
-      { cwd: gbrainAdapter, encoding: "utf8", windowsHide: true },
-    );
-    if (gbrainImport.status !== 0) {
-      const output = `${gbrainImport.stderr ?? ""}\n${gbrainImport.stdout ?? ""}`.trim();
-      problems.push(`${label} bundled Bun cannot import the GBrain runtime closure: ${output || "unknown error"}`);
-    }
-  }
   const comfyUiSource = path.join(resources, "app-services", "comfyui");
   requireFile(path.join(comfyUiSource, "main.py"), `${label} ComfyUI entrypoint`);
   requireFile(
@@ -4950,8 +4775,8 @@ function checkResourcesRoot(resources, binRoot, label) {
       const output = `${chatMockImport.stderr ?? ""}\n${chatMockImport.stdout ?? ""}`.trim();
       problems.push(`${label} bundled Python cannot import ChatMock: ${output || "unknown error"}`);
     }
-    // GBrain's vectors come from ChatMock's local model; without fastembed the
-    // installed app answered every /v1/embeddings request with 503.
+    // Garden search and the knowledge graph embed through ChatMock's local
+    // model; without fastembed every /v1/embeddings request answered 503.
     const embeddingImport = spawnSync(python, ["-c", "import fastembed, onnxruntime"], {
       cwd: chatMockRoot,
       encoding: "utf8",

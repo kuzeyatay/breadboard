@@ -27,7 +27,6 @@ import {
  *    Node runtime (`resources/runtimes/node/node.exe`). This keeps npm-prebuilt
  *    native modules (better-sqlite3, bcrypt) on the exact ABI they were
  *    installed for — no Electron-ABI rebuild needed.
- *  - Optional GBrain tooling runs on the bundled Bun runtime.
  *  - ChatMock and the pinned Hermes wheel run on bundled CPython 3.13 under
  *    `runtimes/python`.
  *  - Scriberr runs as a bundled native Windows sidecar. Its speech-model
@@ -382,8 +381,6 @@ export interface ServiceUrls {
   chatmockV1: string;
   postiz: string;
   quartz: string;
-  /** Only present when GBrain is enabled (a loopback port was allocated). */
-  gbrain?: string;
   /** Only present when UI-TARS is enabled (a loopback port was allocated). */
   uiTars?: string;
 }
@@ -401,9 +398,6 @@ export function serviceUrls(config: DesktopRuntimeConfig): ServiceUrls {
     chatmockV1: `http://127.0.0.1:${ports.chatmock}/v1`,
     postiz: `http://127.0.0.1:${ports.postiz}`,
     quartz: `http://127.0.0.1:${ports.quartz}`,
-    // The adapter secret is NOT published — only the loopback URL, so the smoke
-    // test can probe /health without exposing credentials.
-    ...(ports.gbrain ? { gbrain: `http://127.0.0.1:${ports.gbrain}` } : {}),
     ...(ports.uiTars ? { uiTars: `http://127.0.0.1:${ports.uiTars}` } : {}),
   };
 }
@@ -517,17 +511,8 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
   const councilLedgerDir = path.join(paths.dataRoot, ".breadboard", "council-runs");
   const councilRequestReceiptDir = path.join(councilLedgerDir, "request-receipts");
 
-  // GBrain (garden knowledge retrieval). On by default (`preferred`), and still
-  // additive: it runs as a supervised loopback Node sidecar with a per-install
-  // secret, storing its mutable PGLite/index data under the desktop data dir,
-  // and never blocks startup. `disabled` in desktop-config.json turns it off.
   const supervisorControlToken = config.launchSecrets?.supervisorControlToken ?? "";
   const supervisorControlUrl = `http://127.0.0.1:${config.ports.supervisorControl ?? 7739}`;
-
-  const gbrainEnabled = persistent.gbrainMode !== "disabled";
-  const gbrainPort = config.ports.gbrain ?? 7717;
-  const gbrainUrl = `http://127.0.0.1:${gbrainPort}`;
-  const gbrainDataDir = path.join(paths.dataRoot, "gbrain");
 
   // UI-TARS browser-operator adapter. Additive, optional by default. A supervised
   // loopback Node sidecar with a per-install secret; mutable data (screenshots,
@@ -1071,17 +1056,9 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
       FFMPEG_PATH: ffmpeg,
       FFPROBE_PATH: ffprobe,
       YTDLP_PATH: ytdlp,
-      // --- GBrain (garden knowledge retrieval) ---
-      // The desktop config is the lifecycle source of truth. Set the mode even
-      // when disabled so a GBRAIN_MODE inherited from a dev `.env.local` cannot
-      // make the dashboard probe a sidecar the supervisor intentionally omitted.
-      GBRAIN_MODE: persistent.gbrainMode,
-      ...(gbrainEnabled
-        ? {
-            GBRAIN_ADAPTER_URL: gbrainUrl,
-            GBRAIN_ADAPTER_SECRET: persistent.gbrainAdapterSecret,
-          }
-        : {}),
+      // GBrain was removed. Pin the mode off so a GBRAIN_MODE left in a dev
+      // `.env.local` cannot make anything probe a sidecar that no longer exists.
+      GBRAIN_MODE: "disabled",
       // --- Subscription proxy (OAuth sign-in + model sync live here) ---
       CLIPROXY_MODE: persistent.cliproxyMode,
       ...cliproxyClientEnv,
@@ -1178,63 +1155,6 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
             sampleIntervalMs: memoryPolicy?.sampleIntervalMs ?? 15_000,
           },
         }),
-  };
-
-  const gbrain: DesktopServiceDefinition = {
-    id: "gbrain",
-    displayName: "Knowledge retrieval (GBrain)",
-    // Retrieval operations already hold a supervisor lease. A passive status
-    // read now distinguishes available-but-stopped from failure, so this model
-    // service no longer needs to retain its Node/model tree at app startup.
-    required: false,
-    startPolicy: "on-demand",
-    idleTtlMs: 10 * 60_000,
-    estimatedColdStartCommitMb: 1536,
-    softCommitLimitMb: 2048,
-    hardCommitLimitMb: 3072,
-    priority: 70,
-    concurrencyGroup: "document-model",
-    // Retrieval is stateless between requests. Admission may also reclaim a
-    // warm, unleased tree before its ordinary idle deadline.
-    pressureSheddable: true,
-    command: binaries.node,
-    args: [
-      "--no-warnings",
-      "--experimental-transform-types",
-      path.join(paths.appRoot, "gbrain-adapter", "src", "node-entrypoint.mjs"),
-    ],
-    cwd: path.join(paths.appRoot, "gbrain-adapter"),
-    dependsOn: ["chatmock"],
-    env: {
-      ...shared,
-      GBRAIN_ADAPTER_HOST: "127.0.0.1",
-      GBRAIN_ADAPTER_PORT: String(gbrainPort),
-      GBRAIN_ADAPTER_SECRET: persistent.gbrainAdapterSecret,
-      // Mutable index data lives under the desktop data dir, never in resources.
-      GBRAIN_DATA_DIR: gbrainDataDir,
-      // Production vendored engine; `fake` is test-only and refused here anyway.
-      GBRAIN_BACKEND: process.env["GBRAIN_BACKEND"] ?? "gbrain",
-      // Real vectors with no paid API, matching the dev stack: ChatMock's
-      // `/v1/embeddings` serves a local ONNX model and is OpenAI-compatible,
-      // which is the only shape the vendored engine's gateway accepts. PROVIDER,
-      // BASE_URL, MODEL, API_KEY and DIMENSIONS must ALL be set or the adapter
-      // truthfully degrades to lexical. ChatMock ignores the key.
-      GBRAIN_EMBEDDING_PROVIDER: process.env["GBRAIN_EMBEDDING_PROVIDER"] ?? "openai-compatible",
-      GBRAIN_EMBEDDING_BASE_URL: process.env["GBRAIN_EMBEDDING_BASE_URL"] ?? urls.chatmockV1,
-      GBRAIN_EMBEDDING_API_KEY: process.env["GBRAIN_EMBEDDING_API_KEY"] ?? "local",
-      GBRAIN_EMBEDDING_MODEL: process.env["GBRAIN_EMBEDDING_MODEL"] ?? "local/bge-small-en-v1.5",
-      GBRAIN_EMBEDDING_DIMENSIONS: process.env["GBRAIN_EMBEDDING_DIMENSIONS"] ?? "384",
-      GBRAIN_QUERY_TIMEOUT_MS: "15000",
-    },
-    healthCheck: {
-      type: "http",
-      url: `${gbrainUrl}/health`,
-      timeoutMs: 2_500,
-      intervalMs: 750,
-    },
-    startupTimeoutMs: 60_000,
-    gracefulShutdownMs: 5_000,
-    restartPolicy: "on-failure",
   };
 
   const uiTars: DesktopServiceDefinition = {
@@ -1507,7 +1427,6 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
   if (cliproxyEnabled) definitions.push(cliproxy);
   if (freellmapiEnabled) definitions.push(freellmapi);
   definitions.push(hermes);
-  if (gbrainEnabled) definitions.push(gbrain);
   if (uiTarsEnabled) definitions.push(uiTars);
   if (cad) definitions.push(cad);
   if (colpali) definitions.push(colpali);

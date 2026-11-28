@@ -514,53 +514,9 @@ const readThoughtTopology: Reader = ({ database, userId, gardens, gardenNames, s
   }));
 };
 
-const readKnowledgeSync: Reader = ({ database, userId, gardens, gardenNames, sinceIso, limit }) => {
-  if (!tableExists(database, "gbrain_sync_jobs")) return [];
-  const scope = gardenIdClause("g.cluster_id", gardens);
-  const rows = database.prepare(`
-    SELECT g.id, g.reason, g.status, g.attempts, g.last_error, g.created_at, g.updated_at,
-           c.slug AS garden_slug
-    FROM gbrain_sync_jobs g
-    JOIN clusters c ON c.id = g.cluster_id AND c.user_id = ?
-    WHERE 1${scope.sql}
-      AND (g.status IN ('queued','running','claimed') OR g.updated_at >= ?)
-    ORDER BY g.updated_at DESC
-    LIMIT ?
-  `).all(userId, ...scope.params, sinceIso, limit) as Array<{
-    id: number;
-    reason: string;
-    status: string;
-    attempts: number;
-    last_error: string | null;
-    created_at: string;
-    updated_at: string;
-    garden_slug: string;
-  }>;
-  const stateFor = (status: string): ProcessState =>
-    status === "done" || status === "synced" || status === "succeeded"
-      ? "succeeded"
-      : status === "queued"
-        ? "waiting"
-        : status === "running" || status === "claimed"
-          ? "running"
-          : "failed";
-  return rows.map((row) => ({
-    kind: "knowledge_sync" as const,
-    id: `gbrain-sync:${row.id}`,
-    title: "Knowledge index sync",
-    garden: row.garden_slug,
-    gardenName: gardenNames.get(row.garden_slug) ?? null,
-    state: stateFor(row.status),
-    status: row.status,
-    stage: null,
-    progressPercent: null,
-    error: trimError(row.last_error),
-    startedAt: isoFromText(row.created_at),
-    updatedAt: isoFromText(row.updated_at),
-    finishedAt: null,
-    detail: { reason: row.reason, attempts: row.attempts },
-  }));
-};
+// GBrain, which wrote `gbrain_sync_jobs`, was removed. Its leftover rows are
+// kept on disk but never shown: a job frozen at "running" would look stuck.
+const readKnowledgeSync: Reader = () => [];
 
 const readAgentRuns: Reader = ({ database, userId, gardens, gardenNames, sinceIso, sinceMillis, runtimeDatabasePath, limit }) => {
   if (!tableExists(database, "runtime_v2_outer_agent_runs")) return [];

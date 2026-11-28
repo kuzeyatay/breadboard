@@ -80,7 +80,7 @@ test("direct saving is confined to a signed-in owner adding a new note", () => {
 
   const quartzTools = scopes.slice(
     scopes.indexOf("export const QUARTZ_TOOLS"),
-    scopes.indexOf("export const GBRAIN_TOOLS"),
+    scopes.indexOf("export const ARTIFACT_TOOLS"),
   );
   assert.equal(
     quartzTools.includes("garden_save_note"),

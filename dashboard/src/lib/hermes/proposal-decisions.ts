@@ -51,14 +51,6 @@ export async function decideGardenProposal(input: {
   }
   // A failed canonical write stays pending. Retries never apply a decided edit twice.
   setProposalStatus(id, decision);
-  if (decision === "applied") {
-    try {
-      const { enqueueGardenSync } = await import("../gbrain/sync.ts");
-      enqueueGardenSync(access.clusterId, `proposal_${proposal.kind}_applied`);
-      const { ensureSyncWorkerStarted } = await import("../gbrain/sync-worker.ts");
-      ensureSyncWorkerStarted();
-    } catch { /* Indexing failure must not undo a canonical decision. */ }
-  }
   return { id, status: decision, payload, kind: proposal.kind, pageSlug: proposal.page_slug, document };
 }
 

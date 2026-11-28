@@ -28,11 +28,11 @@ export function validateRuntimeV2ThoughtTopologyScope(value) {
 }
 
 export function validateThoughtTopologyWorkerEnvironment(environment) {
-  for (const name of ["GBRAIN_ADAPTER_URL", "GBRAIN_ADAPTER_SECRET", "OPENAI_BASE_URL", "OPENAI_API_KEY"]) {
+  for (const name of ["OPENAI_BASE_URL", "OPENAI_API_KEY"]) {
     if (typeof environment[name] !== "string" || !environment[name].trim()) fail("The sealed topology service environment is unavailable.");
   }
-  for (const name of ["GBRAIN_ADAPTER_URL", "OPENAI_BASE_URL"]) {
-    const url = new URL(environment[name]);
+  {
+    const url = new URL(environment.OPENAI_BASE_URL);
     if (url.protocol !== "http:" || !["127.0.0.1", "localhost", "::1", "[::1]"].includes(url.hostname) || url.username || url.password || url.search || url.hash || !url.port) {
       fail("Thought Topology requires Runtime-minted loopback services.");
     }

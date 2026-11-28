@@ -50,9 +50,8 @@ MCP connections require explicit user configuration. Remote connections prefer
 OAuth; local execution requires approval and keeps credential values outside
 stored/public metadata. A configured connection cannot bypass the active mode.
 
-GBrain is not treated as integrated because code happens to exist locally. The
-assistant may claim memory only after a configured adapter returns a healthy,
-durable result.
+The assistant may claim memory only after a configured memory tool returns a
+healthy, durable result.
 
 See `docs/HERMES_INTEGRATION.md` for the runtime flow, migrations, palette,
 skill lifecycle, and environment variables.

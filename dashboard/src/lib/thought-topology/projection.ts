@@ -59,9 +59,9 @@ function sha256(value: string): string {
 }
 
 /**
- * The most text one embedding request may carry, in UTF-8 bytes: the GBrain
- * adapter refuses anything larger, so a projection that exceeds it never
- * reaches the embedder at all.
+ * The most text one embedding request may carry, in UTF-8 bytes. The local
+ * model reads only its first 512 tokens anyway, so a projection that exceeds
+ * this is cut before it reaches the embedder.
  */
 export const SEMANTIC_TEXT_MAX_BYTES = 16_000;
 

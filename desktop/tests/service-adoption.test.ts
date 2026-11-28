@@ -26,13 +26,6 @@ test("Hermes is identified by a gated route, not by its public status probe", ()
   assert.ok(!probe.acceptStatuses?.includes(401));
 });
 
-test("GBrain is identified through a POST, because its /health answers anyone", () => {
-  const probe = adoptionProbe("gbrain", 7717, context);
-  assert.ok(probe && probe.type === "http");
-  assert.equal(probe.method, "POST");
-  assert.equal(probe.headers?.["Authorization"], `Bearer ${persistent.gbrainAdapterSecret}`);
-});
-
 test("an instance holding a different secret is not ours", async () => {
   // The dev-stack case: a real Breadboard service of the right kind, with
   // credentials this install does not hold. Adopting it would look healthy here

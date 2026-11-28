@@ -8,7 +8,6 @@ import { ensureProposalOwnershipSchema } from "./hermes/proposal-ownership.ts";
 import { ensureDocumentSkillSchema } from "./document-skills/schema.ts";
 import { ensureOrganizationSchema } from "./organizations/schema.ts";
 import { ensureArtifactSchema } from "./hermes/artifact-schema.ts";
-import { ensureGBrainSchema } from "./gbrain/schema.ts";
 import { ensureThoughtTopologySchema } from "./thought-topology/schema.ts";
 import { ensureMem0Schema } from "./mem0/schema.ts";
 import { ensureMemoryTreeSchema } from "./memory-tree/schema.ts";
@@ -886,9 +885,6 @@ ensureMem0Schema(db);
 // follows the conversation schema for the same reason mem0 does.
 ensureMemoryTreeSchema(db);
 ensureArtifactSchema(db);
-// Additive GBrain source-mapping and sync/audit bookkeeping (derived retrieval
-// state only; canonical content stays in markdown). Safe to re-apply.
-ensureGBrainSchema(db);
 // Persistent derived-work bookkeeping. Existing pre-feature Gardens retain
 // their rollout state; every Garden inserted after this schema is installed is
 // enabled by default.

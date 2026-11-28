@@ -85,16 +85,8 @@ test("stored vectors are keyed by the model that produced them", () => {
   assert.match(retriever, /WHERE content_hash = \? AND model = \?/);
 });
 
-test("the GBrain sidecar embeds through the same gateway, and stays honest when it cannot", () => {
-  const embedding = repoSource("gbrain-adapter/src/embedding.ts");
-  const select = repoSource("gbrain-adapter/src/backends/select.ts");
-  // A remote embedder must prove itself before the adapter reports hybrid.
-  assert.match(embedding, /probe\?\(\): Promise<boolean>/);
-  assert.match(embedding, /export function chatmockProvider/);
-  // Comparing vectors of different widths produces a confident meaningless
-  // number; refusing is the only correct answer.
-  assert.match(embedding, /a\.length === 0 \|\| a\.length !== b\.length/);
-  // The production backend's default is no longer "none".
-  assert.match(select, /"openai-compatible"/);
-  assert.match(select, /local\/bge-small-en-v1\.5/);
+test("the knowledge graph embeds through the same gateway as Garden search", () => {
+  const builder = source("src/lib/thought-topology/builder.ts");
+  assert.match(builder, /embedTexts\(texts, embeddingSettings\(\)/);
+  assert.doesNotMatch(builder, /GBrain/);
 });

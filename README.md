@@ -159,7 +159,7 @@ Breadboard integrates. Setup, run modes, tests and installer builds are in
 | Ubuntu deployment | [DEPLOYMENT-UBUNTU.md](DEPLOYMENT-UBUNTU.md) |
 
 Specialized integrations have their own guides in [`docs/`](docs/), including
-Codex, Deep Research, GBrain, GenOffice, UI-TARS, CAD, audio analysis, video
+Codex, Deep Research, GenOffice, UI-TARS, CAD, audio analysis, video
 editing, transcription and connected communication tools.
 
 ## License

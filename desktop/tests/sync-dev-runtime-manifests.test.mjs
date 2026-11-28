@@ -212,25 +212,6 @@ test("post-preparation staging leaves byte-identical bin files untouched", (t) =
   assert.equal(fs.readFileSync(unchanged, "utf8"), hotBinContents["ffmpeg.exe"]);
 });
 
-test("dev startup fails closed before overwriting when GBrain authority is absent", (t) => {
-  const current = fixture();
-  t.after(() => fs.rmSync(current.root, { recursive: true, force: true }));
-  updateServices(current, (services) => {
-    services.splice(
-      services.findIndex(({ id }) => id === "gbrain"),
-      1,
-    );
-  });
-  const sentinel = Buffer.from("staged sentinel");
-  fs.writeFileSync(path.join(current.targetDir, "services.json"), sentinel);
-
-  assert.throws(
-    () => syncDevRuntimeManifests(current),
-    /missing mandatory GBrain authority/u,
-  );
-  assert.deepEqual(fs.readFileSync(path.join(current.targetDir, "services.json")), sentinel);
-});
-
 test("strict staging rejects a missing required bin before changing manifests", (t) => {
   const current = fixture();
   t.after(() => fs.rmSync(current.root, { recursive: true, force: true }));

@@ -40,8 +40,8 @@ test("topology submission is Garden-authorized and revision-idempotent", async (
 
 test("wrong worker, job, resource, and Garden scope are rejected", async () => {
   for (const invalid of [
-    { workerKind: "gbrain-sync-node" },
-    { jobType: "gbrain-sync" },
+    { workerKind: "outer-legal-node" },
+    { jobType: "legal-run" },
     { resourceClass: "browser-automation" },
     { gardenId: "another-garden" },
   ]) {
@@ -71,17 +71,14 @@ test("finite worker validates exact bounded requests, scope, and sealed loopback
   assert.doesNotThrow(() => worker.validateRuntimeV2ThoughtTopologyScope({ userId: 7, gardenId: "new-garden", conversationId: null }));
   assert.throws(() => worker.validateRuntimeV2ThoughtTopologyScope({ userId: 7, gardenId: "new-garden", conversationId: "chat" }));
   assert.doesNotThrow(() => worker.validateThoughtTopologyWorkerEnvironment({
-    GBRAIN_ADAPTER_URL: "http://127.0.0.1:7739",
-    GBRAIN_ADAPTER_SECRET: "secret",
     OPENAI_BASE_URL: "http://127.0.0.1:7737/v1",
     OPENAI_API_KEY: "local",
   }));
   assert.throws(() => worker.validateThoughtTopologyWorkerEnvironment({
-    GBRAIN_ADAPTER_URL: "https://remote.example/gbrain",
-    GBRAIN_ADAPTER_SECRET: "secret",
-    OPENAI_BASE_URL: "http://127.0.0.1:7737/v1",
+    OPENAI_BASE_URL: "https://remote.example/v1",
     OPENAI_API_KEY: "local",
   }));
+  assert.throws(() => worker.validateThoughtTopologyWorkerEnvironment({ OPENAI_BASE_URL: "http://127.0.0.1:7737/v1" }));
 });
 
 test("heavy scan, embedding, model, and atomic commit live only in worker source", () => {
@@ -91,16 +88,16 @@ test("heavy scan, embedding, model, and atomic commit live only in worker source
   assert.doesNotMatch(state, /scanClusterKnowledge|createChatmockClient|GBrainClient/);
   assert.doesNotMatch(api, /scanClusterKnowledge|createChatmockClient|GBrainClient|commitThoughtTopology/);
   assert.match(builder, /scanClusterKnowledge/);
-  assert.match(builder, /new GBrainClient/);
+  assert.match(builder, /embedTexts\(/);
   assert.match(builder, /commitThoughtTopology/);
 });
 
-test("Runtime manifest binds the topology worker to GBrain and ChatMock", () => {
+test("Runtime manifest binds the topology worker to ChatMock only", () => {
   const manifest = JSON.parse(fs.readFileSync(new URL("../../desktop/runtime-v2/manifests/workers.json", import.meta.url), "utf8"));
   const entry = manifest.workers.find((candidate) => candidate.kind === "thought-topology-node");
   assert.deepEqual(entry.jobTypes, ["thought-topology"]);
   assert.equal(entry.resourceClass, "document-processing");
-  assert.deepEqual(entry.serviceDependencies.map((dependency) => dependency.serviceId).sort(), ["chatmock", "gbrain"]);
+  assert.deepEqual(entry.serviceDependencies.map((dependency) => dependency.serviceId).sort(), ["chatmock"]);
 });
 
 test("background topology builds publish bounded percentage progress", () => {

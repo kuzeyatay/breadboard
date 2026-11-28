@@ -4,9 +4,8 @@
 // This is the dev-stack twin of the desktop supervisor's `screenpipe` service.
 // It deliberately refuses to record by default: capture is opt-in per user in
 // Settings → Recall, and this script only starts the engine when RECALL_CAPTURE
-// says so. Without that, it exits 0 having started nothing — the same shape as
-// scripts/start-gbrain.mjs when GBrain is disabled, so `dev-all` stays quiet
-// rather than silently recording a developer's screen.
+// says so. Without that, it exits 0 having started nothing, so `dev-all` stays
+// quiet rather than silently recording a developer's screen.
 
 import { spawn } from "node:child_process";
 import fs from "node:fs";

@@ -5,7 +5,7 @@ import path from "node:path";
 import type Database from "better-sqlite3";
 
 import db from "../db.ts";
-import { GBrainClient, type AdapterEmbeddingResponse } from "../gbrain/client.ts";
+import { embeddingSettings, embedTexts } from "../embeddings.ts";
 import { scanClusterKnowledge } from "../knowledge.ts";
 import { GLOBAL_MODEL_SENTINEL } from "../ai-models.ts";
 import {
@@ -46,7 +46,7 @@ import {
 } from "./types.ts";
 
 export interface ThoughtTopologyBuildDependencies {
-  embed?: (texts: string[], signal?: AbortSignal) => Promise<AdapterEmbeddingResponse>;
+  embed?: (texts: string[], signal?: AbortSignal) => Promise<TopologyEmbeddingResponse>;
   generator?: ModelTextGenerator | null;
   now?: () => Date;
   cacheVersions?: TopologyCacheVersions;
@@ -168,10 +168,28 @@ function edgeEvidence(
   return evidence;
 }
 
+export interface TopologyEmbeddingResponse {
+  model: string;
+  dimension: number;
+  vectors: number[][];
+}
+
+/** Each embedding batch may take this long: CPU inference, ~1 s per long page. */
+const EMBED_BATCH_TIMEOUT_MS = 120_000;
+
+/** Embed through ChatMock's local model, the same one every retrieval path uses. */
+async function embedThroughChatmock(texts: string[], signal?: AbortSignal): Promise<TopologyEmbeddingResponse> {
+  const timeout = AbortSignal.timeout(EMBED_BATCH_TIMEOUT_MS);
+  const { vectors, model } = await embedTexts(texts, embeddingSettings(), {
+    signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+  });
+  return { model, dimension: vectors[0]?.length ?? 0, vectors };
+}
+
 /**
- * The GBrain adapter reports the model under its engine's provider-prefixed
- * name (`openai:local/bge-small-en-v1.5`) while ChatMock reports the bare id.
- * Both are the same vector space; only the bare id is the cache identity.
+ * Providers may report the model under a provider-prefixed name
+ * (`openai:local/bge-small-en-v1.5`) while ChatMock reports the bare id. Both
+ * are the same vector space; only the bare id is the cache identity.
  */
 const EMBED_BATCH_SIZE = 8;
 
@@ -322,7 +340,7 @@ async function embedChangedNodes(
   if (requests.length > 0 && embed) {
     try {
       // Small batches: ChatMock embeds long pages at roughly one per second
-      // on the CPU, and each batch must finish inside the adapter's budget.
+      // on the CPU, and each batch must finish inside its own budget.
       for (let offset = 0; offset < requests.length; offset += EMBED_BATCH_SIZE) {
         signal?.throwIfAborted();
         const batch = requests.slice(offset, offset + EMBED_BATCH_SIZE);
@@ -407,7 +425,7 @@ export async function buildThoughtTopologyFromProjection(input: {
     enrichmentSkipped += 1;
     return undefined;
   };
-  const embed = dependencies.embed ?? ((texts, signal) => new GBrainClient().embed(texts, signal));
+  const embed = dependencies.embed ?? embedThroughChatmock;
   const embedding = await embedChangedNodes(
     input.projection.nodes,
     input.oldCache,

@@ -19,8 +19,6 @@
 //     auto-claude-code-research-in-sleep/ <- ARIS guide + research skills (read-only)
 //     quartz-template/            <- Quartz program files (no content/public)
 //     ruflo/                       <- frozen Ruflo CLI + production dependencies
-//     gbrain-adapter/              <- authenticated loopback retrieval adapter
-//     gbrain/                      <- vendored retrieval engine + production deps
 //     dashboard/node_modules/mem0ai/ <- frozen semantic-memory service closure
 //     comfyui/                     <- source only; models/cache/user data excluded
 //     wardrobe-runtime/            <- frozen Wardrobe source + Vite/Sharp runtime
@@ -359,32 +357,6 @@ const PINNED_MEM0_RUNTIME = Object.freeze({
     fileCount: 3_143,
     sha256: "75F2FDD742436EE4378AD302609377EAFF344E8263D587C5F73E744C0DE480B6",
     excludes: ["BREADBOARD_SOURCE_COMMIT", "runtime-artifact.json"],
-  },
-});
-const PINNED_GBRAIN_RUNTIME = Object.freeze({
-  schemaVersion: 1,
-  adapter: {
-    package: "@breadboard/gbrain-adapter",
-    version: "0.1.0",
-    sourceGitTree: "f65ce755659ac1b9a806ad6c603e0d8d890248e7",
-    sourceSha256: "98C70B4598BF65CE9CE1EAF136ADF51E4515D31FB7FF1FEB7856D053BC1132D8",
-    sourceFileCount: 13,
-    packageSha256: "3FBB7B271E513887BE51AF945DDBAADA302856715347B911319B0A71BF60BFBB",
-    bunLockSha256: "346D47609DC78FD25DEF4D49A74865689B68A0B0BD27F46BA2857CA8F28F2AE2",
-    pgliteVersion: "0.2.17",
-  },
-  engine: {
-    package: "gbrain",
-    version: "0.42.62.0",
-    sourceGitTree: "6789d243367aa1eeccceb0cdae187025a31008b5",
-    sourceSha256: "8277B0589741F7E6A0E5F80D0DBB6FEA97611D9203A5EC04A7FFF90E6020DEAC",
-    sourceFileCount: 804,
-    packageSha256: "A152629DC16865A5DC6B4472DC896A9AEACECE5577515BAA9345D9B242E78CFA",
-    bunLockSha256: "696B19255646ABE2139DFE464532B5768F142FF06D0740D71425A9D31E4E4B38",
-    licenseSha256: "E56FBB5B3D95756F3FA1CFEFA24732EC79F18ECE1AD08A4E79E00DF57E8B198C",
-    upstreamReceiptSha256: "98CED2E74C270E8EF1843638CF213AB40DB825AE5ADFCBAFB9F6D9656E86A370",
-    versionFileSha256: "6FC457AC62712991A592105719DFA806E0DAB830DBD1E308374B0FE058C34221",
-    pgliteVersion: "0.4.3",
   },
 });
 const PACKAGED_SERVICE_UV_VERSION = "0.12.5";
@@ -2414,7 +2386,6 @@ for (const entry of [
   "runtime-v2-agent-reach-setup-worker.mjs",
   "runtime-v2-agent-reach-setup-executor.mjs",
   "runtime-v2-agent-reach-configure.py",
-  "runtime-v2-gbrain-sync-worker.mjs",
   "runtime-v2-thought-topology-worker.mjs",
   "runtime-v2-agent-reach-worker.mjs",
   "runtime-v2-praxist-worker.mjs",
@@ -4919,132 +4890,6 @@ for (const service of PACKAGED_PYTHON_SERVICES) {
   }
 }
 
-// --- GBrain (Runtime V2 on-demand retrieval service) ----------------------
-// Mutable PGLite/index data is intentionally absent: Runtime V2 injects a
-// user-data path at launch. Only reviewed source and frozen production
-// dependencies enter immutable app resources.
-{
-  const adapterSource = path.join(repoRoot, "gbrain-adapter");
-  const adapterTarget = path.join(stagingRoot, "gbrain-adapter");
-  const engineSource = path.join(repoRoot, "gbrain");
-  const engineTarget = path.join(stagingRoot, "gbrain");
-  for (const [label, source] of [
-    ["gbrain-adapter", adapterSource],
-    ["gbrain", engineSource],
-  ]) {
-    if (!fs.existsSync(source)) fail(`${label} source not found: ${source}`);
-  }
-
-  const closurePaths = [
-    "gbrain-adapter/package.json",
-    "gbrain-adapter/bun.lock",
-    "gbrain-adapter/src",
-    "gbrain/package.json",
-    "gbrain/bun.lock",
-    "gbrain/src",
-    "gbrain/LICENSE",
-    "gbrain/UPSTREAM.json",
-    "gbrain/VERSION",
-  ];
-  const sourceStatus = spawnSync(
-    "git",
-    ["-C", repoRoot, "status", "--porcelain=v1", "--untracked-files=all", "--", ...closurePaths],
-    { encoding: "utf8", shell: false },
-  );
-  if (sourceStatus.status !== 0 || sourceStatus.stdout.trim()) {
-    fail("GBrain tracked runtime source closure must be clean before packaging.");
-  }
-  for (const [treePath, expectedTree] of [
-    ["gbrain-adapter/src", PINNED_GBRAIN_RUNTIME.adapter.sourceGitTree],
-    ["gbrain/src", PINNED_GBRAIN_RUNTIME.engine.sourceGitTree],
-  ]) {
-    const revision = spawnSync("git", ["-C", repoRoot, "rev-parse", `HEAD:${treePath}`], {
-      encoding: "utf8",
-      shell: false,
-    });
-    if (revision.status !== 0 || revision.stdout.trim() !== expectedTree) {
-      fail(`GBrain immutable source tree ${treePath} is not pinned to ${expectedTree}.`);
-    }
-  }
-  const adapterManifest = JSON.parse(fs.readFileSync(path.join(adapterSource, "package.json"), "utf8"));
-  const engineManifest = JSON.parse(fs.readFileSync(path.join(engineSource, "package.json"), "utf8"));
-  if (
-    adapterManifest.name !== PINNED_GBRAIN_RUNTIME.adapter.package ||
-    adapterManifest.version !== PINNED_GBRAIN_RUNTIME.adapter.version
-  ) fail("GBrain adapter package identity does not match its reviewed runtime receipt.");
-  if (
-    engineManifest.name !== PINNED_GBRAIN_RUNTIME.engine.package ||
-    engineManifest.version !== PINNED_GBRAIN_RUNTIME.engine.version
-  ) fail("GBrain engine package identity does not match its reviewed runtime receipt.");
-  if (fs.readFileSync(path.join(engineSource, "VERSION"), "utf8").trim() !== PINNED_GBRAIN_RUNTIME.engine.version) {
-    fail("GBrain VERSION does not match its reviewed runtime receipt.");
-  }
-  for (const [filePath, expectedHash, label] of [
-    [path.join(adapterSource, "package.json"), PINNED_GBRAIN_RUNTIME.adapter.packageSha256, "adapter package"],
-    [path.join(adapterSource, "bun.lock"), PINNED_GBRAIN_RUNTIME.adapter.bunLockSha256, "adapter lock"],
-    [path.join(engineSource, "package.json"), PINNED_GBRAIN_RUNTIME.engine.packageSha256, "engine package"],
-    [path.join(engineSource, "bun.lock"), PINNED_GBRAIN_RUNTIME.engine.bunLockSha256, "engine lock"],
-    [path.join(engineSource, "LICENSE"), PINNED_GBRAIN_RUNTIME.engine.licenseSha256, "engine license"],
-    [path.join(engineSource, "UPSTREAM.json"), PINNED_GBRAIN_RUNTIME.engine.upstreamReceiptSha256, "engine upstream receipt"],
-    [path.join(engineSource, "VERSION"), PINNED_GBRAIN_RUNTIME.engine.versionFileSha256, "engine version file"],
-  ]) {
-    const actualHash = canonicalFileIdentity(filePath).sha256;
-    if (actualHash !== expectedHash) fail(`GBrain ${label} SHA-256 is not pinned (${actualHash}).`);
-  }
-  for (const [source, expected, label] of [
-    [path.join(adapterSource, "src"), PINNED_GBRAIN_RUNTIME.adapter, "adapter"],
-    [path.join(engineSource, "src"), PINNED_GBRAIN_RUNTIME.engine, "engine"],
-  ]) {
-    const identity = await sha256Tree(source);
-    if (identity.sha256 !== expected.sourceSha256 || identity.fileCount !== expected.sourceFileCount) {
-      fail(`GBrain ${label} source closure is not the reviewed immutable tree.`);
-    }
-  }
-
-  log("staging GBrain adapter and vendored engine");
-  freshDir(adapterTarget);
-  for (const entry of ["package.json", "bun.lock", "src"]) {
-    const source = path.join(adapterSource, entry);
-    const target = path.join(adapterTarget, entry);
-    if (fs.statSync(source).isDirectory()) copyTree(source, target);
-    else fs.copyFileSync(source, target);
-  }
-  installBunProductionDependencies({
-    label: "gbrain-adapter",
-    target: adapterTarget,
-    tempName: "breadboard-gbrain-adapter-install",
-  });
-
-  freshDir(engineTarget);
-  for (const entry of ["package.json", "bun.lock", "src", "LICENSE", "UPSTREAM.json", "VERSION"]) {
-    const source = path.join(engineSource, entry);
-    const target = path.join(engineTarget, entry);
-    if (fs.statSync(source).isDirectory()) copyTree(source, target);
-    else fs.copyFileSync(source, target);
-  }
-  installBunProductionDependencies({
-    label: "gbrain",
-    target: engineTarget,
-    tempName: "breadboard-gbrain-engine-install",
-  });
-  for (const [target, expected, label] of [
-    [adapterTarget, PINNED_GBRAIN_RUNTIME.adapter, "adapter"],
-    [engineTarget, PINNED_GBRAIN_RUNTIME.engine, "engine"],
-  ]) {
-    const dependencyManifest = JSON.parse(
-      fs.readFileSync(path.join(target, "node_modules", "@electric-sql", "pglite", "package.json"), "utf8"),
-    );
-    if (dependencyManifest.version !== expected.pgliteVersion) {
-      fail(`GBrain ${label} PGLite must be ${expected.pgliteVersion}; found ${dependencyManifest.version ?? "unknown"}.`);
-    }
-  }
-  fs.writeFileSync(
-    path.join(engineTarget, "runtime-artifact.json"),
-    `${JSON.stringify(PINNED_GBRAIN_RUNTIME, null, 2)}\n`,
-    { encoding: "utf8", mode: 0o644 },
-  );
-}
-
 // --- ComfyUI (Runtime V2 on-demand local image service) ------------------
 // Only the reviewed program source ships. The interpreter and its PyTorch
 // closure are built under the data root by the managed-setup worker on first
@@ -5124,7 +4969,6 @@ const licenseSources = [
   ["comfyui", path.join(repoRoot, "comfyui", "LICENSE")],
   ["goal", path.join(repoRoot, "goal", "LICENSE")],
   ["freecad-mcp", path.join(repoRoot, "freecad-service", "vendor", "freecad-mcp", "LICENSE")],
-  ["gbrain", path.join(repoRoot, "gbrain", "LICENSE")],
   ["hermes-agent", path.join(hermesRoot, "LICENSE")],
   ["humanizer-THIRD-PARTY-NOTICES", path.join(repoRoot, "humanizer-service", "THIRD_PARTY_NOTICES.md")],
   ["mem0", path.join(repoRoot, "mem0", "LICENSE")],

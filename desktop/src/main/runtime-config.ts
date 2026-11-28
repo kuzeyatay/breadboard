@@ -20,9 +20,12 @@ export interface PersistentDesktopConfig {
   hermesToolSecret: string;
   /** Secret for signing short-lived Hermes capability tokens. */
   hermesCapabilitySecret: string;
-  /** GBrain garden-knowledge retrieval mode. Additive; default preferred. */
-  gbrainMode: "disabled" | "preferred" | "required";
-  /** Per-install secret for the loopback GBrain adapter (never logged). */
+  /**
+   * GBrain was removed; always "disabled". The field and its secret stay in the
+   * file because the native runtime still validates both when it reads the
+   * desktop config, and "disabled" is what keeps it from minting GBrain URLs.
+   */
+  gbrainMode: "disabled";
   gbrainAdapterSecret: string;
   /** Local Runtime V2 ownership, explicitly configured external server, or off. */
   comfyUiMode: "disabled" | "managed" | "external";
@@ -94,8 +97,6 @@ export interface LaunchPorts {
    * opened unconditionally by the Quartz CLI, so it must be allocated too or
    * startup fails with EADDRINUSE when anything else holds the default 3001. */
   quartzWs: number;
-  /** GBrain adapter loopback port. Optional: only allocated when GBrain is enabled. */
-  gbrain?: number;
   /** UI-TARS adapter loopback port. Optional: only allocated when UI-TARS is enabled. */
   uiTars?: number;
   /** CAD service loopback port. Only allocated when the CAD service is enabled. */
@@ -158,7 +159,7 @@ export function defaultPersistentConfig(): PersistentDesktopConfig {
     hermesSessionToken: randomSecret(),
     hermesToolSecret: randomSecret(),
     hermesCapabilitySecret: randomSecret(),
-    gbrainMode: "preferred",
+    gbrainMode: "disabled",
     gbrainAdapterSecret: randomSecret(24),
     comfyUiMode: "managed",
     comfyUiExternalUrl: null,
@@ -249,13 +250,8 @@ export function validatePersistentConfig(
             legacyCapabilitySecret.length >= 32
           ? legacyCapabilitySecret
           : randomSecret(),
-    // GBrain fields backfilled for configs written before they existed. An
-    // install that explicitly turned GBrain off keeps it off; anything else
-    // (missing, or written before the field existed) adopts the new default.
-    gbrainMode:
-      record["gbrainMode"] === "disabled" || record["gbrainMode"] === "required"
-        ? (record["gbrainMode"] as "disabled" | "required")
-        : "preferred",
+    // GBrain was removed: every config, whatever it said, is rewritten off.
+    gbrainMode: "disabled",
     gbrainAdapterSecret:
       typeof record["gbrainAdapterSecret"] === "string" &&
       record["gbrainAdapterSecret"].length > 0
@@ -415,7 +411,6 @@ export function redactedConfigSummary(
       postiz: config.ports.postiz,
       quartz: config.ports.quartz,
       quartzWs: config.ports.quartzWs,
-      ...(config.ports.gbrain ? { gbrain: config.ports.gbrain } : {}),
       ...(config.ports.uiTars ? { uiTars: config.ports.uiTars } : {}),
       ...(config.ports.cad ? { cad: config.ports.cad } : {}),
       ...(config.ports.cliproxy ? { cliproxy: config.ports.cliproxy } : {}),

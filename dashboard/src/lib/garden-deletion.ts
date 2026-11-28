@@ -9,7 +9,6 @@ import {
   gardenDatabaseResidue,
   inventoryGardenOwnedData,
 } from "./garden-deletion-db.ts";
-import { GBrainClient } from "./gbrain/client.ts";
 import { deleteConversation, getConversationById } from "./conversations/store.ts";
 import { cancelRunningExternalAgentRuns } from "./conversations/external-agent-cancel.ts";
 import { cancelRuntimeSessionWork } from "./hermes/session-cancel.ts";
@@ -369,12 +368,6 @@ export async function deleteOwnedGarden(input: {
     });
     for (const conversationId of inventory.conversationIds) assertConversationSwarmStopped(database, conversationId);
 
-    // GBrain is derived state, but it is a separate database. Remove it before
-    // deleting the mapping that proves which source belongs to this Garden.
-    if (inventory.gbrainSourceId) {
-      await new GBrainClient().removeSource(inventory.gbrainSourceId);
-    }
-
     const artifactRoot = path.join(dashboardDataDir(), "artifacts");
     for (const artifact of inventory.artifactDirectories) {
       removeExactOwnedPath(
@@ -519,15 +512,6 @@ export async function finalizeGardenDeletion(
   }
   try {
     await finishSemanticMemoryDeletion(result.userId);
-  } catch (error) {
-    failures.push(error);
-  }
-  try {
-    // Close the narrow race with a GBrain sync worker that was already past
-    // its database authority check when deletion began.
-    if (result.gbrainSourceId) {
-      await new GBrainClient().removeSource(result.gbrainSourceId);
-    }
   } catch (error) {
     failures.push(error);
   }

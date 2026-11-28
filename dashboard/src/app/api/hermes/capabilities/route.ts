@@ -6,7 +6,6 @@ import {
   getAgentRuntime,
   getAgentRuntimeByKind,
 } from "@/lib/agent-runtime/runtime.ts";
-import { inspectGBrainState } from "@/lib/hermes/gbrain-status.ts";
 import {
   getHermesUserSettings,
   getActiveCapabilityDecision,
@@ -88,7 +87,7 @@ export async function GET(request: Request) {
           : {};
       mcp = Object.fromEntries(
         Object.entries(discoveredMcp).filter(
-          ([slug]) => ownedSlugs.has(slug) || slug === "gbrain",
+          ([slug]) => ownedSlugs.has(slug),
         ),
       );
     } catch (error) {
@@ -158,17 +157,6 @@ export async function GET(request: Request) {
                 : status.status.replaceAll("_", " "),
           }),
     }));
-    const memory = inspectGBrainState(mcp, toolIds);
-    if (!mcpServers.some((server) => server.name === "gbrain")) {
-      mcpServers.unshift({
-        name: "gbrain",
-        configured: false,
-        connected: false,
-        authenticated: false,
-        toolCount: 0,
-        reason: "Not configured",
-      });
-    }
     return NextResponse.json({
       sessionId: requestedSessionId ?? "unbound",
       agent: session?.agentName ?? "breadboard-assistant",
@@ -177,7 +165,6 @@ export async function GET(request: Request) {
       filesystemMode,
       tools,
       mcpServers,
-      memory,
       checkedAt: new Date().toISOString(),
     });
   } catch (error) {

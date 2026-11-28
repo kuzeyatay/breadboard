@@ -8,7 +8,6 @@
 // are simply absent from its allowlist, and its agent config denies them.
 
 import type { HermesSurface } from "./config.ts";
-import { isGBrainEnabled } from "../gbrain/config.ts";
 
 // Read-only + proposal Breadboard tools for garden chat, plus two kinds of
 // direct writer. `garden_save_note` adds a new note when the user asked for
@@ -77,17 +76,6 @@ export const QUARTZ_TOOLS = [
   "garden_create_note_proposal",
   "garden_propose_page_revision",
   "garden_propose_visualization",
-] as const;
-
-// Read-only GBrain knowledge-retrieval tools. Available ONLY to authenticated
-// Garden Chat and the authenticated Terminal — never anonymous/public Quartz AI.
-// These never write: capture and edits route through Breadboard proposals.
-export const GBRAIN_TOOLS = [
-  "gbrain_status",
-  "gbrain_search",
-  "gbrain_retrieve",
-  "gbrain_synthesize",
-  "gbrain_graph_neighbors",
 ] as const;
 
 export const ARTIFACT_TOOLS = [
@@ -515,11 +503,8 @@ export const PROPOSAL_TOOLS: readonly string[] = [
 ];
 
 export function allowedToolsForSurface(surface: HermesSurface): string[] {
-  // GBrain knowledge tools are added ONLY for authenticated Garden Chat and
-  // Terminal, and only when GBrain is enabled. Quartz AI never receives them.
-  const gbrain = isGBrainEnabled() ? [...GBRAIN_TOOLS] : [];
-  // Recall reaches the user's own machine history, so it follows the same rule
-  // as GBrain: authenticated conversational surfaces only, never Quartz.
+  // Recall reaches the user's own machine history: authenticated
+  // conversational surfaces only, never Quartz.
   const recall = isRecallEnabled() ? [...RECALL_TOOLS] : [];
   if (surface === "garden_chat") {
     return [
@@ -571,7 +556,6 @@ export function allowedToolsForSurface(surface: HermesSurface): string[] {
       ...WORKSPACE_TOOLS,
       "attachment_image",
       ...SUPER_AGENT_TOOLS,
-      ...gbrain,
       ...recall,
       "terminal_execute_command",
       "mcp_call",
@@ -629,7 +613,6 @@ export function allowedToolsForSurface(surface: HermesSurface): string[] {
     ...WORKSPACE_TOOLS,
       "attachment_image",
     ...SUPER_AGENT_TOOLS,
-    ...gbrain,
     ...recall,
     "terminal_execute_command",
     "browser_terminal",

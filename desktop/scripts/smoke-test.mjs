@@ -58,116 +58,6 @@ async function fetchOk(url, options = {}, timeoutMs = 5000) {
 
 const endpointsFile = path.join(userData, "Data", "runtime", "endpoints.json");
 
-// ── GBrain lifecycle helpers ────────────────────────────────────────────────
-// Read the per-install adapter secret from the desktop config (never logged).
-function gbrainSecret() {
-  try {
-    const cfg = JSON.parse(fs.readFileSync(path.join(userData, "Data", "config", "desktop-config.json"), "utf8"));
-    return cfg.gbrainAdapterSecret ?? null;
-  } catch {
-    return null;
-  }
-}
-
-const GBRAIN_FIXTURE_SOURCE = "gbrain-smoke-fixture";
-const GBRAIN_FIXTURE_QUERY = "voltage current resistance";
-
-// Runs the GBrain lifecycle checks against the running adapter. Gated on GBrain
-// being enabled (a gbrain URL was published), which is the default. When an
-// install has turned it off it records a single explicit skip so the report is
-// honest.
-/**
- * GBrain starts on demand (the dashboard acquires it, e.g. at sign-in), and a
- * fresh database first runs ~120 schema migrations: 54 s on a GitHub runner.
- * One request with a 10 s timeout reported a healthy install as broken.
- */
-async function waitForGbrainHealth(urls, maxMs = 5 * 60 * 1000) {
-  const deadline = Date.now() + maxMs;
-  let body = null;
-  while (Date.now() < deadline) {
-    const health = await fetchOk(`${urls.gbrain}/health`, {}, 10_000);
-    body = health && health.ok ? await health.json().catch(() => null) : null;
-    if (body?.ready) return body;
-    await delay(3000);
-  }
-  return body;
-}
-
-async function gbrainInitialChecks(urls) {
-  if (!urls.gbrain) {
-    record("GBrain lifecycle (disabled for this install via desktop-config gbrainMode)", true, "skipped: GBrain not enabled");
-    return false;
-  }
-  const secret = gbrainSecret();
-  // 1. adapter process started + 2. real engine initialized + 3. health ready.
-  const body = await waitForGbrainHealth(urls);
-  record("GBrain adapter is up and ready", Boolean(body?.ready), body ? `backend ${body.backend}, mode ${body.mode}` : "no /health");
-  record("GBrain uses the real vendored engine backend", body?.backend === "gbrain", `backend ${body?.backend}`);
-  // 4. mutable data under the installed user-data area.
-  const gbrainDataDir = path.join(userData, "Data", "gbrain");
-  record("GBrain data lives under the installed user-data dir", fs.existsSync(gbrainDataDir), gbrainDataDir);
-  // 5. a fixture garden can be indexed.
-  let indexed = false;
-  let indexDetail = secret ? "" : "no adapter secret";
-  if (secret) {
-    const reg = await fetchOk(`${urls.gbrain}/register-source`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${secret}` },
-      body: JSON.stringify({
-        sourceId: GBRAIN_FIXTURE_SOURCE,
-        label: "smoke/fixture",
-        pages: [{ pageId: "ohms", title: "Ohm's Law", path: "ohms.md", content: "Voltage equals current times resistance across a resistor." }],
-      }),
-    }, 30_000);
-    const regBody = reg ? await reg.json().catch(() => null) : null;
-    indexed = reg?.ok === true && regBody?.data?.pagesIndexed === 1;
-    indexDetail = reg ? `status ${reg.status}; ${JSON.stringify(regBody).slice(0, 300)}` : "no response";
-  }
-  record("GBrain indexes a fixture garden", indexed, indexDetail);
-  // 9. secrets do not appear in logs.
-  try {
-    const log = fs.readFileSync(path.join(userData, "Data", "logs", "desktop.log"), "utf8");
-    record("GBrain adapter secret is absent from logs", !secret || !log.includes(secret));
-  } catch {
-    record("GBrain adapter secret is absent from logs", true, "no desktop.log");
-  }
-  return true;
-}
-
-// 6. the fixture is retrievable AFTER an application restart (durability).
-async function gbrainRetrievalAfterRestart(urls) {
-  if (!urls.gbrain) return;
-  const secret = gbrainSecret();
-  if (!secret) {
-    record("GBrain fixture is retrievable after restart", false, "no adapter secret");
-    return;
-  }
-  await waitForGbrainHealth(urls);
-  const res = await fetchOk(`${urls.gbrain}/search`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${secret}` },
-    body: JSON.stringify({ scope: { userId: "1", authorizedSourceIds: [GBRAIN_FIXTURE_SOURCE] }, query: GBRAIN_FIXTURE_QUERY }),
-  }, 15_000);
-  const body = res && res.ok ? await res.json().catch(() => null) : null;
-  const found = Array.isArray(body?.data?.results) && body.data.results.some((r) => r.citation?.pageId === "ohms");
-  record("GBrain fixture is retrievable after restart (durable index)", found);
-}
-
-// 7 + 8. adapter terminates on shutdown / no orphan adapter process remains.
-function gbrainNoOrphanProcess() {
-  try {
-    const out = spawnSync("powershell.exe", [
-      "-NoProfile",
-      "-Command",
-      "Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and (($_.Name -eq 'node.exe' -and $_.CommandLine -like '*gbrain-adapter*node-entrypoint.mjs*') -or ($_.Name -eq 'bun.exe' -and $_.CommandLine -like '*gbrain-adapter*server.ts*')) } | Measure-Object | Select-Object -ExpandProperty Count",
-    ], { encoding: "utf8" });
-    const count = Number((out.stdout ?? "0").trim()) || 0;
-    record("no orphan GBrain adapter process remains after shutdown", count === 0, `count ${count}`);
-  } catch {
-    record("no orphan GBrain adapter process remains after shutdown", true, "probe unavailable");
-  }
-}
-
 /**
  * Read the endpoints this launch published. Using the app's own file (rather
  * than assuming 3000/8765/…) is what keeps the checks pointed at the desktop
@@ -688,10 +578,8 @@ async function main() {
     record("ingested source exists under sources/", found, sourcesDir);
   }
 
-  // GBrain adapter lifecycle (index a fixture; retrieval after restart is checked
-  // below). Gated on GBrain being enabled — records an explicit skip otherwise.
-  // GBrain is an on-demand service: the ingestion above is what starts it.
-  const gbrainEnabled = await gbrainInitialChecks(urls);
+  // GBrain was removed: nothing may publish or start it.
+  record("GBrain is not running (removed)", !urls.gbrain, urls.gbrain ?? "no gbrain endpoint");
 
   // Restart: quit, verify cleanup, relaunch, verify persistence.
   closeApp();
@@ -743,20 +631,6 @@ async function main() {
       if (session2?.ok) persisted = (await session2.json())?.user?.name != null;
     }
     record("database persists across restart (login works)", persisted);
-    if (clusterSlug && persisted) {
-      // GBrain is on demand and nothing has needed it since the relaunch. Ask
-      // the dashboard to sync the garden (what a person's edit would do), which
-      // acquires GBrain, so the durability check below has an engine to query.
-      await fetchOk(`${base2}/api/gbrain/sync`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Origin: base2,
-          Cookie: [...jar2.entries()].map(([k, v]) => `${k}=${v}`).join("; "),
-        },
-        body: JSON.stringify({ gardenId: clusterSlug }),
-      }, 120_000);
-    }
     if (clusterSlug) {
       const contentDir = path.join(userData, "Data", "quartz", "content", clusterSlug);
       record("user files persist across restart", fs.existsSync(contentDir));
@@ -781,9 +655,6 @@ async function main() {
     }
   }
 
-  // GBrain durability: the fixture indexed before the restart must still retrieve.
-  await gbrainRetrievalAfterRestart(urls2 ?? urls);
-
   closeApp();
   await delay(30000);
   let finalLeftovers = breadboardProcesses();
@@ -793,8 +664,6 @@ async function main() {
     if (finalLeftovers.length > 0) forceCloseApp();
   }
   record("final quit leaves no managed processes", finalLeftovers.length === 0);
-  // GBrain adapter must terminate with the app; no orphan process remains.
-  if (gbrainEnabled) gbrainNoOrphanProcess();
 
   let fatalLogLines = [];
   if (fs.existsSync(desktopLog)) {

@@ -201,12 +201,6 @@ export async function syncOfficeMirrors(store: GardenFileStore, scope: GardenFil
   const { publishQuartzAfterMutation } = await import("../quartz-publish.ts");
   void publishQuartzAfterMutation(`office documents ${scope.gardenId}`, { userId: scope.ownerId, gardenSlug: scope.gardenId })
     .catch(error => console.error("[office] Quartz notes saved; publication failed:", error));
-  try {
-    const { enqueueGardenSync } = await import("../gbrain/sync.ts");
-    enqueueGardenSync(scope.clusterId, "office-quartz-mirror");
-    const { ensureSyncWorkerStarted } = await import("../gbrain/sync-worker.ts");
-    ensureSyncWorkerStarted();
-  } catch { /* Search catches up on its next sync. */ }
 }
 
 const timers = new Map<number, ReturnType<typeof setTimeout>>();

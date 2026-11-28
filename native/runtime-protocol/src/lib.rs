@@ -5096,7 +5096,6 @@ mod tests {
                 "vox-director-node",
                 "outer-shorts-node",
                 "agent-reach-setup-node",
-                "gbrain-sync-node",
                 "thought-topology-node",
                 "outer-agent-reach-node",
                 "outer-praxist-node",
@@ -5376,12 +5375,6 @@ mod tests {
                 "agent-reach-setup",
                 TrustedWorkerEnvironmentSource::AgentReachSetup,
                 (0, 1),
-            ),
-            (
-                "gbrain-sync-node",
-                "gbrain-sync",
-                TrustedWorkerEnvironmentSource::GbrainSync,
-                (0, 0),
             ),
             (
                 "outer-agent-reach-node",
@@ -5702,18 +5695,16 @@ mod tests {
         assert_eq!(speech_media.maximum_runtime_ms, 7_320_000);
         assert_eq!(speech_media.graceful_cancellation_ms, 60_000);
         assert!(speech_media.service_dependencies.is_empty());
-        let gbrain_sync = workers
+        assert!(workers.workers.iter().all(|worker| worker.kind != "gbrain-sync-node"));
+        let thought_topology = workers
             .workers
             .iter()
-            .find(|worker| worker.kind == "gbrain-sync-node")
+            .find(|worker| worker.kind == "thought-topology-node")
             .unwrap();
-        assert_eq!(
-            gbrain_sync.service_dependencies,
-            [WorkerServiceDependency {
-                service_id: "gbrain".into(),
-                condition: WorkerServiceDependencyCondition::GbrainSyncAlways,
-            }]
-        );
+        assert!(thought_topology
+            .service_dependencies
+            .iter()
+            .all(|dependency| dependency.service_id != "gbrain"));
         let scriberr_garden = workers
             .workers
             .iter()
@@ -5903,7 +5894,6 @@ mod tests {
                 "chatmock",
                 "dashboard",
                 "hermes",
-                "gbrain",
                 "comfyui",
                 "telegram-gateway",
                 "whatsapp-gateway",
@@ -5966,11 +5956,8 @@ mod tests {
             .iter()
             .find(|service| service.id == "hermes")
             .unwrap();
-        let gbrain = services
-            .services
-            .iter()
-            .find(|service| service.id == "gbrain")
-            .unwrap();
+        // GBrain was removed; the manifest must not resurrect its sidecar.
+        assert!(services.services.iter().all(|service| service.id != "gbrain"));
         let comfyui = services
             .services
             .iter()
@@ -6055,68 +6042,6 @@ mod tests {
         }
         assert_eq!(hermes.startup_policy, ServiceStartupPolicy::OnDemand);
         assert_eq!(hermes.idle_ttl_ms, Some(600_000));
-        assert_eq!(gbrain.startup_policy, ServiceStartupPolicy::OnDemand);
-        assert_eq!(gbrain.dependencies, ["chatmock"]);
-        assert_eq!(gbrain.idle_ttl_ms, Some(600_000));
-        assert_eq!(gbrain.maximum_concurrent_leases, 32);
-        assert_eq!(gbrain.maximum_lease_ms, 1_800_000);
-        assert_eq!(gbrain.readiness.path, "/ready");
-        assert_eq!(
-            gbrain.readiness.expected_body_contains.as_deref(),
-            Some("\"backend\":\"gbrain\"")
-        );
-        assert_eq!(gbrain.launch_profiles.len(), 1);
-        let gbrain_profile = gbrain.launch_profile(RuntimeMode::Packaged).unwrap();
-        assert_eq!(
-            gbrain_profile.executable_authority,
-            ServiceExecutableAuthority::RuntimeRoot
-        );
-        assert_eq!(gbrain_profile.allowed_executable, "runtimes/node/node.exe");
-        assert_eq!(
-            gbrain_profile.arguments,
-            vec![
-                ServiceLaunchArgument::Literal {
-                    value: "--no-warnings".into(),
-                },
-                ServiceLaunchArgument::Literal {
-                    value: "--experimental-transform-types".into(),
-                },
-                ServiceLaunchArgument::AppPath {
-                    path: "gbrain-adapter/src/node-entrypoint.mjs".into(),
-                },
-            ]
-        );
-        assert_eq!(
-            gbrain_profile.environment_source,
-            TrustedServiceEnvironmentSource::Gbrain
-        );
-        assert_eq!(
-            gbrain_profile.working_directory,
-            ServiceWorkingDirectoryPolicy::AppSubdirectory {
-                path: "gbrain-adapter".into(),
-            }
-        );
-        assert!(gbrain_profile.install_probe.contains(
-            ServiceInstallProbeAuthority::RuntimeRoot,
-            "runtimes/node/node.exe",
-        ));
-        for app_path in [
-            "gbrain-adapter/src/node-entrypoint.mjs",
-            "gbrain-adapter/src/node-loader.mjs",
-            "gbrain-adapter/src/node-server.ts",
-            "gbrain-adapter/src/request-handler.ts",
-            "gbrain/src/core/engine-factory.ts",
-            "gbrain-adapter/node_modules/@electric-sql/pglite/package.json",
-            "gbrain/node_modules/@electric-sql/pglite/package.json",
-            "gbrain/node_modules/js-yaml/package.json",
-            "gbrain/node_modules/@dqbd/tiktoken/package.json",
-            "gbrain/node_modules/web-tree-sitter/package.json",
-            "gbrain/runtime-artifact.json",
-        ] {
-            assert!(gbrain_profile
-                .install_probe
-                .contains(ServiceInstallProbeAuthority::AppRoot, app_path));
-        }
         assert_eq!(comfyui.startup_policy, ServiceStartupPolicy::OnDemand);
         assert_eq!(comfyui.idle_ttl_ms, Some(600_000));
         assert_eq!(comfyui.maximum_concurrent_leases, 4);

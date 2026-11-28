@@ -78,8 +78,8 @@ function packagedDataReferences(profile) {
   return references;
 }
 
-test("all 34 process services have one audited packaged closure row", () => {
-  assert.equal(manifest.services.length, 34);
+test("all 33 process services have one audited packaged closure row", () => {
+  assert.equal(manifest.services.length, 33);
   const rows = closureRows();
   assert.deepEqual([...rows.keys()].sort(), manifest.services.map(({ id }) => id).sort());
   for (const service of manifest.services) {
@@ -221,85 +221,12 @@ test("semantic-memory source, build, and packaged dependency boundaries are exac
   assert.doesNotMatch(mem0Setup, /run\("npm"|run\("npx"|Semantic recall stays off/u);
   assert.equal(dashboardPackage.dependencies.axios, "1.18.1");
   assert.equal(dashboardLock.packages["node_modules/axios"].version, "1.18.1");
-
-  const gbrainReceipt = JSON.parse(
-    fs.readFileSync(path.join(repoRoot, "gbrain", "runtime-artifact.json"), "utf8"),
-  );
-  const gbrainUpstreamPath = path.join(repoRoot, "gbrain", "UPSTREAM.json");
-  const gbrainUpstreamBytes = fs.readFileSync(gbrainUpstreamPath);
-  const gbrainUpstreamCanonical = Buffer.from(
-    gbrainUpstreamBytes.toString("utf8").replace(/\r\n/gu, "\n"),
-    "utf8",
-  );
-  const gbrainUpstream = JSON.parse(gbrainUpstreamCanonical.toString("utf8"));
-  assert.equal(gbrainReceipt.schemaVersion, 1);
-  assert.equal(gbrainReceipt.engine.package, "gbrain");
-  assert.equal(gbrainReceipt.engine.sourceGitTree, "6789d243367aa1eeccceb0cdae187025a31008b5");
-  assert.equal(gbrainUpstream.contentChecksums.gbrainSrcTreeSha, gbrainReceipt.engine.sourceGitTree);
-  assert.deepEqual(
-    gbrainUpstream.localPatches.map(({ id }) => id),
-    ["breadboard-pglite-init-error-diagnostics"],
-  );
-  assert.equal(
-    createHash("sha256").update(gbrainUpstreamCanonical).digest("hex").toUpperCase(),
-    gbrainReceipt.engine.upstreamReceiptSha256,
-  );
-  assert.match(preparer, new RegExp(gbrainReceipt.engine.upstreamReceiptSha256, "u"));
-  assert.match(verifier, new RegExp(gbrainReceipt.engine.upstreamReceiptSha256, "u"));
-  for (const [relative, expected] of [
-    ["gbrain-adapter/src", gbrainReceipt.adapter],
-    ["gbrain/src", gbrainReceipt.engine],
-  ]) {
-    const actual = canonicalTreeIdentity(path.join(repoRoot, ...relative.split("/")));
-    assert.equal(actual.fileCount, expected.sourceFileCount, relative);
-    assert.equal(actual.sha256, expected.sourceSha256, relative);
-    assert.match(preparer, new RegExp(expected.sourceGitTree, "u"));
-    assert.match(verifier, new RegExp(expected.sourceGitTree, "u"));
-    assert.match(preparer, new RegExp(expected.sourceSha256, "u"));
-    assert.match(verifier, new RegExp(expected.sourceSha256, "u"));
-  }
 });
 
-test("packaged GBrain launches only through the reviewed bundled-Node entrypoint closure", () => {
-  const service = manifest.services.find(({ id }) => id === "gbrain");
-  assert.ok(service);
-  assert.equal(service.launchProfiles.length, 1);
-  const profile = service.launchProfiles[0];
-  assert.deepEqual(profile.modes, ["lean", "hot", "packaged"]);
-  assert.equal(profile.executableAuthority, "runtime-root");
-  assert.equal(profile.allowedExecutable, "runtimes/node/node.exe");
-  assert.deepEqual(profile.arguments, [
-    { kind: "literal", value: "--no-warnings" },
-    { kind: "literal", value: "--experimental-transform-types" },
-    { kind: "app-path", path: "gbrain-adapter/src/node-entrypoint.mjs" },
-  ]);
-  assert.deepEqual(profile.workingDirectory, {
-    kind: "app-subdirectory",
-    path: "gbrain-adapter",
-  });
-  assert.equal(service.readiness.path, "/ready");
-  assert.equal(service.readiness.expectedBodyContains, '"backend":"gbrain"');
-  assert.deepEqual(profile.installProbe.files, [
-    { authority: "runtime-root", path: "runtimes/node/node.exe" },
-    { authority: "app-root", path: "gbrain-adapter/src/node-entrypoint.mjs" },
-    { authority: "app-root", path: "gbrain-adapter/src/node-loader.mjs" },
-    { authority: "app-root", path: "gbrain-adapter/src/node-server.ts" },
-    { authority: "app-root", path: "gbrain-adapter/src/request-handler.ts" },
-    { authority: "app-root", path: "gbrain/src/core/engine-factory.ts" },
-    {
-      authority: "app-root",
-      path: "gbrain-adapter/node_modules/@electric-sql/pglite/package.json",
-    },
-    {
-      authority: "app-root",
-      path: "gbrain/node_modules/@electric-sql/pglite/package.json",
-    },
-    { authority: "app-root", path: "gbrain/node_modules/js-yaml/package.json" },
-    { authority: "app-root", path: "gbrain/node_modules/@dqbd/tiktoken/package.json" },
-    { authority: "app-root", path: "gbrain/node_modules/web-tree-sitter/package.json" },
-    { authority: "app-root", path: "gbrain/runtime-artifact.json" },
-  ]);
-  assert.doesNotMatch(JSON.stringify(profile), /runtimes\/bun\/bun\.exe|--experimental-loader/iu);
+test("GBrain is not packaged", () => {
+  assert.ok(!manifest.services.some(({ id }) => id === "gbrain"));
+  assert.doesNotMatch(preparer, /gbrain/iu);
+  assert.doesNotMatch(verifier, /gbrain/iu);
 });
 
 test("packaged SolidWorks uses only the immutable reviewed Python closure", () => {

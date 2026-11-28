@@ -156,7 +156,6 @@ export function prepareQaServiceDefinitions(
           DEEP_TUTOR_ROOT: source("deep-tutor"),
           DEER_FLOW_ROOT: source("deer-flow"),
           DEER_FLOW_STATE_DIR: state("deer-flow"),
-          GBRAIN_HOME: state("gbrain"),
           HF_HOME: state("huggingface"),
           HYPERFRAMES_CLI_ROOT: source("hyperframes-cli"),
           HYPERFRAMES_ROOT: source("hyperframes"),

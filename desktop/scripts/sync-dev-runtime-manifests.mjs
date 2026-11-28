@@ -41,9 +41,6 @@ function validateManifest(bytes, name) {
   if (new Set(identities).size !== identities.length) {
     throw new Error(`Runtime V2 ${name} contains a duplicate ${identityName}.`);
   }
-  if (name === "services.json" && !identities.includes("gbrain")) {
-    throw new Error("Runtime V2 services.json is missing mandatory GBrain authority.");
-  }
   return Object.freeze({ manifest, entries });
 }
 

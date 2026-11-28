@@ -3058,58 +3058,6 @@ _TOOLS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
             ["connection", "tool", "args"],
         ),
     ),
-    (
-        "gbrain_status",
-        "/api/hermes/tools/gbrain",
-        "gbrain",
-        _schema(
-            "gbrain_status",
-            "Report GBrain retrieval status before relying on indexed Garden knowledge.",
-        ),
-    ),
-    *tuple(
-        (
-            name,
-            "/api/hermes/tools/gbrain",
-            "gbrain",
-            _schema(
-                name,
-                description,
-                {
-                    **_OPTIONAL_GARDEN,
-                    field: _STRING,
-                    **(
-                        {"limit": {"type": "number", "minimum": 1, "maximum": 50}}
-                        if name != "gbrain_retrieve"
-                        else {}
-                    ),
-                },
-                [field, *(["gardenId"] if name in {"gbrain_retrieve", "gbrain_graph_neighbors"} else [])],
-            ),
-        )
-        for name, description, field in (
-            (
-                "gbrain_search",
-                "Search authorized indexed Garden knowledge and return cited excerpts.",
-                "query",
-            ),
-            (
-                "gbrain_retrieve",
-                "Retrieve one authorized indexed Garden page by citation id.",
-                "pageId",
-            ),
-            (
-                "gbrain_synthesize",
-                "Synthesize across authorized Garden sources with citations.",
-                "query",
-            ),
-            (
-                "gbrain_graph_neighbors",
-                "Return bounded graph neighbors for an authorized indexed page.",
-                "pageId",
-            ),
-        )
-    ),
     # Recall — the user's own screen and audio history, captured locally on
     # this computer. Read tools answer "what was I doing / what did they say";
     # they never reach live UI automation. `recall_control` only starts or
@@ -5391,7 +5339,6 @@ def _request_payload(
         return payload
     if route_kind in {
         "garden",
-        "gbrain",
         "worldmonitor",
         "map",
         "calendar",

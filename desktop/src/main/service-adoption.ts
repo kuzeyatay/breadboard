@@ -72,22 +72,6 @@ export function adoptionProbe(
       };
     case "quartz":
       return { type: "http", url: `${base}/__health`, expectBodyIncludes: '"ready":true', timeoutMs: 2_500 };
-    case "gbrain":
-      // /health is unauthenticated; every other route is a POST behind the
-      // adapter secret. An empty body reaches the handler only once the bearer
-      // matched, and comes back as a 400 rather than a 401.
-      return {
-        type: "http",
-        url: `${base}/search`,
-        method: "POST",
-        body: "{}",
-        headers: {
-          Authorization: `Bearer ${persistent.gbrainAdapterSecret}`,
-          "Content-Type": "application/json",
-        },
-        acceptStatuses: AUTHENTICATED,
-        timeoutMs: 2_500,
-      };
     case "ui-tars":
       return {
         type: "http",

@@ -1,10 +1,9 @@
 // How Breadboard turns text into vectors, in one place.
 //
-// Three subsystems want embeddings — Deep Tutor's knowledge bases, the Garden
-// semantic retriever, and the GBrain sidecar — and until ChatMock grew
+// Several subsystems want embeddings — Deep Tutor's knowledge bases, the Garden
+// semantic retriever, and the knowledge graph — and until ChatMock grew
 // `/v1/embeddings` each of them answered "which model, from where, with what
-// key" differently. Two of the three answered "none", so hybrid retrieval was
-// off by default across the product.
+// key" differently, so hybrid retrieval was off by default across the product.
 //
 // The default is now ChatMock's local model: ONNX on the CPU, no key, no quota,
 // and no network once the weights are cached. An explicitly configured provider

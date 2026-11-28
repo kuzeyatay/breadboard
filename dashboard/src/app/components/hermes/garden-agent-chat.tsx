@@ -36,7 +36,6 @@ import { consumeArtifactAiEdit, type ArtifactAiEditDetail } from "./artifact-ai-
 import SkillReviewPanel from "./skill-review-panel";
 import ReviewSettingsPanel from "./review-settings-panel";
 import TerminalScheduledPanel from "./terminal-scheduled-panel";
-import GBrainStatusBadge from "./gbrain-status-badge";
 import { GARDEN_DOCUMENTS_CHANGED_EVENT } from "./artifact-viewer";
 import { GARDEN_PROPOSALS_CHANGED_EVENT } from "./inline-proposal-cards";
 import {
@@ -814,9 +813,6 @@ export default function GardenAgentChat({
           <p className="truncate text-[11px] text-gray-500">
             Garden agent · grounded, proposal-only · Hermes
           </p>
-          <div className="mt-1">
-            <GBrainStatusBadge gardenSlug={gardenSlug} canReindex />
-          </div>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
           <span className="rounded-full border border-gray-700 px-2 py-0.5 text-[10px] text-gray-400">

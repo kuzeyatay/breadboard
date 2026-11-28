@@ -28,7 +28,6 @@ export const PACKAGED_SERVICE_EVIDENCE_DEFINITIONS = Object.freeze([
   { id: "chatmock", policy: "lease" },
   { id: "dashboard", policy: "lease" },
   { id: "hermes", policy: "lease" },
-  { id: "gbrain", policy: "lease" },
   { id: "comfyui", policy: "lease" },
   { id: "telegram-gateway", policy: "lease" },
   { id: "whatsapp-gateway", policy: "lease" },

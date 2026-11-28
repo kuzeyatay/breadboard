@@ -656,27 +656,6 @@ async function executeReadTool(
   }
 }
 
-/**
- * Keep derived retrieval state in step with a write, exactly as an applied
- * proposal does. Never allowed to fail the mutation that preceded it: GBrain
- * being disabled or misconfigured must not undo a saved or moved note.
- */
-async function resyncGardenRetrieval(
-  clusterId: number,
-  reason: string,
-): Promise<void> {
-  try {
-    const { enqueueGardenSync } = await import("../gbrain/sync.ts");
-    enqueueGardenSync(clusterId, reason);
-    const { ensureSyncWorkerStarted } =
-      await import("../gbrain/sync-worker.ts");
-    // Bounded one-shot Runtime queue kick; it does not start a Next.js timer.
-    ensureSyncWorkerStarted();
-  } catch {
-    // Retrieval indexing is derived state; the write itself already succeeded.
-  }
-}
-
 /** Save through the canonical document service for the authenticated owner. */
 async function executeSaveNote(
   cluster: ClusterRow,
@@ -752,7 +731,6 @@ async function executeSaveNote(
       : ["assistant-response"],
   });
 
-  await resyncGardenRetrieval(cluster.id, "garden_save_note");
 
   return {
     ok: true,
@@ -866,7 +844,6 @@ async function executeStructureTool(
         clusterSlug: cluster.slug,
         folder: args.folder,
       });
-      await resyncGardenRetrieval(cluster.id, tool);
       return {
         ok: true,
         tool,
@@ -880,7 +857,6 @@ async function executeStructureTool(
         slug: args.slug ?? args.pageSlug,
         toFolder: args.toFolder ?? args.folder,
       });
-      await resyncGardenRetrieval(cluster.id, tool);
       return {
         ok: true,
         tool,
@@ -899,7 +875,6 @@ async function executeStructureTool(
         folder: args.folder,
         name: args.name ?? args.newName,
       });
-      await resyncGardenRetrieval(cluster.id, tool);
       return {
         ok: true,
         tool,
@@ -913,7 +888,6 @@ async function executeStructureTool(
         clusterId: cluster.id,
         folder: args.folder,
       });
-      await resyncGardenRetrieval(cluster.id, tool);
       return {
         ok: true,
         tool,

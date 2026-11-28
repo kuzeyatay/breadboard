@@ -22,8 +22,6 @@ globalThis.__officeMirrorCalls = calls;
 const stubs = {
   "../knowledge.ts": "export function refreshClusterIndex() { globalThis.__officeMirrorCalls.refresh++; }",
   "../quartz-publish.ts": "export async function publishQuartzAfterMutation() { globalThis.__officeMirrorCalls.publish++; }",
-  "../gbrain/sync.ts": "export function enqueueGardenSync() {}",
-  "../gbrain/sync-worker.ts": "export function ensureSyncWorkerStarted() {}",
 };
 const dashboard = path.resolve(import.meta.dirname, "..");
 const bundle = await build({
