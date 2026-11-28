@@ -160,6 +160,15 @@ export interface GBrainBackendOptions {
   embeddingEnv: EmbeddingEnv;
 }
 
+/**
+ * The vendored engine reports provider failures as AI*Error (AITransientError
+ * after its retries, AIConfigError for a bad endpoint) from its embed gateway.
+ */
+export function isEmbeddingFailure(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return /^AI[A-Za-z]*Error$/u.test(error.name) || /\[embed\(/u.test(error.message);
+}
+
 export class GBrainEngineBackend implements RetrievalBackend {
   readonly backendName = "gbrain" as const;
   private engine: BrainEngine | null = null;
@@ -280,13 +289,29 @@ export class GBrainEngineBackend implements RetrievalBackend {
     }
 
     let chunkCount = 0;
+    // Pages stored without vectors because the embedding provider failed. Like
+    // search (keyword results when the query embedding fails), indexing keeps
+    // the page findable by keyword instead of failing the whole garden sync:
+    // an unreachable or not-yet-provisioned embedding model must not leave
+    // every garden with no index at all.
+    let unembedded = 0;
     for (const page of pages) {
-      const result = await importFromContent(engine, page.pageId, this.buildMarkdown(page), {
-        sourceId,
-        noEmbed: !this.embeddingsAvailable,
-        source_kind: "breadboard-sync",
-      });
+      const markdown = this.buildMarkdown(page);
+      const options = { sourceId, noEmbed: !this.embeddingsAvailable, source_kind: "breadboard-sync" };
+      let result: Awaited<ReturnType<typeof importFromContent>>;
+      try {
+        result = await importFromContent(engine, page.pageId, markdown, options);
+      } catch (error) {
+        if (options.noEmbed || !isEmbeddingFailure(error)) throw error;
+        result = await importFromContent(engine, page.pageId, markdown, { ...options, noEmbed: true });
+        unembedded += 1;
+      }
       chunkCount += result.chunks ?? 0;
+    }
+    if (unembedded > 0) {
+      warnings.push(
+        `The embedding provider failed; ${unembedded} of ${pages.length} page(s) were indexed for keyword search only.`,
+      );
     }
 
     // Second pass: store the Breadboard knowledge-graph links (both endpoints now
@@ -332,7 +357,7 @@ export class GBrainEngineBackend implements RetrievalBackend {
       sourceId,
       pagesIndexed: pages.length,
       chunksIndexed: chunkCount,
-      embedded: this.embeddingsAvailable,
+      embedded: this.embeddingsAvailable && unembedded === 0,
       mode: this.mode,
       revision,
       warnings,
