@@ -7,12 +7,6 @@ import {
   MANDATORY_RUNTIME_SERVICE_IDS,
   validateMandatoryRuntimeServices,
 } from "./mandatory-runtime-services.mjs";
-import {
-  GBRAIN_NODE_ARGUMENTS,
-  GBRAIN_NODE_EXECUTABLE,
-  GBRAIN_NODE_INSTALL_PROBE_FILES,
-  validateGbrainNodeLaunch,
-} from "./gbrain-node-launch-contract.mjs";
 import { resolveStagedRuntimeProbePath } from "./runtime-manifest-staging-roots.mjs";
 
 const qaDirectory = import.meta.dirname;
@@ -48,94 +42,13 @@ function validMandatoryServices() {
   return MANDATORY_RUNTIME_SERVICE_IDS.map(mandatoryService);
 }
 
-test("locks the exact 34 mandatory Runtime V2 service identities including GBrain", () => {
-  assert.equal(MANDATORY_RUNTIME_SERVICE_IDS.length, 34);
-  assert.equal(new Set(MANDATORY_RUNTIME_SERVICE_IDS).size, 34);
-  assert.equal(MANDATORY_RUNTIME_SERVICE_IDS.includes("gbrain"), true);
+test("locks the exact 33 mandatory Runtime V2 service identities, GBrain removed", () => {
+  assert.equal(MANDATORY_RUNTIME_SERVICE_IDS.length, 33);
+  assert.equal(new Set(MANDATORY_RUNTIME_SERVICE_IDS).size, 33);
+  assert.equal(MANDATORY_RUNTIME_SERVICE_IDS.includes("gbrain"), false);
   assert.deepEqual(validateMandatoryRuntimeServices(validMandatoryServices()), []);
   assert.deepEqual(validateMandatoryRuntimeServices(manifest.services), []);
   assert.match(validator, /validateMandatoryRuntimeServices\(services\)/u);
-});
-
-test("GBrain uses one exact bundled-Node launch and fail-closed readiness contract", () => {
-  const gbrain = manifest.services.find(({ id }) => id === "gbrain");
-  assert.ok(gbrain);
-  assert.deepEqual(validateGbrainNodeLaunch(manifest.services), []);
-  assert.equal(gbrain.launchProfiles.length, 1);
-  const profile = gbrain.launchProfiles[0];
-  assert.deepEqual(profile.modes, ["lean", "hot", "packaged"]);
-  assert.equal(profile.executableAuthority, "runtime-root");
-  assert.equal(profile.allowedExecutable, GBRAIN_NODE_EXECUTABLE);
-  assert.deepEqual(profile.arguments, GBRAIN_NODE_ARGUMENTS);
-  assert.equal(profile.environmentSource, "gbrain");
-  assert.deepEqual(profile.workingDirectory, {
-    kind: "app-subdirectory",
-    path: "gbrain-adapter",
-  });
-  assert.deepEqual(profile.installProbe, {
-    kind: "files-present",
-    files: GBRAIN_NODE_INSTALL_PROBE_FILES,
-  });
-  assert.equal(gbrain.readiness.path, "/ready");
-  assert.equal(gbrain.readiness.expectedBodyContains, '"backend":"gbrain"');
-  assert.match(validator, /validateGbrainNodeLaunch\(services\)/u);
-});
-
-test("GBrain launch validation rejects Bun, raw loaders, closure drift, and liveness-only readiness", async (t) => {
-  const cases = [
-    {
-      name: "Bun executable regression",
-      mutate(service) {
-        service.launchProfiles[0].allowedExecutable = "runtimes/bun/bun.exe";
-      },
-      expected: /pinned bundled Node executable/u,
-    },
-    {
-      name: "raw absolute loader regression",
-      mutate(service) {
-        service.launchProfiles[0].arguments = [
-          { kind: "literal", value: "--experimental-loader" },
-          { kind: "literal", value: "C:\\Breadboard\\gbrain-adapter\\src\\node-loader.mjs" },
-          { kind: "app-path", path: "gbrain-adapter/src/node-server.ts" },
-        ];
-      },
-      expected: /raw loader arguments are forbidden/u,
-    },
-    {
-      name: "argument ordering drift",
-      mutate(service) {
-        service.launchProfiles[0].arguments.reverse();
-      },
-      expected: /arguments must match the reviewed Node entrypoint contract exactly/u,
-    },
-    {
-      name: "missing runtime dependency proof",
-      mutate(service) {
-        service.launchProfiles[0].installProbe.files =
-          service.launchProfiles[0].installProbe.files.filter(
-            ({ path: filePath }) => filePath !== "gbrain/node_modules/js-yaml/package.json",
-          );
-      },
-      expected: /install probe must match the reviewed offline runtime closure exactly/u,
-    },
-    {
-      name: "health endpoint used as readiness",
-      mutate(service) {
-        service.readiness.path = "/health";
-      },
-      expected: /readiness must fail closed through \/ready/u,
-    },
-  ];
-
-  for (const scenario of cases) {
-    await t.test(scenario.name, () => {
-      const services = structuredClone(manifest.services);
-      const gbrain = services.find(({ id }) => id === "gbrain");
-      assert.ok(gbrain);
-      scenario.mutate(gbrain);
-      assert.match(validateGbrainNodeLaunch(services).join("\n"), scenario.expected);
-    });
-  }
 });
 
 test("hot dashboard uses the physical source tree while mutable data stays independently rooted", () => {
@@ -215,44 +128,44 @@ test("every launch estimate leaves headroom below its hard commit limit", () => 
 test("rejects removal, downgrade, identity drift, and lost or duplicate hot coverage", async (t) => {
   const cases = [
     {
-      name: "removed GBrain",
+      name: "removed Hermes",
       mutate(services) {
-        services.splice(services.findIndex(({ id }) => id === "gbrain"), 1);
+        services.splice(services.findIndex(({ id }) => id === "hermes"), 1);
       },
-      expected: /mandatory Runtime V2 service gbrain is missing/u,
+      expected: /mandatory Runtime V2 service hermes is missing/u,
     },
     {
-      name: "optional GBrain",
+      name: "optional Hermes",
       mutate(services) {
-        services.find(({ id }) => id === "gbrain").requirement = "optional";
+        services.find(({ id }) => id === "hermes").requirement = "optional";
       },
-      expected: /gbrain must remain requirement=required/u,
+      expected: /hermes must remain requirement=required/u,
     },
     {
       name: "missing hot profile",
       mutate(services) {
-        services.find(({ id }) => id === "gbrain").launchProfiles[0].modes = ["lean"];
+        services.find(({ id }) => id === "hermes").launchProfiles[0].modes = ["lean"];
       },
-      expected: /gbrain must cover hot mode exactly once; found 0/u,
+      expected: /hermes must cover hot mode exactly once; found 0/u,
     },
     {
       name: "duplicate hot profile",
       mutate(services) {
-        services.find(({ id }) => id === "gbrain").launchProfiles.push({ modes: ["hot"] });
+        services.find(({ id }) => id === "hermes").launchProfiles.push({ modes: ["hot"] });
       },
-      expected: /gbrain must cover hot mode exactly once; found 2/u,
+      expected: /hermes must cover hot mode exactly once; found 2/u,
     },
     {
       name: "duplicate service identity",
       mutate(services) {
-        services.push(mandatoryService("gbrain"));
+        services.push(mandatoryService("hermes"));
       },
-      expected: /gbrain is registered 2 times/u,
+      expected: /hermes is registered 2 times/u,
     },
     {
       name: "unexpected replacement identity",
       mutate(services) {
-        services[services.findIndex(({ id }) => id === "gbrain")].id = "replacement";
+        services[services.findIndex(({ id }) => id === "hermes")].id = "replacement";
       },
       expected: /unexpected Runtime V2 service identity replacement/u,
     },

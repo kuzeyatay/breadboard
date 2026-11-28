@@ -67,8 +67,7 @@ fine — Breadboard moves; nothing needs configuring.
 Quitting the app terminates the whole service process tree (`taskkill /T`).
 If a machine crash leaves orphans, inspect the command lines first, then stop
 only the stale `bun.exe`, `python.exe`, or `node.exe` processes that point into
-the Breadboard install. The GBrain adapter now appears as a `node.exe` command
-line ending in `gbrain-adapter/src/node-entrypoint.mjs`.
+the Breadboard install.
 
 ## Resetting
 
@@ -114,19 +113,10 @@ NSIS fail or crash during extraction. Preserve `installed-smoke-summary.json`,
 `app-smoke-results.json`, and `app-smoke.log`, then remove only old evidence
 directories' `user-data` subdirectories if space is needed.
 
-## GBrain (knowledge retrieval)
+## GBrain (removed)
 
-GBrain is on by default (`preferred`). To turn it off for an install, set
-`gbrainMode` to `disabled` in
-`<userData>/Data/config/desktop-config.json` and restart; an install that
-already recorded `disabled` keeps it. The supervised
-`gbrain` adapter runs on a loopback port with a per-install secret and stores
-its PGLite/index data under `<userData>/Data/gbrain` (never in packaged
-resources). It never blocks app startup; when unavailable the dashboard reports a
-truthful degraded/unavailable knowledge state.
-
-The installed smoke test (`node desktop/scripts/installed-smoke-test.mjs
-<Setup.exe>`) includes a GBrain lifecycle section (adapter health, real-engine
-backend, data-dir location, fixture index, retrieval-after-restart, secret-absent-
-from-logs, no-orphan-process). Those checks run when GBrain is enabled and record
-an explicit skip otherwise. See docs/GBRAIN_INTEGRATION.md.
+GBrain was removed in 0.1.21. Garden search and the knowledge graph embed
+through ChatMock's local model directly, and idle maintenance fills Garden
+search vectors in the background. Every desktop config is rewritten to
+`gbrainMode: "disabled"`. An older install's `<userData>/Data/gbrain` index is
+no longer read; it is left on disk and can be removed by hand.

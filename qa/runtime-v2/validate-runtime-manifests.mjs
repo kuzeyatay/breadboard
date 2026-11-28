@@ -6,7 +6,6 @@ import { fileURLToPath } from "node:url";
 
 import { resolveStagedRuntimeProbePath } from "./runtime-manifest-staging-roots.mjs";
 import { validateMandatoryRuntimeServices } from "./mandatory-runtime-services.mjs";
-import { validateGbrainNodeLaunch } from "./gbrain-node-launch-contract.mjs";
 
 const qaDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(qaDirectory, "..", "..");
@@ -876,7 +875,6 @@ for (const [index, service] of services.entries()) {
   }
 }
 validateHotDashboardLaunch(services);
-for (const error of validateGbrainNodeLaunch(services)) fail(error);
 for (const service of services) {
   for (const dependency of service.dependencies ?? []) {
     if (!serviceIds.has(dependency)) fail(`service ${service.id} has unknown dependency ${dependency}`);
@@ -983,7 +981,6 @@ for (const entry of [
   "runtime-v2-agent-reach-setup-worker.mjs",
   "runtime-v2-agent-reach-setup-executor.mjs",
   "runtime-v2-agent-reach-configure.py",
-  "runtime-v2-gbrain-sync-worker.mjs",
   "runtime-v2-thought-topology-worker.mjs",
   "runtime-v2-legal-worker.mjs",
   "runtime-v2-sf3d-worker.mjs",

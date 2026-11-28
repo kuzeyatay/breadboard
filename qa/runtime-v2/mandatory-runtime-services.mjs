@@ -2,7 +2,6 @@ export const MANDATORY_RUNTIME_SERVICE_IDS = Object.freeze([
   "chatmock",
   "dashboard",
   "hermes",
-  "gbrain",
   "comfyui",
   "telegram-gateway",
   "whatsapp-gateway",
