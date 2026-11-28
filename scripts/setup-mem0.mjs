@@ -32,21 +32,21 @@ const bundle = path.join(packageDir, "dist", "oss", "index.js");
 const dashboardDir = path.join(repoRoot, "dashboard");
 const onlyIfNeeded = process.argv.includes("--if-needed");
 const PINNED_MEM0_BUILD = Object.freeze({
-  sourceCommit: "4debc58a83377b18be81ae1e5969a300736b2fac",
-  sourceTree: "6d1ef35be8ee14a65bfa5dc213fbde9884cd8f38",
+  sourceCommit: "94c3fe9f238f3dbf29c9ce98643bd71eb13077cd",
+  sourceTree: "07bb30162782b2e1503a7a1a35d32fa9dbd03e9c",
   nodeVersion: "v24.14.1",
   packageManager: "pnpm@10.5.2",
   files: {
-    "package.json": { size: 7_991, sha256: "AEDF5C3F5CADFDEE10CD9933676B2487C2AEA5D0917B9BB98512980BA4F15136" },
-    "pnpm-lock.yaml": { size: 343_440, sha256: "E34B558987E1276F3A0AB44E4CF5BAF8E54CE5786DD77AFB8359BD418B55DD68" },
-    "pnpm-workspace.yaml": { size: 1_243, sha256: "D5858AF881395A9AD9F68545008197BAF0BBDDF69E06B7CD06D9B81E5215AC6B" },
+    "package.json": { size: 8_301, sha256: "3B5711FD86762C4E9DE35BF80D3EC2BBF27141F502ACA88D4664DD850C4D8DB7" },
+    "pnpm-lock.yaml": { size: 341_930, sha256: "9435E55FBBAEF4A497DEC7A58E378ECC78D207C79F60783D2B8735E1485216BB" },
+    "pnpm-workspace.yaml": { size: 1_457, sha256: "450F2C287DC2EE1C9642DD66EF9B87C33BC6AABCFF21BE2CD657A92EC50AFEB8" },
   },
   // Source maps are excluded: they embed the source text, whose line endings
   // follow the checkout (CRLF on an autocrlf workstation, LF on a clean
   // runner), and the staged bundle never ships them anyway.
   output: {
     fileCount: 8,
-    sha256: "A1D0BBFAD86DAC1954E1D330CD335C839E5A7D4950682824A7841C51AB8CA78A",
+    sha256: "4971ACAC7225A62712E5ACC9040AB4771C8EF0E7FAE007760531BD133A10EE2D",
   },
 });
 
@@ -207,6 +207,6 @@ if (!engineReady()) {
 }
 
 console.log(
-  "\nThe reviewed mem0 engine is ready. Semantic recall is on by default; enable fact extraction\n" +
-    "with BREADBOARD_MEM0_EXTRACTION=on. See docs/MEM0_INTEGRATION.md.",
+  "\nThe reviewed mem0 engine is ready. Semantic recall and fact extraction are on by default\n" +
+    "(turn extraction off in Settings → Memory). See docs/MEM0_INTEGRATION.md.",
 );

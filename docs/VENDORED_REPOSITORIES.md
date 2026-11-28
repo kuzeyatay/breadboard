@@ -108,7 +108,7 @@ compression) after those exclusions.
 | `manim` | https://github.com/3b1b/manim | `master` | `01030ac5d23bc294ccb93cbfcda260f2d20dda62` |
 | `MatrAIx-Persona-8B` | https://github.com/MatrAIx-ai/MatrAIx-Persona-8B | `main` | `2418b37ffb99f79c0a7d4b3dd4e461ced498aefc` |
 | `mcp-google-images-search` | https://github.com/srigi/mcp-google-images-search | `main` | `e9c515eda45807d80d9ccc993be781d0ee13d47b` |
-| `mem0` | https://github.com/mem0ai/mem0 | `main` | `4debc58a83377b18be81ae1e5969a300736b2fac` |
+| `mem0` | https://github.com/mem0ai/mem0 | `ts-v3.3.1` | `94c3fe9f238f3dbf29c9ce98643bd71eb13077cd` |
 | `meta-prompting` | https://github.com/meta-prompting/meta-prompting | `main` | `dc406edd3855b378c1bb8604ca00397e01ea2513` |
 | `MoneyPrinterTurbo` | https://github.com/harry0703/MoneyPrinterTurbo | `main` | `bdc45823a15efd438ba88d27bcba3a2e377c867c` |
 | `nango` | https://github.com/NangoHQ/nango.git | `master` | `ddd0b201cd7ac31c2a5e278da531f1a065203abd` |

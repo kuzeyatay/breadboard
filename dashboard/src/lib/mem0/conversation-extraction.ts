@@ -11,6 +11,8 @@ import {
   getConversationById,
   listConversationMessages,
 } from "../conversations/store.ts";
+import db from "../db.ts";
+import { parseComposerSwitches } from "../hermes/composer-switches.ts";
 import { mem0Config } from "./config.ts";
 import { extractDurableCandidates } from "./extraction.ts";
 
@@ -31,6 +33,7 @@ export function scheduleDurableExtractionForConversation(input: {
     return;
   }
   if (!conversation) return;
+  if (!memoryExtractionEnabled(conversation.user_id)) return;
   // A temporary chat is the one transcript the extractor never reads.
   if (conversationIsTemporary(conversation)) return;
   // Same surfaces that own the save_memory tool. Anonymous Quartz never
@@ -62,6 +65,21 @@ export function scheduleDurableExtractionForConversation(input: {
     userText,
     assistantText,
   }).catch(() => {});
+}
+
+/**
+ * The account's Settings → Memory switch. A key that was never written reads
+ * as on: extraction is the default, so only an explicit "off" opts out.
+ */
+export function memoryExtractionEnabled(userId: number): boolean {
+  try {
+    const row = db
+      .prepare("SELECT composer_switches FROM hermes_user_settings WHERE user_id = ?")
+      .get(userId) as { composer_switches: string | null } | undefined;
+    return parseComposerSwitches(row?.composer_switches).memoryExtraction !== false;
+  } catch {
+    return true;
+  }
 }
 
 function lastContent(

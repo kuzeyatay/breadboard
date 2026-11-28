@@ -10,8 +10,10 @@
 // Settings → Memory. Extraction never produces a `confirmed` memory — only an
 // explicit user instruction or an explicit save_memory tool call can do that.
 //
-// Off by default (BREADBOARD_MEM0_EXTRACTION=on): it costs one LLM call per
-// completed turn.
+// On by default; it costs one call to the background (fallback) model per
+// completed turn — mem0 asks ChatMock for its "default" model sentinel. An
+// account turns it off in Settings → Memory; BREADBOARD_MEM0_EXTRACTION=off
+// turns it off for the whole process.
 
 import type Database from "better-sqlite3";
 import db from "../db.ts";

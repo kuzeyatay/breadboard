@@ -578,16 +578,23 @@ test("the settings status explains why recall is degraded", async () => {
   assert.match(disabled.degradedReason ?? "", /BREADBOARD_MEM0/);
 });
 
-test("extraction stays off unless explicitly enabled", () => {
-  assert.equal(config.mem0Config({}).extractionEnabled, false);
+test("extraction is on by default; the env flag is only a kill switch", () => {
+  assert.equal(config.mem0Config({}).extractionEnabled, true);
   assert.equal(
-    config.mem0Config({ BREADBOARD_MEM0_EXTRACTION: "on" }).extractionEnabled,
-    true,
+    config.mem0Config({ BREADBOARD_MEM0_EXTRACTION: "off" }).extractionEnabled,
+    false,
   );
   assert.equal(
-    config.mem0Config({ BREADBOARD_MEM0: "off", BREADBOARD_MEM0_EXTRACTION: "on" })
-      .extractionEnabled,
+    config.mem0Config({ BREADBOARD_MEM0: "off" }).extractionEnabled,
     false,
     "the master switch must win",
   );
+});
+
+test("the Settings switch for extraction is a known account switch", async () => {
+  const switches = await import("../src/lib/hermes/composer-switches.ts");
+  assert.deepEqual(switches.pickComposerSwitches({ memoryExtraction: false }), {
+    memoryExtraction: false,
+  });
+  assert.equal(switches.parseComposerSwitches("{}").memoryExtraction, undefined);
 });

@@ -25,7 +25,9 @@ Two things, one on by default and one not.
 fusing two rankings: the deterministic lexical one, and mem0's semantic one.
 A memory found by both outranks one found by either alone.
 
-**Fact extraction** (default off, `BREADBOARD_MEM0_EXTRACTION=on`). After a
+**Fact extraction** (default on; per account in Settings → Memory → "Learn from
+chats automatically"; `BREADBOARD_MEM0_EXTRACTION=off` disables it for the
+whole process). It uses the background (fallback) model. After a
 completed turn, mem0 reads the exchange and proposes atomic facts the user
 never phrased as an instruction. Every proposal lands as a `candidate` at
 confidence 0.42 — reviewable in Settings → Memory, ranked below anything
@@ -128,7 +130,7 @@ payload.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `BREADBOARD_MEM0` | on | `off` disables the layer |
-| `BREADBOARD_MEM0_EXTRACTION` | off | `on` enables per-turn fact extraction |
+| `BREADBOARD_MEM0_EXTRACTION` | on | `off` disables per-turn fact extraction for every account |
 | `BREADBOARD_MEM0_LLM_MODEL` | `default` | extraction model (ChatMock's global background model) |
 
 Embeddings follow `lib/embeddings.ts` — by default ChatMock's keyless local

@@ -14,6 +14,9 @@
 // switches, but they have the same persistence problem and ride the same
 // column. Only location consent is stored here; coordinates remain in the
 // device's browser storage. See lib/app-theme.ts and lib/current-location.ts.
+//
+// `memoryExtraction` is a server-only account setting (Settings → Memory) read
+// by lib/mem0/conversation-extraction.ts; absent means on.
 
 export const COMPOSER_SWITCH_KEYS = [
   "yoloMode",
@@ -28,6 +31,7 @@ export const COMPOSER_SWITCH_KEYS = [
   "webPdfCleanup",
   "askPasswordAtStartup",
   "intermediateResponses",
+  "memoryExtraction",
 ] as const;
 
 export type ComposerSwitchKey = (typeof COMPOSER_SWITCH_KEYS)[number];

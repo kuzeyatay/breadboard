@@ -179,3 +179,19 @@ condition = "AND"
 paths = ['''^hermes-agent/tests/run_agent/test_instant_steer\.py$''']
 regexTarget = "match"
 regexes = ['''test-key-1234567890''']
+
+[[allowlists]]
+description = "Vendored mem0 plugins: mem0's public PostHog project key (client write-only, published upstream)"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^mem0/integrations/[^/]+(/[^/]+)*/telemetry\.(py|ts)$''']
+regexTarget = "line"
+regexes = ['''^\s*(const )?POSTHOG_API_KEY = "phc_[A-Za-z0-9]+";?\s*$''']
+
+[[allowlists]]
+description = "Vendored mem0 plugins: fixed placeholder credentials in tests and docs"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^mem0/integrations/[^/]+/(README\.md|(.+/)?tests?/.+)$''']
+regexTarget = "line"
+regexes = ['''(sk-eval-12345678901234567890|m0-disposable-test-key|m0-invalid-key|m0-abcdefghijklmnop|sk-secret-12345|ABCDEFGHIJ1234567890|keyFingerprint: "0123456789abcdef")''']

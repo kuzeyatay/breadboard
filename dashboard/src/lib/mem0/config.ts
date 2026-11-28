@@ -4,10 +4,12 @@
 // embedding backend as every other retriever (see lib/embeddings.ts) and
 // degrades truthfully to the deterministic lexical ranker whenever that
 // backend — or the vendored mem0 package — is unavailable. Turn extraction
-// costs an LLM call after every completed turn, so it is opt-in.
+// (one background-model call after each completed turn) is on by default too;
+// each account can turn it off in Settings → Memory, and the env flag below is
+// a process-wide kill switch above that setting.
 //
 //   BREADBOARD_MEM0=off             turn the whole semantic layer off
-//   BREADBOARD_MEM0_EXTRACTION=on   extract candidate memories after turns
+//   BREADBOARD_MEM0_EXTRACTION=off  never extract candidate memories after turns
 //   BREADBOARD_MEM0_LLM_MODEL=...   extraction model (default: ChatMock's
 //                                   "default" sentinel, the global background
 //                                   model)
@@ -23,6 +25,8 @@ import {
 
 export interface Mem0Config {
   enabled: boolean;
+  /** Process-level: whether extraction may run at all. The per-account
+   * Settings switch (memoryExtractionEnabled) is checked on top of this. */
   extractionEnabled: boolean;
   llmModel: string;
   embedding: EmbeddingSettings;
@@ -58,7 +62,7 @@ export function mem0Config(env: NodeJS.ProcessEnv = process.env): Mem0Config {
   return {
     enabled,
     extractionEnabled:
-      enabled && (extraction === "on" || extraction === "1" || extraction === "true"),
+      enabled && extraction !== "off" && extraction !== "0" && extraction !== "false",
     llmModel: env.BREADBOARD_MEM0_LLM_MODEL?.trim() || "default",
     embedding,
     fingerprint,

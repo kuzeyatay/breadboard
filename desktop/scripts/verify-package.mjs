@@ -44,7 +44,7 @@ const PINNED_PACKAGED_SERVICE_COMMITS = Object.freeze({
   deepResearch: "8df5f9b6d8c8f9942ae5e8950972248a152c4f3d",
   deerFlow: "99c926b7bbcd0570870bc24ceb13ab934935f49c",
   moneyPrinter: "bdc45823a15efd438ba88d27bcba3a2e377c867c",
-  mem0: "4debc58a83377b18be81ae1e5969a300736b2fac",
+  mem0: "94c3fe9f238f3dbf29c9ce98643bd71eb13077cd",
   openscience: "74ee13cdd1e086effd7a616a7c0bbad678bc5e51",
   openwork: "776a0646be968842f73d523f3c56372a9ee4ed82",
   stockAnalyst: "235c898a6da8a5229465d49230b479cd92192867",
@@ -194,24 +194,24 @@ const PINNED_WARDROBE_RUNTIME = Object.freeze({
 const PINNED_MEM0_RUNTIME = Object.freeze({
   schemaVersion: 1,
   name: "mem0ai",
-  version: "3.1.5",
+  version: "3.3.1",
   platform: "win32",
   architecture: "x64",
   source: {
     commit: PINNED_PACKAGED_SERVICE_COMMITS.mem0,
-    tree: "6d1ef35be8ee14a65bfa5dc213fbde9884cd8f38",
+    tree: "07bb30162782b2e1503a7a1a35d32fa9dbd03e9c",
     packageManifest: {
-      size: 7_991,
-      sha256: "AEDF5C3F5CADFDEE10CD9933676B2487C2AEA5D0917B9BB98512980BA4F15136",
+      size: 8_301,
+      sha256: "3B5711FD86762C4E9DE35BF80D3EC2BBF27141F502ACA88D4664DD850C4D8DB7",
     },
     dependencyLock: {
       format: "pnpm-lock-v9",
-      size: 343_440,
-      sha256: "E34B558987E1276F3A0AB44E4CF5BAF8E54CE5786DD77AFB8359BD418B55DD68",
+      size: 341_930,
+      sha256: "9435E55FBBAEF4A497DEC7A58E378ECC78D207C79F60783D2B8735E1485216BB",
     },
     workspaceManifest: {
-      size: 1_243,
-      sha256: "D5858AF881395A9AD9F68545008197BAF0BBDDF69E06B7CD06D9B81E5215AC6B",
+      size: 1_457,
+      sha256: "450F2C287DC2EE1C9642DD66EF9B87C33BC6AABCFF21BE2CD657A92EC50AFEB8",
     },
     license: {
       size: 11_349,
@@ -230,18 +230,18 @@ const PINNED_MEM0_RUNTIME = Object.freeze({
   dist: {
     buildOutput: {
       fileCount: 8,
-      sha256: "A1D0BBFAD86DAC1954E1D330CD335C839E5A7D4950682824A7841C51AB8CA78A",
+      sha256: "4971ACAC7225A62712E5ACC9040AB4771C8EF0E7FAE007760531BD133A10EE2D",
     },
     stagedOutput: {
       fileCount: 8,
-      sha256: "A1D0BBFAD86DAC1954E1D330CD335C839E5A7D4950682824A7841C51AB8CA78A",
+      sha256: "4971ACAC7225A62712E5ACC9040AB4771C8EF0E7FAE007760531BD133A10EE2D",
     },
   },
   dependencies: {
     axios: "1.18.1",
     "better-sqlite3": "12.9.0",
     openai: "4.104.0",
-    pg: "8.11.3",
+    pg: "8.21.0",
     uuid: "11.1.1",
     zod: "3.25.76",
   },

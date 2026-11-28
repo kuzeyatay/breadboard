@@ -22,6 +22,7 @@ import { normalizeChatTextSelectionReference } from "../chat-text-selection.ts";
 
 import path from "node:path";
 import db from "../db.ts";
+import { readerClarityTurn, reviseForReader } from "../conversations/reader-clarity.ts";
 import { persistAssistantProgress } from "../conversations/live-progress.ts";
 import { recordQuestionNotification, resolveQuestionNotification } from "../chat-notifications/questions.ts";
 import { recordApprovalNotification } from "../chat-notifications/approvals.ts";
@@ -2150,6 +2151,30 @@ function legacyGardenEventStream(
             // earlier segment may still become tool-call narration. Reveal the
             // stable answer once, after that decision.
             if (getRuntimeRun(runId)?.status !== "active") return;
+            // One gap-filling revision by the same model when the answer fails
+            // the readability check; any failure keeps the original text.
+            let readerClarity: Record<string, unknown> | undefined;
+            if (session.row.conversation_id !== null) {
+              const turn = readerClarityTurn(session.row.conversation_id, db);
+              const result = await reviseForReader({
+                answer: assistantText,
+                question: turn.question,
+                context: turn.context,
+                model: answerModel,
+                userId: session.row.user_id,
+              });
+              if (result.findings.length) {
+                readerClarity = {
+                  revised: result.revised,
+                  findings: result.findings,
+                  ...(result.reason ? { reason: result.reason } : {}),
+                  ...(result.durationMs !== undefined ? { durationMs: result.durationMs } : {}),
+                  ...(result.gaps?.length ? { gaps: result.gaps } : {}),
+                };
+              }
+              if (result.revised) assistantText = result.text;
+              if (getRuntimeRun(runId)?.status !== "active") return;
+            }
             emit({ type: "replace", text: assistantText });
             const verification = assessVerification(assistantText, evidence, {
               answerModel,
@@ -2203,6 +2228,7 @@ function legacyGardenEventStream(
                   ...(responseDurationMs !== undefined
                     ? { responseDurationMs }
                     : {}),
+                  ...(readerClarity ? { readerClarity } : {}),
                   runtimeStatus: "idle",
                 },
               });

@@ -199,6 +199,6 @@ test("mem0 source pinning accepts the receipted vendored checkout", () => {
   assert.match(prepare, /label:\s*["']Mem0["'][\s\S]*?allowVendoredSnapshot:\s*true/u);
   assert.equal(
     fs.readFileSync(path.join(repoRoot, "mem0", SOURCE_COMMIT_RECEIPT_NAME), "utf8").trim(),
-    "4debc58a83377b18be81ae1e5969a300736b2fac",
+    "94c3fe9f238f3dbf29c9ce98643bd71eb13077cd",
   );
 });

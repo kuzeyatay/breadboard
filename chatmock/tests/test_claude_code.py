@@ -4,6 +4,7 @@ import base64
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -63,7 +64,7 @@ class ClaudeCodeBridgeTests(unittest.TestCase):
         success = SimpleNamespace(returncode=0, stdout=json.dumps(_cli_body(content="handled")), stderr="")
         payload = {"messages": [{"role": "user", "content": "test"}]}
         with (patch.object(claude_code, "_claude_executable", return_value="claude"),
-              patch.object(subprocess, "run", side_effect=[limited, success, success, success]) as launch):
+              patch.object(claude_code, "_launch", side_effect=[limited, success, success, success]) as launch):
             for _ in range(2):
                 self.assertEqual(claude_code._run_cli(payload, "claude-sonnet-5")["structured_output"]["content"], "handled")
             self.assertEqual(json.loads((store / "default.reset").read_text()), reset * 1000)
@@ -171,7 +172,7 @@ class ClaudeCodeBridgeTests(unittest.TestCase):
 
         with (
             patch.object(claude_code, "_claude_executable", return_value="claude"),
-            patch.object(subprocess, "run", side_effect=fake_run),
+            patch.object(claude_code, "_launch", side_effect=fake_run),
         ):
             result = claude_code._run_cli(
                 {
@@ -203,11 +204,11 @@ class ClaudeCodeBridgeTests(unittest.TestCase):
 
     def test_an_unfinished_call_reports_the_limit_it_hit(self) -> None:
         def fake_run(command, **kwargs):
-            raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+            raise claude_code._CliStopped("ceiling", kwargs["ceiling"])
 
         with (
             patch.object(claude_code, "_claude_executable", return_value="claude"),
-            patch.object(subprocess, "run", side_effect=fake_run),
+            patch.object(claude_code, "_launch", side_effect=fake_run),
             patch.dict("os.environ", {"CHATMOCK_CLAUDE_CODE_TIMEOUT_SECONDS": "300"}),
         ):
             with self.assertRaises(claude_code.ProviderError) as caught:
@@ -216,6 +217,87 @@ class ClaudeCodeBridgeTests(unittest.TestCase):
         # The message is the assistant's answer, so it must say what the limit
         # was rather than leave "timed out" to be read as a dead end.
         self.assertIn("300 seconds", str(caught.exception))
+
+    def _python_cli(self, script: str) -> list:
+        return [sys.executable, "-I", "-c", script]
+
+    def test_a_cli_that_keeps_producing_output_is_never_cut_off_by_silence(self) -> None:
+        # Seen 2026-11-28: a chat step still generating at 540s was killed,
+        # retried three times by Hermes, and the turn failed after 34 minutes.
+        # Output, not the stopwatch, says whether the CLI is working.
+        script = (
+            "import sys, time, json\n"
+            "sys.stdin.read()\n"
+            "for _ in range(6):\n"
+            "    print(json.dumps({'type': 'stream_event', 'event': {}}), flush=True)\n"
+            "    time.sleep(0.3)\n"
+            "print(json.dumps({'type': 'result', 'is_error': False}), flush=True)\n"
+        )
+        done = claude_code._launch(
+            self._python_cli(script), input="[]", cwd=tempfile.gettempdir(),
+            env=dict(os.environ), ceiling=60, idle_limit=1.2,
+        )
+        self.assertEqual(done.returncode, 0)
+        # Delta frames are liveness only; the parser gets the result frame.
+        self.assertNotIn("stream_event", done.stdout)
+        self.assertIn('"result"', done.stdout)
+
+    def test_a_silent_cli_is_stopped_long_before_the_ceiling(self) -> None:
+        script = "import sys, time\nsys.stdin.read()\ntime.sleep(60)\n"
+        started = time.monotonic()
+        with self.assertRaises(claude_code._CliStopped) as stopped:
+            claude_code._launch(
+                self._python_cli(script), input="[]", cwd=tempfile.gettempdir(),
+                env=dict(os.environ), ceiling=60, idle_limit=1,
+            )
+        self.assertEqual(stopped.exception.kind, "idle")
+        self.assertLess(time.monotonic() - started, 30)
+
+    def test_a_long_streaming_call_keeps_the_caller_alive_then_answers(self) -> None:
+        def slow_cli(*_args, **_kwargs):
+            time.sleep(0.5)
+            return _cli_body(content="finished")
+
+        with (
+            patch.object(claude_code, "_run_cli", side_effect=slow_cli),
+            patch.object(claude_code, "_STREAM_COMMIT_SECONDS", 0.05),
+            patch.object(claude_code, "_KEEPALIVE_SECONDS", 0.1),
+        ):
+            response = claude_code.request_chat(
+                _credentials(), {"messages": [{"role": "user", "content": "Hi"}]},
+                "claude-sonnet-5", stream=True,
+            )
+            frames = [line for line in openai_compatible.relay_stream(response)]
+        text = b"".join(frames).decode("utf-8")
+        # Empty-choices chunks, not SSE comments: clients drop comments before
+        # their stall detectors see them.
+        self.assertIn('"choices":[]', frames[0].decode("utf-8"))
+        self.assertIn('"content":"finished"', text)
+        self.assertTrue(text.endswith("data: [DONE]\n\n"))
+
+    def test_a_late_failure_is_reported_inside_the_stream(self) -> None:
+        def failing_cli(*_args, **_kwargs):
+            time.sleep(0.3)
+            raise ProviderError("Claude Code stopped producing output for 240 seconds")
+
+        with (
+            patch.object(claude_code, "_run_cli", side_effect=failing_cli),
+            patch.object(claude_code, "_STREAM_COMMIT_SECONDS", 0.05),
+            patch.object(claude_code, "_KEEPALIVE_SECONDS", 0.1),
+        ):
+            response = claude_code.request_chat(
+                _credentials(), {"messages": []}, "claude-sonnet-5", stream=True,
+            )
+            text = b"".join(openai_compatible.relay_stream(response)).decode("utf-8")
+        last = json.loads(text.strip().splitlines()[-1][len("data: "):])
+        self.assertIn("240 seconds", last["error"]["message"])
+
+    def test_a_quick_failure_is_still_a_real_http_error(self) -> None:
+        # Rate limits and sign-in problems surface in seconds; dispatch needs
+        # them raised, not buried in a 200 stream, to fall back on.
+        with patch.object(claude_code, "_run_cli", side_effect=ProviderError("limited", status_code=429)):
+            with self.assertRaises(ProviderError):
+                claude_code.request_chat(_credentials(), {"messages": []}, "claude-sonnet-5", stream=True)
 
     def test_the_timeout_override_is_clamped_to_a_usable_range(self) -> None:
         for value, expected in (
@@ -266,7 +348,7 @@ class ClaudeCodeBridgeTests(unittest.TestCase):
 
         with (
             patch.object(claude_code, "_claude_executable", return_value="claude"),
-            patch.object(subprocess, "run", side_effect=fake_run),
+            patch.object(claude_code, "_launch", side_effect=fake_run),
         ):
             claude_code._run_cli(payload, "claude-sonnet-5")
 
@@ -318,7 +400,7 @@ class ClaudeCodeBridgeTests(unittest.TestCase):
 
         with (
             patch.object(claude_code, "_claude_executable", return_value="claude"),
-            patch.object(subprocess, "run", side_effect=fake_run),
+            patch.object(claude_code, "_launch", side_effect=fake_run),
             patch.object(pxpipe, "base_url", side_effect=base_url) as proxy,
         ):
             claude_code._run_cli({"messages": [{"role": "user", "content": "hi"}]}, model)

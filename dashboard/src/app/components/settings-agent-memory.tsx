@@ -152,6 +152,41 @@ export default function SettingsAgentMemory() {
   const [profileContent, setProfileContent] = useState("");
   const [instruction, setInstruction] = useState("");
   const [instructionOutcome, setInstructionOutcome] = useState<InstructionOutcome | null>(null);
+  // Account switch; a value that was never saved reads as on.
+  const [extractionOn, setExtractionOn] = useState(true);
+  const [extractionBusy, setExtractionBusy] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetch("/api/assistant-preferences", { cache: "no-store" })
+      .then((response) => (response.ok ? response.json() : null))
+      .then((payload: { switches?: Record<string, boolean> } | null) => {
+        if (!cancelled && payload) setExtractionOn(payload.switches?.memoryExtraction !== false);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function toggleExtraction() {
+    const next = !extractionOn;
+    setExtractionBusy(true);
+    try {
+      const response = await fetch("/api/assistant-preferences", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ switches: { memoryExtraction: next } }),
+      });
+      if (!response.ok) throw new Error();
+      setExtractionOn(next);
+      setError(null);
+    } catch {
+      setError("Could not save the memory setting. Please try again.");
+    } finally {
+      setExtractionBusy(false);
+    }
+  }
 
   const refresh = useCallback(async () => {
     try {
@@ -335,6 +370,31 @@ export default function SettingsAgentMemory() {
               Breadboard remembers useful details from your chats. You can also tell it what to remember.
             </p>
           </div>
+        </div>
+
+        <div className="flex items-start justify-between gap-4 rounded-xl bg-[var(--paper-strong)] px-3 py-2.5">
+          <div className="min-w-0">
+            <p className="text-xs font-medium text-[var(--ink)]">Learn from chats automatically</p>
+            <p className="mt-0.5 text-[10px] leading-4 text-[var(--ink-muted)]">
+              {overview?.semantic && !overview.semantic.extractionEnabled
+                ? "Unavailable: semantic memory is turned off for this install."
+                : "After each reply, your fallback model picks out facts worth remembering. They're saved as suggestions you can review below."}
+            </p>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={extractionOn}
+            aria-label="Learn from chats automatically"
+            disabled={extractionBusy || (overview?.semantic ? !overview.semantic.extractionEnabled : false)}
+            onClick={() => void toggleExtraction()}
+            className={`neu-inset relative h-6 w-11 shrink-0 rounded-full transition disabled:opacity-50 ${extractionOn ? "bg-[var(--botanical)]" : "bg-[var(--line-strong)]"}`}
+          >
+            <span
+              aria-hidden="true"
+              className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-[var(--paper-raised)] shadow transition-transform ${extractionOn ? "translate-x-5" : ""}`}
+            />
+          </button>
         </div>
 
         <form

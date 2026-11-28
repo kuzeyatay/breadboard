@@ -18,9 +18,11 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, Iterator, List
 
 import requests
@@ -45,19 +47,180 @@ from .types import ModelCall, ProviderError
 # The ceiling stays below the OpenAI client's own ten-minute default — Hermes
 # configures no provider timeout — so a CLI that really is stuck still comes back
 # as the explanation below instead of the client's bare read timeout.
+#
+# That ceiling only binds callers that wait for one complete JSON body. A
+# streaming caller (Hermes chat) is kept alive with empty chunks while the CLI
+# works, so it gets the much larger stream ceiling below instead. Seen
+# 2026-11-28: a chat step that had to write a measuring script over a large
+# Mendix export ran past 540s while still generating; the 502 was retried three
+# times by Hermes, and the turn burned 34 minutes before failing.
 _DEFAULT_REQUEST_TIMEOUT_SECONDS = 540
 _MIN_REQUEST_TIMEOUT_SECONDS = 30
 _MAX_REQUEST_TIMEOUT_SECONDS = 570
+_DEFAULT_STREAM_TIMEOUT_SECONDS = 1800
+_MAX_STREAM_TIMEOUT_SECONDS = 7200
+# Wall-clock is the wrong signal for "stuck": a healthy CLI streams thinking
+# and text deltas continuously, so silence this long means it is wedged.
+# Large-context prefill at high effort is the slowest legitimate gap.
+_IDLE_TIMEOUT_SECONDS = 240
+# A streaming call that finishes (or fails) this fast is answered exactly as
+# before, so quick refusals — rate limits, sign-in, a bad proxy — still reach
+# dispatch as real HTTP errors it can fall back on.
+_STREAM_COMMIT_SECONDS = 45
+_KEEPALIVE_SECONDS = 15
 _MAX_TOOL_CALLS = 16
 
 
-def _request_timeout_seconds() -> int:
-    """The wall-clock budget for one CLI call, overridable for slower machines."""
+def _clamped_env_seconds(name: str, default: int, low: int, high: int) -> int:
     try:
-        value = int(os.environ.get("CHATMOCK_CLAUDE_CODE_TIMEOUT_SECONDS", ""))
+        value = int(os.environ.get(name, ""))
     except (TypeError, ValueError):
-        return _DEFAULT_REQUEST_TIMEOUT_SECONDS
-    return max(_MIN_REQUEST_TIMEOUT_SECONDS, min(_MAX_REQUEST_TIMEOUT_SECONDS, value))
+        return default
+    return max(low, min(high, value))
+
+
+def _request_timeout_seconds() -> int:
+    """The wall-clock budget for one non-streaming CLI call."""
+    return _clamped_env_seconds(
+        "CHATMOCK_CLAUDE_CODE_TIMEOUT_SECONDS",
+        _DEFAULT_REQUEST_TIMEOUT_SECONDS,
+        _MIN_REQUEST_TIMEOUT_SECONDS,
+        _MAX_REQUEST_TIMEOUT_SECONDS,
+    )
+
+
+def _stream_timeout_seconds() -> int:
+    """The wall-clock ceiling for one streaming CLI call that keeps producing output."""
+    return _clamped_env_seconds(
+        "CHATMOCK_CLAUDE_CODE_STREAM_TIMEOUT_SECONDS",
+        _DEFAULT_STREAM_TIMEOUT_SECONDS,
+        _MIN_REQUEST_TIMEOUT_SECONDS,
+        _MAX_STREAM_TIMEOUT_SECONDS,
+    )
+
+
+class _CliStopped(Exception):
+    """The CLI was stopped before it finished: ``kind`` says why."""
+
+    def __init__(self, kind: str, seconds: float) -> None:
+        super().__init__(kind)
+        self.kind = kind
+        self.seconds = int(seconds)
+
+
+def _kill_tree(process: "subprocess.Popen[str]") -> None:
+    if process.poll() is not None:
+        return
+    if os.name == "nt":
+        # claude.cmd (npm installs) is a cmd.exe wrapper; killing only it
+        # would leave the real CLI generating. The runtime's PATH is closed,
+        # so name taskkill by its System32 path.
+        taskkill = Path(os.environ.get("SystemRoot") or r"C:\Windows") / "System32" / "taskkill.exe"
+        try:
+            subprocess.run(
+                [str(taskkill), "/T", "/F", "/PID", str(process.pid)],
+                capture_output=True,
+                timeout=15,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            pass
+    if process.poll() is None:
+        try:
+            process.kill()
+        except OSError:
+            pass
+
+
+def _launch(
+    command: List[str],
+    *,
+    input: str,
+    cwd: str,
+    env: Dict[str, str],
+    ceiling: float,
+    idle_limit: float = _IDLE_TIMEOUT_SECONDS,
+    cancel: "threading.Event | None" = None,
+) -> SimpleNamespace:
+    """Run the CLI, stopping it only when it goes silent, hits the ceiling, or is cancelled.
+
+    The CLI runs with ``--include-partial-messages``, so every thinking and text
+    delta is a stdout line: output is the liveness signal. Delta lines are not
+    kept — only the frames the result parser reads.
+    """
+    process = subprocess.Popen(
+        command,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        cwd=cwd,
+        env=env,
+    )
+    kept: List[str] = []
+    errors: List[str] = []
+    last_output = [time.monotonic()]
+
+    def feed() -> None:
+        try:
+            assert process.stdin is not None
+            process.stdin.write(input)
+        except (OSError, ValueError):
+            pass
+        finally:
+            try:
+                process.stdin.close()  # type: ignore[union-attr]
+            except (OSError, ValueError):
+                pass
+
+    def pump_stdout() -> None:
+        assert process.stdout is not None
+        for line in process.stdout:
+            last_output[0] = time.monotonic()
+            if "stream_event" in line[:64]:
+                try:
+                    if json.loads(line).get("type") == "stream_event":
+                        continue
+                except (ValueError, AttributeError):
+                    pass
+            kept.append(line)
+
+    def pump_stderr() -> None:
+        assert process.stderr is not None
+        for line in process.stderr:
+            last_output[0] = time.monotonic()
+            errors.append(line)
+
+    workers = [
+        threading.Thread(target=target, daemon=True, name=f"claude-code-{target.__name__}")
+        for target in (feed, pump_stdout, pump_stderr)
+    ]
+    for worker in workers:
+        worker.start()
+    started = time.monotonic()
+    try:
+        while True:
+            try:
+                returncode = process.wait(timeout=0.5)
+                break
+            except subprocess.TimeoutExpired:
+                pass
+            now = time.monotonic()
+            if cancel is not None and cancel.is_set():
+                raise _CliStopped("cancelled", now - started)
+            if now - last_output[0] >= idle_limit:
+                raise _CliStopped("idle", idle_limit)
+            if now - started >= ceiling:
+                raise _CliStopped("ceiling", ceiling)
+    except BaseException:
+        _kill_tree(process)
+        raise
+    finally:
+        for worker in workers:
+            worker.join(timeout=5)
+    return SimpleNamespace(returncode=returncode, stdout="".join(kept), stderr="".join(errors))
 
 
 def is_claude_model(model: object) -> bool:
@@ -387,7 +550,13 @@ def _parse_cli_result(stdout: str, stderr: str, returncode: int) -> Dict[str, An
     raise ProviderError(message[:2000])
 
 
-def _run_cli(payload: Dict[str, Any], model: str) -> Dict[str, Any]:
+def _run_cli(
+    payload: Dict[str, Any],
+    model: str,
+    *,
+    ceiling: int | None = None,
+    cancel: "threading.Event | None" = None,
+) -> Dict[str, Any]:
     executable = _claude_executable()
     tools = _function_tools(payload)
     schema = _output_schema(payload, tools)
@@ -414,8 +583,14 @@ def _run_cli(payload: Dict[str, Any], model: str) -> Dict[str, Any]:
             # the CLI could ask for; it is served by plain Fable through the
             # pxpipe proxy configured below.
             pxpipe.upstream_model(model),
+            # Streamed frames (with every partial delta) are what tell a CLI
+            # that is still generating apart from one that is stuck; see
+            # ``_launch``. They also carry the rate-limit events the account
+            # rotation below reads.
             "--output-format",
-            "json",
+            "stream-json",
+            "--verbose",
+            "--include-partial-messages",
             # Structured output is implemented as an SDK tool round-trip. Give
             # it room to validate/retry without enabling an autonomous tool
             # loop; each attached image costs one more Read round-trip.
@@ -451,30 +626,29 @@ def _run_cli(payload: Dict[str, Any], model: str) -> Dict[str, Any]:
             # Code and travels untouched — pxpipe passes its OAuth bearer
             # through rather than holding a key of its own.
             env["ANTHROPIC_BASE_URL"] = pxpipe.base_url()
-        budget = _request_timeout_seconds()
+        streaming = ceiling is not None
+        budget = ceiling if streaming else _request_timeout_seconds()
+        budget_variable = (
+            "CHATMOCK_CLAUDE_CODE_STREAM_TIMEOUT_SECONDS"
+            if streaming
+            else "CHATMOCK_CLAUDE_CODE_TIMEOUT_SECONDS"
+        )
         directory = claude_profiles.root()
         deadline = time.monotonic() + budget
         last_limit = None
         accounts = claude_profiles.candidates(directory)
-        if len(accounts) > 1:
-            command[command.index("--output-format") + 1] = "stream-json"
-            command.insert(2, "--verbose")
         for account in accounts:
             attempt_env = env.copy()
             if account != "default":
                 attempt_env["CLAUDE_CONFIG_DIR"] = str(claude_profiles.config_dir(directory, account))
             try:
-                completed = subprocess.run(
+                completed = _launch(
                     command,
                     input=json.dumps(messages, ensure_ascii=False, separators=(",", ":")),
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    capture_output=True,
                     cwd=temp_dir,
                     env=attempt_env,
-                    timeout=max(0, deadline - time.monotonic()),
-                    check=False,
+                    ceiling=max(0.0, deadline - time.monotonic()),
+                    cancel=cancel,
                 )
                 return _parse_cli_result(completed.stdout, completed.stderr, completed.returncode)
             except ProviderError as exc:
@@ -482,11 +656,19 @@ def _run_cli(payload: Dict[str, Any], model: str) -> Dict[str, Any]:
                     raise
                 claude_profiles.mark_limited(directory, account, getattr(exc, "reset_at", None))
                 last_limit = exc
-            except subprocess.TimeoutExpired as exc:
+            except _CliStopped as exc:
+                if exc.kind == "cancelled":
+                    raise ProviderError("The request was cancelled before Claude Code finished.") from exc
+                if exc.kind == "idle":
+                    raise ProviderError(
+                        f"Claude Code stopped producing output for {exc.seconds} seconds and "
+                        "was stopped. Try again; if it keeps happening, check that Claude "
+                        "Code can reach Anthropic from this machine."
+                    ) from exc
                 raise ProviderError(
                     f"Claude Code was still working after {budget} seconds and had to be "
                     "stopped. Ask for a smaller piece of work, or allow more time with "
-                    "CHATMOCK_CLAUDE_CODE_TIMEOUT_SECONDS."
+                    f"{budget_variable}."
                 ) from exc
             except OSError as exc:
                 raise ProviderError(f"Claude Code could not be started: {exc}") from exc
@@ -643,6 +825,120 @@ def _response(content: bytes, content_type: str) -> requests.Response:
     return response
 
 
+class _LiveBody:
+    """A ``Response.raw`` stand-in that relays a generator as it produces bytes."""
+
+    def __init__(self, chunks: Iterator[bytes], on_close: Any = None) -> None:
+        self._chunks = chunks
+        self._on_close = on_close
+
+    def stream(self, _chunk_size: int = 0, decode_content: bool = True) -> Iterator[bytes]:
+        yield from self._chunks
+
+    def close(self) -> None:
+        close = getattr(self._chunks, "close", None)
+        if close is not None:
+            close()
+        if self._on_close is not None:
+            self._on_close()
+
+
+def _sse(frame: Dict[str, Any]) -> bytes:
+    return f"data: {json.dumps(frame, ensure_ascii=False, separators=(',', ':'))}\n\n".encode("utf-8")
+
+
+def _late_stream(
+    done: threading.Event,
+    outcome: Dict[str, Any],
+    cancel: threading.Event,
+    public_model: str,
+    include_usage: bool,
+) -> Iterator[bytes]:
+    """Hold a streaming caller open while the CLI works, then send its answer.
+
+    Each keepalive is a real chunk with no choices — the shape of a usage
+    frame — rather than an SSE comment, because SDK clients drop comments
+    before their stall detectors see them. Hermes resets both its HTTP read
+    timeout and its stale-stream timer on every chunk.
+    """
+    keepalive_id = f"chatcmpl-{uuid.uuid4().hex}"
+    try:
+        while not done.wait(_KEEPALIVE_SECONDS):
+            yield _sse(
+                {
+                    "id": keepalive_id,
+                    "object": "chat.completion.chunk",
+                    "created": int(time.time()),
+                    "model": public_model,
+                    "choices": [],
+                }
+            )
+        error = outcome.get("error")
+        if error is None:
+            try:
+                completion = _completion(outcome["body"], public_model)
+            except Exception as exc:  # noqa: BLE001 - reported in-stream below
+                error = ProviderError(f"Claude Code returned an unreadable answer: {exc}")
+            else:
+                yield from _stream(completion, include_usage)
+                return
+        # Headers are already sent, so a failure can only travel in-stream.
+        # OpenAI clients raise an APIError carrying this message.
+        message = str(error) or "Claude Code failed."
+        yield _sse(
+            {
+                "error": {
+                    "message": message,
+                    "type": "provider_error",
+                    "code": getattr(error, "status_code", None),
+                }
+            }
+        )
+    finally:
+        if not done.is_set():
+            # The caller went away (interrupt, closed tab): stop the CLI too.
+            cancel.set()
+
+
+def _request_stream(payload: Dict[str, Any], upstream_model: str) -> requests.Response:
+    stream_options = payload.get("stream_options")
+    include_usage = bool(
+        isinstance(stream_options, dict) and stream_options.get("include_usage")
+    )
+    cancel = threading.Event()
+    done = threading.Event()
+    outcome: Dict[str, Any] = {}
+
+    def work() -> None:
+        try:
+            outcome["body"] = _run_cli(
+                payload, upstream_model, ceiling=_stream_timeout_seconds(), cancel=cancel
+            )
+        except BaseException as exc:  # noqa: BLE001 - handed to the caller
+            outcome["error"] = exc
+        finally:
+            done.set()
+
+    threading.Thread(target=work, daemon=True, name="claude-code-cli").start()
+    if done.wait(_STREAM_COMMIT_SECONDS):
+        error = outcome.get("error")
+        if error is not None:
+            raise error
+        completion = _completion(outcome["body"], upstream_model)
+        return _response(b"".join(_stream(completion, include_usage)), "text/event-stream")
+
+    response = requests.Response()
+    response.status_code = 200
+    response.headers["Content-Type"] = "text/event-stream"
+    response.encoding = "utf-8"
+    response.raw = _LiveBody(
+        _late_stream(done, outcome, cancel, upstream_model, include_usage),
+        on_close=lambda: None if done.is_set() else cancel.set(),
+    )
+    response.url = "claude-code://local"
+    return response
+
+
 def request_chat(
     _credentials: ResolvedCredentials,
     payload: Dict[str, Any],
@@ -651,15 +947,10 @@ def request_chat(
     stream: bool,
     allow_preconnect_retry: bool = True,
 ) -> requests.Response:
+    if stream:
+        return _request_stream(payload, upstream_model)
     body = _run_cli(payload, upstream_model)
     completion = _completion(body, upstream_model)
-    if stream:
-        stream_options = payload.get("stream_options")
-        include_usage = bool(
-            isinstance(stream_options, dict) and stream_options.get("include_usage")
-        )
-        content = b"".join(_stream(completion, include_usage))
-        return _response(content, "text/event-stream")
     return _response(
         json.dumps(completion, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
         "application/json",

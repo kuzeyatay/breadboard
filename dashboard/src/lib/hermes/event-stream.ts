@@ -1,5 +1,6 @@
 import { explainFailure } from "../failure-explanations.ts";
 import { appendWeatherToolDisplays } from "../weather/tool-display.ts";
+import { readerClarityTurn, reviseForReader } from "../conversations/reader-clarity.ts";
 import { isBareProviderError } from "../provider-error.ts";
 // Shared SSE relay: turns an authorized runtime session's Hermes event
 // subscription into a browser SSE stream of normalized events, and persists the
@@ -110,6 +111,7 @@ function persistAssistantOnce(
   tokenUsage?: unknown,
   reasoning?: string,
   failure?: { code: string; message: string },
+  readerClarity?: Record<string, unknown>,
 ): void {
   let persistedTokenUsage = normalizeChatTokenUsage(tokenUsage) ?? undefined;
   if (session.row.conversation_id !== null) {
@@ -142,6 +144,7 @@ function persistAssistantOnce(
       ...(uiResources.length ? { uiResources } : {}),
       ...(responseDurationMs !== undefined ? { responseDurationMs } : {}),
       ...((verification.answerModel || dispatchedModel) ? { model: verification.answerModel || dispatchedModel } : {}),
+      ...(readerClarity ? { readerClarity } : {}),
     };
     persistedTokenUsage = persistedTokenUsage
       ? {
@@ -240,6 +243,7 @@ function driveSessionEventPump(
     || intermediateResponsesEnabled(initialSession.row.user_id);
   let deltaSequence = 0;
   let answerModel: string | undefined;
+  let readerClarityMetadata: Record<string, unknown> | undefined;
   let usedFallback = false;
   let reasoning = "";
   // Mid-turn narration segments sealed off the answer buffer (text the model
@@ -852,6 +856,7 @@ function driveSessionEventPump(
             tokenUsage,
             reasoning,
             failure,
+            readerClarityMetadata,
           );
         } catch {
           // Do not strand the canonical placeholder in `pending` if final
@@ -1424,6 +1429,35 @@ function driveSessionEventPump(
               // launch would be a run the agent believes it started.
               emitAgentLaunchRequests();
               assistantText = appendWeatherToolDisplays(assistantText, evidence);
+              // Garden answers that fail the readability check get one
+              // gap-filling revision by the model that wrote them, before the
+              // stable answer is revealed and saved. Any failure keeps the
+              // original text (see reader-clarity.ts).
+              if (session.row.surface === "garden_chat" && session.row.conversation_id !== null && assistantText.trim()) {
+                const turn = readerClarityTurn(session.row.conversation_id, db);
+                const dispatch = streamRun ? parseRuntimeRunDispatch(streamRun) : undefined;
+                const result = await reviseForReader({
+                  answer: assistantText,
+                  question: turn.question,
+                  context: turn.context,
+                  model: answerModel ?? dispatch?.modelIdentity?.modelID ?? dispatch?.model?.modelID,
+                  userId: session.row.user_id,
+                });
+                if (result.findings.length) {
+                  readerClarityMetadata = {
+                    revised: result.revised,
+                    findings: result.findings,
+                    ...(result.reason ? { reason: result.reason } : {}),
+                    ...(result.durationMs !== undefined ? { durationMs: result.durationMs } : {}),
+                    ...(result.gaps?.length ? { gaps: result.gaps } : {}),
+                  };
+                }
+                if (result.revised) assistantText = result.text;
+                if (streamRun && getRuntimeRun(streamRun.id)?.status !== "active") {
+                  lostRunOwnership = true;
+                  return;
+                }
+              }
               emitStableAnswer();
               emit(event);
               // The answer is never rewritten here any more. An unmet web
